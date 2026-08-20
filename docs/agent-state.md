@@ -7,9 +7,9 @@ This file is operational state for coding agents. It is not user-facing product 
 ## Current state
 
 - Current milestone: M2, Grok Bot Desktop Parity
-- Current Linear issue: 6C7-42 visual token system and screenshot regression harness
+- Current Linear issue: 6C7-43 Bot roster, identity editor and lifecycle
 - Current Git branch: `feat/m0-contracts`
-- Latest verified remote commit: `6de983f9db1792b949704d853e13a6b6e0fb8486`
+- Latest verified remote commit: `ea2d4ace6466516744a756dc6a286dbd190fa3c6`
 - Public repository: `https://github.com/luinbytes/HomeBot`
 - Repository owner and commit identity: `luinbytes <42706009+luinbytes@users.noreply.github.com>`
 
@@ -40,7 +40,8 @@ Current blockers:
 - 6C7-39 is Done. GitHub Actions run 32355805077 passed the full six-job matrix. The current environment has no `codex` binary, so the real-binary smoke test skips with an explicit reason; fake executable App Server fixtures verify structured start, resume, streaming, approval, and interruption round trips.
 - 6C7-40 is Done. GitHub Actions run 32358033480 passed the full six-job matrix after the dependency policy explicitly admitted webpki-roots' permissive CDLA-Permissive-2.0 license.
 - M1 is complete. 6C7-72 and epic 6C7-34 are Done after GitHub Actions run 32361115615 passed all six jobs.
-- 6C7-42 is In Progress. Its reusable egui token/component layer, three deterministic screenshot goldens and platform-independent CPU renderer are published in `b9a7d40`. The first expanded CI run exposed a pre-existing Linux `ETXTBSY` race when rapidly created provider fixture executables start. A bounded production spawn retry and deterministic regression test now pass locally; the exact next action is to publish that fix and verify the complete remote matrix before closing 6C7-42.
+- 6C7-42 is Done. GitHub Actions run 32363729132 passed all nine quality, dependency, platform-build and cross-platform visual-golden jobs after the bounded executable-busy retry fix.
+- 6C7-43 is In Progress. The exact next action is to extend the Bot domain and migration-backed storage lifecycle, expose authoritative server operations, then wire the roster/editor UI states through a client model with reconnect and provider-health handling.
 - egui 0.32.3 transitively uses unmaintained `ttf-parser` 0.25.1. RUSTSEC-2026-0192 reports no known vulnerability and no safe upgrade; the exact advisory is documented and temporarily ignored, with mandatory review in 6C7-69.
 
 ## Completed work
@@ -61,18 +62,19 @@ Current blockers:
 - Claude Code, OpenAI-compatible BYOK and constrained generic process adapters implemented with normalized streaming, cancellation, failures and request-time secret references; Linear 6C7-40 is Done.
 - Scoped filesystem, PTY/process and loopback CDP browser capabilities with server-side policy, approvals, activity and hostile-input tests completed; Linear 6C7-72 is Done.
 - M1 epic 6C7-34 is Done.
+- Semantic egui tokens, reusable shell components, deterministic CPU-rendered visual goldens and Linux/macOS visual CI are complete; Linear 6C7-42 is Done.
 
 ## Immediate next work
 
-1. Publish the bounded provider executable-busy retry discovered by the 6C7-42 remote matrix.
-2. Verify the full workspace, dependency policy/audit, three platform builds and Linux/macOS visual jobs remotely, then close 6C7-42 with evidence.
-3. Immediately start 6C7-43 Bot roster, identity editor and lifecycle work.
+1. Define validated Bot name/title/shape/color/lifecycle semantics without exposing provider implementation vocabulary.
+2. Add transactional create/edit/archive/restore persistence, duplicate-name handling and restart tests with a migration fixture.
+3. Add server-authoritative Bot operations plus desktop roster/editor states for empty, disconnected, provider unavailable, unread and attention behavior.
 
 ## Verification state
 
 Verified:
 
-- Local and remote Git trees matched at `6de983f` before the current coherent 6C7-42 change. GitHub Actions run 32361638137 passed all six jobs for that transition commit.
+- Local and remote Git trees match at `ea2d4ac`. GitHub Actions run 32363729132 passed all nine jobs, including exact visual comparison on Linux, macOS Intel and macOS Apple Silicon.
 - Remote commits are attributed to GitHub account `luinbytes`; the latest verified commit exposes the expected noreply identity.
 - Working tree was clean before `feat/m0-contracts` was created.
 - All committed TOML files parse with Python `tomllib`.
@@ -99,7 +101,7 @@ Not yet verified:
 
 - `homebot-server` covers every stated 6C7-37 transport behaviour locally and in the passing remote matrix.
 - The first-class Codex and Claude adapters cannot perform real authenticated provider messages in this environment because neither CLI binary is installed. Their structured protocol fixtures pass. The OpenAI-compatible adapter is verified against a local protocol-faithful HTTP/SSE fixture, not a user credential. The local computer capability layer is implemented but no real Chrome process is installed in this environment, so CDP behavior is verified against a protocol-faithful loopback fixture. Desktop egui, Android, routines, plugins, VCS, pairing, and packaging are not implemented.
-- GitHub Actions run 32363108340 passed dependency policy, all three platform builds and Linux/Apple Silicon visual goldens, but Rust quality hit a transient Linux `ETXTBSY` while starting a provider fixture. The bounded retry fix is complete locally and awaits remote verification. Do not close 6C7-42 until the replacement run is fully green.
+- Desktop Bot lifecycle, server CRUD, unread/attention state and editor interaction remain unimplemented and are the active 6C7-43 work.
 - No release artifact exists. Do not describe the project as installable or v1-ready.
 
 ## Environment notes

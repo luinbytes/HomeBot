@@ -9,7 +9,7 @@ This file is operational state for coding agents. It is not user-facing product 
 - Current milestone: M1, Local Runtime Foundation
 - Current Linear issue: 6C7-38 ProviderAdapter runtime and process supervision
 - Current Git branch: `feat/m0-contracts`
-- Latest verified remote commit: `2abd07b3b9869438179d8a3d3bd29a4fc1509eb2`
+- Latest verified remote commit: `ec4a7fbf0d61c426706273db636c26fce7eb5361`
 - Public repository: `https://github.com/luinbytes/HomeBot`
 - Repository owner and commit identity: `luinbytes <42706009+luinbytes@users.noreply.github.com>`
 
@@ -30,7 +30,7 @@ Current blockers:
 - Rust is installed in isolated task paths under `/tmp/homebot-rustup` and `/tmp/homebot-cargo`.
 - Exact current-app pixel captures remain deliberately gated to 6C7-42.
 - 6C7-37 is Done. GitHub Actions run 32352700967 passed all six Linux, macOS Intel, macOS arm64, quality, dependency-policy, and audit jobs.
-- 6C7-38 is In Progress. The existing provider crate is only a health-check stub; the next implementation must cover the complete normalized adapter lifecycle and supervised child-process failure model.
+- 6C7-38 is In Progress. Provider-neutral contracts, adapter/operation routing, bounded event receivers, cancellation/compaction/recovery hooks, and cleared-environment child supervision with redacted bounded diagnostics now pass focused tests. Full workspace and remote CI verification remains.
 
 ## Completed work
 
@@ -48,9 +48,9 @@ Current blockers:
 
 ## Immediate next work
 
-1. Define provider-neutral discovery, health/auth, capabilities, model, conversation, stream, activity, approval, usage, cancellation, compaction, and failure contracts in `homebot-providers`.
-2. Implement bounded child-process supervision with clean shutdown, cancellation, redacted diagnostics, crash reporting, and deterministic fixture tests.
-3. Add a fake adapter acceptance suite proving start/resume/stream/cancel/recovery semantics without leaking provider-native payloads.
+1. Run full workspace quality gates for the 6C7-38 provider runtime and fix cross-crate or cross-platform failures.
+2. Commit/push the provider runtime, verify the complete GitHub Actions matrix, and close 6C7-38 only after the remote postconditions pass.
+3. Refresh the dependency graph and immediately begin the next unblocked provider adapter issue.
 
 ## Verification state
 
@@ -68,6 +68,7 @@ Verified:
 - `cargo clippy --workspace --all-targets -- -D warnings` passes.
 - Rust JSON Schema and generated Android binding drift checks pass.
 - `homebot-storage` has ten passing tests covering clean install/table inventory, WAL mode, restart/outbox durability, backup/restore, migration rollback, corrupted startup, concurrent access, idempotency, replay retention, and attachment transitions.
+- `homebot-providers` has five passing tests covering normalized lifecycle routing, duplicate-operation rejection, cancellation/recovery, redacted bounded crash diagnostics, clean shutdown, and forced cleanup.
 
 Not yet verified:
 
@@ -78,7 +79,7 @@ Not yet verified:
 ## Known failures and incomplete implementation
 
 - `homebot-server` covers every stated 6C7-37 transport behaviour locally and in the passing remote matrix.
-- Providers, desktop egui, Android, routines, plugins, tools, VCS, pairing, and packaging are not implemented.
+- First-class Codex, Claude Code, and OpenAI-compatible adapters, desktop egui, Android, routines, plugins, tools, VCS, pairing, and packaging are not implemented.
 - The protocol defines product-level v1 envelopes and lifecycle contracts; server persistence and transport behaviour remain implementation work in later issues.
 - No release artifact exists. Do not describe the project as installable or v1-ready.
 

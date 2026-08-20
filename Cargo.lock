@@ -586,6 +586,12 @@ name = "homebot-providers"
 version = "0.0.1"
 dependencies = [
  "async-trait",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "uuid",
 ]
 
 [[package]]

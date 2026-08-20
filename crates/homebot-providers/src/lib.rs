@@ -1,13 +1,12 @@
-//! Provider adapter boundary. Provider payloads terminate in this crate.
+//! Provider-neutral runtime boundary. Provider-native payloads terminate here.
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ProviderHealth {
-    Available,
-    AuthenticationRequired,
-    Unavailable,
-}
+mod contracts;
+mod runtime;
+mod supervisor;
 
-#[async_trait::async_trait]
-pub trait ProviderAdapter: Send + Sync {
-    async fn health(&self) -> ProviderHealth;
-}
+pub use contracts::*;
+pub use runtime::*;
+pub use supervisor::*;
+
+#[cfg(test)]
+mod tests;

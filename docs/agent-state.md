@@ -7,10 +7,10 @@ This file is operational state for coding agents. It is not user-facing product 
 ## Current state
 
 - Current milestone: M3, Skills, Plugins, Routines & Secrets.
-- Current Linear issue: 6C7-51, OS-backed secret store and safe tool injection (`In Progress`).
+- Current Linear issue: 6C7-50, plugin/MCP connection registry and authorization UX (`In Progress`).
 - Current Git branch: `feat/m0-contracts`.
-- Latest verified remote commit: `3215f4ddb3a19955a1e0440512f1fd74eea4d769`.
-- Latest verified GitHub Actions run: `32379291068`, all nine jobs passed.
+- Latest verified remote commit: `6bf54bb3d001eae6e6ac224b2bb1681965fdaab1`.
+- Latest verified GitHub Actions run: `32382518033`, all nine jobs passed.
 - Public repository: `https://github.com/luinbytes/HomeBot`.
 - Required commit identity: `luinbytes <42706009+luinbytes@users.noreply.github.com>`.
 
@@ -35,19 +35,19 @@ Current blockers:
 - M0 epic 6C7-30: baseline, parity inventory, protocol contract, and security model.
 - M1 epic 6C7-34: Rust/CI foundation, SQLite/outbox/recovery, authenticated HTTP/WebSocket transport, provider runtime, Codex, Claude/OpenAI-compatible/community adapters, and local filesystem/PTY/browser capabilities.
 - M2 epic 6C7-41: egui visual system, native shell, Bot lifecycle, direct chats, three-Bot groups/coordination, normalized activity/artifact surfaces, and settings/native notifications.
-- Most recent completed issues: 6C7-46 and 6C7-47; M2 epic 6C7-41 is Done.
+- Most recent completed issue: 6C7-51, OS-backed secret storage and policy-gated secret-aware provider/tool injection.
 
 ## Immediate next work
 
-1. Finish 6C7-51 by running the full local gate and dependency policy against the new `homebot-secrets` crate, migration 0008, secret protocol/API, canary tests, and documentation.
-2. Commit and push the coherent issue under the required `luinbytes` identity; wait for all GitHub Actions jobs, attach evidence to Linear 6C7-51, and mark it Done only on green CI.
-3. Refresh Linear and begin the highest-priority unblocked child of 6C7-48 (expected 6C7-50 plugin/MCP registry unless dependencies changed).
+1. For 6C7-50, define the provider-neutral plugin/MCP registry contract and server-owned state machine for Connect, Waiting, Reopen, Connected, and Error.
+2. Add durable local MCP connection metadata, safe direct-executable stdio process supervision, discovery/health/enable/disable/remove operations, and per-Bot assignment without granting MCP output instruction authority.
+3. Add authenticated server APIs/events, desktop settings states/actions, hostile MCP fixtures, protocol/schema/Android drift updates, and docs; then run the full gate, commit/push, wait for CI, and update Linear.
 
 ## Verification state
 
 Verified at the last remote baseline:
 
-- GitHub Actions run 32379291068 passed formatting/clippy/tests, dependency policy/audit, Linux, macOS Intel, macOS Apple Silicon, and cross-platform visual goldens.
+- GitHub Actions run 32382518033 passed formatting/clippy/101 tests, dependency policy/audit, Linux, macOS Intel, macOS Apple Silicon, and cross-platform visual goldens.
 - The remote commit author and committer resolve to GitHub account `luinbytes`.
 - `./scripts/check.sh` passed with 92 Rust tests and 11 exact desktop visual fixtures before 6C7-51 began.
 
@@ -61,13 +61,10 @@ Verified locally for the active issue:
 
 - Cargo-deny 0.20.2 reports advisories, bans, licenses, and sources all OK with only the existing documented warnings.
 
-Pending before the issue commit:
-
-- Run the final formatting/diff check after the last validation-order edit, then commit/push and wait for remote CI.
+6C7-51 completion evidence is recorded in Linear and the issue is Done.
 
 ## Known failures and incomplete implementation
 
-- 6C7-51 is not yet complete or pushed. Its worktree changes are coherent but still require the full gate and remote CI.
 - Android app, routines, plugins/MCP, VCS/worktrees/checkpoints, device pairing/Tailscale, packaging, and release artifacts remain incomplete roadmap work.
 - Real authenticated Codex/Claude round trips are unavailable in this environment. OpenAI-compatible and CDP behavior use protocol-faithful local fixtures.
 - No release artifact exists. Do not describe HomeBot as installable or v1-ready.

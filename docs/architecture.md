@@ -1,6 +1,6 @@
 # Architecture
 
-Status: M0 contract, 20 August 2026.
+Status: M1 implementation in progress, 20 August 2026.
 
 ## Product boundary
 
@@ -42,6 +42,8 @@ Group coordination is an explicit server state machine with a bounded hop count,
 ## Persistence
 
 SQLite runs in WAL mode and is the source of truth for structured product state. Each schema change is an ordered, transactional migration with an upgrade fixture. Event-producing mutations update domain rows and the outbox in one transaction. Monotonic outbox sequences support WebSocket resume and client reconciliation.
+
+`homebot-storage` opens SQLite with foreign keys, a bounded busy timeout, WAL journalling, and startup integrity checks. Startup fails closed on migration, quick-check, or foreign-key failures. Backups use SQLite's consistent `VACUUM INTO` operation, and restore refuses to overwrite an existing destination.
 
 Large attachments and generated artifacts live outside SQLite in a content-addressed data directory. Database rows store ownership, media type, size, digest, and lifecycle metadata. Secret rows contain opaque credential-store references only.
 

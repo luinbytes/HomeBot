@@ -10,7 +10,7 @@ This file is operational state for coding agents. It is not user-facing product 
 - Current Linear issues: 6C7-35 CI verification and 6C7-36 SQLite persistence
 - Parallel scaffold issue: 6C7-35 remains In Progress but cannot close until compilation and CI are verified
 - Current Git branch: `feat/m0-contracts`
-- Latest verified remote commit: `4166431264c166ad2545c9bef0c625ec08f08d28`
+- Latest verified remote commit: `fbd43e6311e79a3c493cbdfab5829bd2940d9d7a`
 - Public repository: `https://github.com/luinbytes/HomeBot`
 - Repository owner and commit identity: `luinbytes <42706009+luinbytes@users.noreply.github.com>`
 
@@ -32,7 +32,7 @@ Current blockers:
 - GitHub Actions runs 1 and 2 are queued; CI success is unverified.
 - Exact current-app pixel captures remain deliberately gated to 6C7-42.
 - GitHub Actions at `4166431` verified Rust quality, Linux, macOS arm64, dependency audit, and dependency policy. The macOS Intel job exposed a retired `macos-13` label; the working tree now uses GitHub's documented `macos-15-intel` label.
-- 6C7-36 now has an initial transactional migration, WAL/integrity-safe storage open, monotonic outbox, replay, backup, restore, restart, corruption, and concurrency tests in the working tree.
+- 6C7-36 now has an initial transactional migration, WAL/integrity-safe storage open, monotonic outbox, replay, backup, non-overwriting restore, restart durability, migration rollback, corruption, and concurrent reader/writer tests in the working tree.
 
 ## Completed work
 
@@ -67,6 +67,7 @@ Verified:
 - `cargo test --workspace` passes with six tests.
 - `cargo clippy --workspace --all-targets -- -D warnings` passes.
 - Rust JSON Schema and generated Android binding drift checks pass.
+- `homebot-storage` has seven passing tests covering clean install/table inventory, WAL mode, restart/outbox durability, backup/restore, migration rollback, corrupted startup, and concurrent access.
 
 Not yet verified:
 

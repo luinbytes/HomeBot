@@ -324,7 +324,7 @@ impl GitRuntime {
     }
 }
 
-fn oid(value: &str) -> Result<String, VcsError> {
+pub(super) fn oid(value: &str) -> Result<String, VcsError> {
     if value.len() != 40 && value.len() != 64 || !value.bytes().all(|byte| byte.is_ascii_hexdigit())
     {
         return Err(VcsError::Git("invalid Git object ID".to_owned()));
@@ -332,7 +332,7 @@ fn oid(value: &str) -> Result<String, VcsError> {
     Ok(value.to_ascii_lowercase())
 }
 
-fn nul_fields(bytes: &[u8]) -> Result<Vec<String>, VcsError> {
+pub(super) fn nul_fields(bytes: &[u8]) -> Result<Vec<String>, VcsError> {
     bytes
         .split(|byte| *byte == 0)
         .filter(|field| !field.is_empty())
@@ -344,7 +344,7 @@ fn nul_fields(bytes: &[u8]) -> Result<Vec<String>, VcsError> {
         .collect()
 }
 
-fn safe_relative(path: String) -> Result<String, VcsError> {
+pub(super) fn safe_relative(path: String) -> Result<String, VcsError> {
     let candidate = Path::new(&path);
     if path.is_empty()
         || candidate.is_absolute()
@@ -357,7 +357,7 @@ fn safe_relative(path: String) -> Result<String, VcsError> {
     Ok(path)
 }
 
-fn binary_paths(bytes: &[u8]) -> Result<BTreeSet<String>, VcsError> {
+pub(super) fn binary_paths(bytes: &[u8]) -> Result<BTreeSet<String>, VcsError> {
     let mut result = BTreeSet::new();
     for entry in bytes
         .split(|byte| *byte == 0)
@@ -375,7 +375,10 @@ fn binary_paths(bytes: &[u8]) -> Result<BTreeSet<String>, VcsError> {
     Ok(result)
 }
 
-fn parse_name_status(bytes: &[u8], binary: &BTreeSet<String>) -> Result<Vec<FileChange>, VcsError> {
+pub(super) fn parse_name_status(
+    bytes: &[u8],
+    binary: &BTreeSet<String>,
+) -> Result<Vec<FileChange>, VcsError> {
     let fields = nul_fields(bytes)?;
     let mut cursor = 0;
     let mut changes = Vec::new();

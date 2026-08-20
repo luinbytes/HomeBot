@@ -12,6 +12,7 @@ mod routines;
 mod scheduler;
 mod secrets;
 mod skills;
+mod source_control;
 mod workspaces;
 
 use axum::{
@@ -33,6 +34,7 @@ use homebot_protocol::{
 use homebot_providers::{ProviderAdapterId, ProviderRuntime};
 use homebot_secrets::{OsSecretVault, SecretVault};
 use homebot_storage::{IdempotencyClaim, ReplayWindow, Storage};
+use homebot_tools::{NoopActivitySink, PolicyEngine};
 use homebot_vcs::GitRuntime;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -90,6 +92,7 @@ pub struct AppState {
     routine_cancellations: Arc<Mutex<HashMap<Uuid, Arc<Notify>>>>,
     trigger_events: broadcast::Sender<(String, Uuid)>,
     git_runtime: Option<Arc<GitRuntime>>,
+    policy_engine: Arc<PolicyEngine>,
     worktree_root: PathBuf,
 }
 
@@ -119,6 +122,10 @@ impl AppState {
             routine_cancellations: Arc::new(Mutex::new(HashMap::new())),
             trigger_events,
             git_runtime: GitRuntime::discover().ok().map(Arc::new),
+            policy_engine: Arc::new(PolicyEngine::new(
+                std::time::Duration::from_secs(300),
+                Arc::new(NoopActivitySink),
+            )),
             worktree_root: std::env::temp_dir().join("homebot-worktrees"),
         }
     }
@@ -174,6 +181,12 @@ impl AppState {
     pub fn with_git_runtime(mut self, runtime: Arc<GitRuntime>, worktree_root: PathBuf) -> Self {
         self.git_runtime = Some(runtime);
         self.worktree_root = worktree_root;
+        self
+    }
+
+    #[must_use]
+    pub fn with_policy_engine(mut self, policy_engine: Arc<PolicyEngine>) -> Self {
+        self.policy_engine = policy_engine;
         self
     }
 }
@@ -290,6 +303,30 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/v1/workspaces/{workspace_id}/branches",
             get(workspaces::branches),
+        )
+        .route(
+            "/api/v1/chats/{chat_id}/vcs/status",
+            get(source_control::status),
+        )
+        .route(
+            "/api/v1/chats/{chat_id}/vcs/diff",
+            get(source_control::diff),
+        )
+        .route(
+            "/api/v1/chats/{chat_id}/vcs/commit",
+            post(source_control::commit),
+        )
+        .route(
+            "/api/v1/chats/{chat_id}/vcs/branches",
+            post(source_control::create_branch),
+        )
+        .route(
+            "/api/v1/chats/{chat_id}/vcs/push",
+            post(source_control::push),
+        )
+        .route(
+            "/api/v1/chats/{chat_id}/vcs/pull-request",
+            get(source_control::pull_request_metadata).post(source_control::create_pull_request),
         )
         .route(
             "/api/v1/chats/{chat_id}/workspace",

@@ -11,10 +11,15 @@ use tokio::{process::Command, time::timeout};
 use uuid::Uuid;
 
 mod checkpoints;
+mod source_control;
 
 pub use checkpoints::{
     CheckpointCapture, CheckpointDiff, CheckpointPhase, ConversationReconciliation, FileChange,
     FileChangeStatus, RestoreResult,
+};
+pub use source_control::{
+    PullRequestMetadata, PullRequestProvider, PullRequestSummary, VcsChangeKind, VcsCommitResult,
+    VcsPushResult, VcsRemoteSummary, VcsStatus, VcsStatusEntry,
 };
 
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
@@ -55,6 +60,7 @@ pub struct WorktreeInspection {
 #[derive(Clone, Debug)]
 pub struct GitRuntime {
     executable: PathBuf,
+    github_cli: Option<PathBuf>,
     command_timeout: Duration,
 }
 
@@ -76,6 +82,12 @@ pub enum VcsError {
     DirtyWorktree,
     #[error("Restore would overwrite an ignored workspace path and was refused")]
     RestoreConflict,
+    #[error("No push remote is configured")]
+    NoRemote,
+    #[error("Remote authentication failed")]
+    AuthenticationFailed,
+    #[error("Pull-request integration is unavailable")]
+    PullRequestUnavailable,
     #[error("Managed worktree path is outside its root")]
     UnsafeWorktreePath,
     #[error("filesystem operation failed: {0}")]
@@ -99,6 +111,7 @@ impl GitRuntime {
             .ok_or(VcsError::GitUnavailable)?;
         Ok(Self {
             executable,
+            github_cli: discover_github_cli(),
             command_timeout: COMMAND_TIMEOUT,
         })
     }
@@ -107,8 +120,15 @@ impl GitRuntime {
     pub fn with_executable(executable: PathBuf) -> Self {
         Self {
             executable,
+            github_cli: discover_github_cli(),
             command_timeout: COMMAND_TIMEOUT,
         }
+    }
+
+    #[must_use]
+    pub fn with_github_cli(mut self, executable: Option<PathBuf>) -> Self {
+        self.github_cli = executable;
+        self
     }
 
     /// Canonicalizes and inspects a repository without changing it.
@@ -329,9 +349,57 @@ impl GitRuntime {
         }
         Ok(output.stdout)
     }
+
+    async fn git_remote(&self, repository: &Path, arguments: &[&str]) -> Result<String, VcsError> {
+        let mut environment = Vec::new();
+        for key in ["HOME", "XDG_CONFIG_HOME", "SSH_AUTH_SOCK"] {
+            if let Ok(value) = std::env::var(key) {
+                environment.push((key, value));
+            }
+        }
+        let borrowed = environment
+            .iter()
+            .map(|(key, value)| (*key, value.as_str()))
+            .collect::<Vec<_>>();
+        let output = match self
+            .git_bytes(Some(repository), arguments, &borrowed, MAX_OUTPUT_BYTES)
+            .await
+        {
+            Err(VcsError::Git(message)) if is_authentication_error(&message) => {
+                return Err(VcsError::AuthenticationFailed);
+            }
+            result => result?,
+        };
+        String::from_utf8(output)
+            .map_err(|_| VcsError::Git("Git returned invalid UTF-8".to_owned()))
+    }
 }
 
-fn validate_ref(value: &str) -> Result<(), VcsError> {
+fn discover_github_cli() -> Option<PathBuf> {
+    [
+        PathBuf::from("/usr/bin/gh"),
+        PathBuf::from("/opt/homebrew/bin/gh"),
+        PathBuf::from("/usr/local/bin/gh"),
+    ]
+    .into_iter()
+    .find(|path| path.is_file())
+}
+
+fn is_authentication_error(message: &str) -> bool {
+    let message = message.to_ascii_lowercase();
+    [
+        "authentication failed",
+        "permission denied",
+        "could not read username",
+        "repository not found",
+        "http 401",
+        "http 403",
+    ]
+    .iter()
+    .any(|candidate| message.contains(candidate))
+}
+
+pub(crate) fn validate_ref(value: &str) -> Result<(), VcsError> {
     if value.is_empty()
         || value.len() > 240
         || value.starts_with('-')

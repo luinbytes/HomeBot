@@ -64,6 +64,8 @@ Authenticated workspace endpoints register canonical Git repositories, list loca
 
 Coding-chat timelines include opaque turn-checkpoint summaries. Authenticated endpoints list checkpoints, return an explicit-pair or full-chat binary-capable diff, and restore a stopped chat to a checkpoint with an idempotency key. `turn_checkpoint_changed` and `checkpoint_restored` events are durable and sequenced. Restore responses state whether provider context was unchanged or forked; hidden refs, object IDs and provider conversation IDs never cross the client contract.
 
+Authenticated chat-scoped VCS endpoints return normalized porcelain status, staged/unstaged binary-capable diffs, exact commit results, clean branch transitions, push outcomes and pull-request metadata/actions. `vcs_status_changed` is durable and sequenced. Push and pull-request creation return `approval_required` until the server capability engine consumes an allowed, exact-request approval. Mutation responses are durably idempotent; remote URLs, credentials and raw Git/GitHub output never cross the contract.
+
 ## Attachments
 
 Attachments are uploaded over authenticated HTTP with size/type limits, streaming digest verification, an idempotency key, and an explicit finalise step. WebSocket messages refer to completed attachment IDs. Partial uploads expire and cannot be consumed.

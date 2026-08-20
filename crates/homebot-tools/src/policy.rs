@@ -136,7 +136,7 @@ struct ApprovalRecord {
 }
 
 /// Proof that the server policy engine authorized exactly one request.
-pub(crate) struct AuthorizedOperation {
+pub struct AuthorizedOperation {
     request_digest: [u8; 32],
 }
 
@@ -209,7 +209,11 @@ impl PolicyEngine {
         Ok(())
     }
 
-    pub(crate) async fn authorize(
+    /// Authorizes one exact capability request or creates/consumes its structured approval.
+    ///
+    /// # Errors
+    /// Returns denial, an approval ticket, invalid approval, or a bounded policy failure.
+    pub async fn authorize(
         &self,
         request: &CapabilityRequest,
         approval_id: Option<Uuid>,
@@ -226,6 +230,16 @@ impl PolicyEngine {
             }
             PolicyEffect::Allow => Ok(AuthorizedOperation::new(digest)),
             PolicyEffect::RequireApproval => {
+                let mut approvals = self.approvals.lock().await;
+                approvals.retain(|_, record| record.ticket.expires_at_unix_ms > unix_ms());
+                if let Some(existing) = approvals.values().find(|record| {
+                    record.request_digest == digest
+                        && record.ticket.operation_id == request.context.operation_id
+                        && record.decision.is_none()
+                        && record.policy_revision == self.policy_revision.load(Ordering::SeqCst)
+                }) {
+                    return Err(ToolError::ApprovalRequired(existing.ticket.clone()));
+                }
                 let ticket = ApprovalTicket {
                     approval_id: Uuid::now_v7(),
                     operation_id: request.context.operation_id,
@@ -237,8 +251,6 @@ impl PolicyEngine {
                         self.approval_ttl.as_millis().try_into().unwrap_or(u64::MAX),
                     ),
                 };
-                let mut approvals = self.approvals.lock().await;
-                approvals.retain(|_, record| record.ticket.expires_at_unix_ms > unix_ms());
                 if approvals.len() >= MAX_PENDING_APPROVALS {
                     return Err(ToolError::LimitExceeded);
                 }
@@ -366,6 +378,15 @@ mod tests {
         else {
             panic!("expected approval");
         };
+        let ToolError::ApprovalRequired(duplicate) = engine
+            .authorize(&request, None)
+            .await
+            .err()
+            .unwrap_or(ToolError::OperationFailed)
+        else {
+            panic!("expected duplicate approval");
+        };
+        assert_eq!(duplicate.approval_id, ticket.approval_id);
         engine
             .decide(ticket.approval_id, ApprovalDecision::AllowOnce)
             .await

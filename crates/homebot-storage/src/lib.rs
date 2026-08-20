@@ -23,7 +23,7 @@ use sqlx::{
 use std::{collections::HashSet, path::Path, str::FromStr, time::Duration};
 use uuid::Uuid;
 
-pub const SCHEMA_VERSION: u32 = 14;
+pub const SCHEMA_VERSION: u32 = 15;
 static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
 
 #[derive(Debug, thiserror::Error)]
@@ -361,6 +361,16 @@ pub struct CheckpointRestoreRecord {
     pub created_at_ms: i64,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VcsOperationResultRecord {
+    pub idempotency_key: Uuid,
+    pub owner_id: Uuid,
+    pub chat_id: Uuid,
+    pub action: String,
+    pub response: Value,
+    pub created_at_ms: i64,
+}
+
 pub struct QueuedPromptInput<'a> {
     pub content: &'a str,
     pub attachment_ids: &'a [Uuid],
@@ -672,6 +682,40 @@ impl Storage {
             .bind(owner_id.to_string()).bind(restore_id.to_string()).fetch_optional(&self.pool).await?
             .ok_or(StorageError::CheckpointNotFound)?;
         checkpoint_restore_from_row(&row)
+    }
+
+    /// Stores the exact response for a Git mutation so network retries never repeat it.
+    ///
+    /// # Errors
+    /// Returns database or serialization errors.
+    pub async fn record_vcs_operation_result(
+        &self,
+        record: &VcsOperationResultRecord,
+    ) -> Result<(), StorageError> {
+        let response = serde_json::to_string(&record.response)
+            .map_err(|error| StorageError::Serialization(error.to_string()))?;
+        sqlx::query("INSERT INTO vcs_operation_results (idempotency_key, owner_id, chat_id, action, response_json, created_at_ms) VALUES (?, ?, ?, ?, ?, ?)")
+            .bind(record.idempotency_key.to_string()).bind(record.owner_id.to_string())
+            .bind(record.chat_id.to_string()).bind(&record.action).bind(response)
+            .bind(record.created_at_ms).execute(&self.pool).await?;
+        Ok(())
+    }
+
+    /// Loads an exact owner/chat/action-scoped Git mutation response for idempotent replay.
+    ///
+    /// # Errors
+    /// Returns database or corrupt-JSON errors.
+    pub async fn vcs_operation_result(
+        &self,
+        owner_id: Uuid,
+        chat_id: Uuid,
+        idempotency_key: Uuid,
+        action: &str,
+    ) -> Result<Option<VcsOperationResultRecord>, StorageError> {
+        let row = sqlx::query("SELECT idempotency_key, owner_id, chat_id, action, response_json, created_at_ms FROM vcs_operation_results WHERE owner_id = ? AND chat_id = ? AND idempotency_key = ? AND action = ?")
+            .bind(owner_id.to_string()).bind(chat_id.to_string()).bind(idempotency_key.to_string())
+            .bind(action).fetch_optional(&self.pool).await?;
+        row.as_ref().map(vcs_operation_result_from_row).transpose()
     }
 
     /// Creates a Skill and immutable version 1 atomically.
@@ -4414,6 +4458,21 @@ fn checkpoint_restore_from_row(
     })
 }
 
+fn vcs_operation_result_from_row(
+    row: &sqlx::sqlite::SqliteRow,
+) -> Result<VcsOperationResultRecord, StorageError> {
+    let response: String = row.try_get("response_json")?;
+    Ok(VcsOperationResultRecord {
+        idempotency_key: parse_uuid(row.try_get("idempotency_key")?)?,
+        owner_id: parse_uuid(row.try_get("owner_id")?)?,
+        chat_id: parse_uuid(row.try_get("chat_id")?)?,
+        action: row.try_get("action")?,
+        response: serde_json::from_str(&response)
+            .map_err(|error| StorageError::Serialization(error.to_string()))?,
+        created_at_ms: row.try_get("created_at_ms")?,
+    })
+}
+
 fn skill_from_row(row: &sqlx::sqlite::SqliteRow) -> Result<SkillRecord, StorageError> {
     let definition: String = row.try_get("definition_json")?;
     Ok(SkillRecord {
@@ -5526,6 +5585,67 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn version_fourteen_vcs_upgrade_preserves_chats_and_replays_exact_results()
+    -> Result<(), StorageError> {
+        let directory = tempfile::tempdir()?;
+        let database = directory.path().join("homebot-v14.db");
+        let options =
+            SqliteConnectOptions::from_str(database.to_str().ok_or(StorageError::InvalidPath)?)?
+                .create_if_missing(true)
+                .foreign_keys(true);
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(options)
+            .await?;
+        for migration in [
+            include_str!("../migrations/0001_initial.sql"),
+            include_str!("../migrations/0002_event_retention.sql"),
+            include_str!("../migrations/0003_attachments.sql"),
+            include_str!("../migrations/0004_bot_lifecycle.sql"),
+            include_str!("../migrations/0005_direct_chat.sql"),
+            include_str!("../migrations/0006_group_coordination.sql"),
+            include_str!("../migrations/0007_activity_artifacts.sql"),
+            include_str!("../migrations/0008_secret_references.sql"),
+            include_str!("../migrations/0009_plugins.sql"),
+            include_str!("../migrations/0010_routines.sql"),
+            include_str!("../migrations/0011_routine_scheduler.sql"),
+            include_str!("../migrations/0012_skills.sql"),
+            include_str!("../migrations/0013_workspaces.sql"),
+            include_str!("../migrations/0014_checkpoints.sql"),
+        ] {
+            sqlx::raw_sql(migration).execute(&pool).await?;
+        }
+        let storage = Storage { pool: pool.clone() };
+        let owner = Uuid::now_v7();
+        let bot = storage
+            .create_bot(owner, Bot::create("Patch", "Coding")?, 1)
+            .await?;
+        let chat = storage
+            .create_direct_chat(owner, bot.id.0, Uuid::now_v7(), 2)
+            .await?;
+        sqlx::raw_sql(include_str!("../migrations/0015_vcs_operations.sql"))
+            .execute(&pool)
+            .await?;
+        let result = VcsOperationResultRecord {
+            idempotency_key: Uuid::now_v7(),
+            owner_id: owner,
+            chat_id: chat.id,
+            action: "commit".to_owned(),
+            response: json!({"commit_oid":"0123456789012345678901234567890123456789"}),
+            created_at_ms: 3,
+        };
+        storage.record_vcs_operation_result(&result).await?;
+        assert_eq!(
+            storage
+                .vcs_operation_result(owner, chat.id, result.idempotency_key, "commit")
+                .await?,
+            Some(result)
+        );
+        assert_eq!(storage.list_direct_chats(owner).await?.len(), 1);
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn version_ten_upgrade_preserves_routines_and_initializes_scheduler_state()
     -> Result<(), StorageError> {
         let directory = tempfile::tempdir()?;
@@ -6068,6 +6188,7 @@ mod tests {
             "secret_references",
             "skills",
             "turn_checkpoints",
+            "vcs_operation_results",
             "vcs_metadata",
             "workspaces",
         ] {

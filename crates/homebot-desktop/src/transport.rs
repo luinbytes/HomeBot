@@ -14,11 +14,13 @@ use homebot_protocol::{
     ApprovalDecisionRequest, AttachChatWorkspaceRequest, BotMutationRequest, BotResponse,
     ChatTimelineResponse, ChatWorkspaceSummary, CheckpointDiffResponse, ClientMessage,
     CreateAttachmentRequest, CreateAttachmentResponse, CreateBotRequest, CreateDirectChatRequest,
-    CreateDirectChatResponse, CreateRepositoryWorkspaceRequest, DetachChatWorkspaceRequest,
-    ErrorEnvelope, FinalizeAttachmentRequest, MIN_COMPATIBLE_PROTOCOL_VERSION,
-    MessageMutationRequest, PROTOCOL_VERSION, ProtocolRange, RepositoryWorkspaceSummary,
+    CreateDirectChatResponse, CreatePullRequestRequest, CreateRepositoryWorkspaceRequest,
+    DetachChatWorkspaceRequest, ErrorEnvelope, FinalizeAttachmentRequest,
+    MIN_COMPATIBLE_PROTOCOL_VERSION, MessageMutationRequest, PROTOCOL_VERSION, ProtocolRange,
+    PullRequestMetadata, PullRequestMutationResponse, RepositoryWorkspaceSummary,
     RestoreCheckpointRequest, SendMessageRequest, ServerEvent, ServerEventBody, Snapshot,
-    UpdateBotRequest, WorkspaceBranchesResponse,
+    UpdateBotRequest, VcsCommitRequest, VcsCommitResult, VcsCreateBranchRequest, VcsPushRequest,
+    VcsRemoteMutationResponse, VcsStatus, WorkingTreeDiffResponse, WorkspaceBranchesResponse,
 };
 use reqwest::{Client, Method, StatusCode};
 use serde::Deserialize;
@@ -123,6 +125,30 @@ pub enum DesktopEvent {
     WorkspaceBranches {
         workspace_id: Uuid,
         branches: Vec<String>,
+    },
+    VcsStatus {
+        chat_id: Uuid,
+        status: VcsStatus,
+    },
+    VcsDiff {
+        chat_id: Uuid,
+        diff: WorkingTreeDiffResponse,
+    },
+    VcsCommit {
+        chat_id: Uuid,
+        result: VcsCommitResult,
+    },
+    VcsRemoteMutation {
+        chat_id: Uuid,
+        response: VcsRemoteMutationResponse,
+    },
+    PullRequestMetadata {
+        chat_id: Uuid,
+        metadata: PullRequestMetadata,
+    },
+    PullRequestMutation {
+        chat_id: Uuid,
+        response: PullRequestMutationResponse,
     },
     CheckpointDiff(CheckpointDiffResponse),
     MutationFailed(TransportFailure),

@@ -1994,6 +1994,7 @@ dependencies = [
  "homebot-secrets",
  "homebot-skills",
  "homebot-storage",
+ "homebot-tools",
  "homebot-vcs",
  "serde",
  "serde_json",
@@ -2064,6 +2065,7 @@ version = "0.0.1"
 dependencies = [
  "schemars",
  "serde",
+ "serde_json",
  "tempfile",
  "thiserror 2.0.20",
  "tokio",

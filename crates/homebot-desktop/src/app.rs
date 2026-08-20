@@ -1,10 +1,11 @@
 use eframe::egui;
 use egui::{Align, CentralPanel, Layout, RichText, SidePanel, TopBottomPanel};
 use homebot_protocol::{
-    BotAttention, BotColor, BotProviderStatus, BotShape, BotSummary, ChatSummary, ServerEvent,
-    ServerEventBody,
+    BotAttention, BotColor, BotProviderStatus, BotShape, BotSummary, ChatSummary,
+    PullRequestMetadata, ServerEvent, ServerEventBody, VcsStatus,
 };
 use std::sync::mpsc::{Receiver, channel};
+use uuid::Uuid;
 
 use crate::{
     bot_roster::{BotEditorDraft, BotRosterModel, ConnectionState, EditorError},
@@ -23,6 +24,28 @@ use crate::{
 
 const SETTINGS_STORAGE_KEY: &str = "homebot.desktop.settings.v1";
 
+#[derive(Clone, Debug)]
+struct PendingPush {
+    chat_id: uuid::Uuid,
+    request_id: uuid::Uuid,
+    idempotency_key: uuid::Uuid,
+    remote: String,
+    branch: String,
+    approval_id: Option<uuid::Uuid>,
+}
+
+#[derive(Clone, Debug)]
+struct PendingPullRequest {
+    chat_id: uuid::Uuid,
+    request_id: uuid::Uuid,
+    idempotency_key: uuid::Uuid,
+    remote: String,
+    head_branch: String,
+    base_branch: String,
+    title: String,
+    approval_id: Option<uuid::Uuid>,
+}
+
 pub struct HomeBotApp {
     pub roster: BotRosterModel,
     pub theme: HomeBotTheme,
@@ -31,6 +54,12 @@ pub struct HomeBotApp {
     pub skills: SkillProjection,
     pub workspaces: WorkspaceProjection,
     pub checkpoint_diff: Option<homebot_protocol::CheckpointDiffResponse>,
+    vcs_commit_message: String,
+    vcs_branch_name: String,
+    vcs_base_branch: String,
+    vcs_pr_title: String,
+    pending_push: Option<PendingPush>,
+    pending_pull_request: Option<PendingPullRequest>,
     pub active_deep_link: Option<DeepLink>,
     notification_center: NotificationCenter,
     notification_sink: SystemNotificationSink,
@@ -54,6 +83,12 @@ impl Default for HomeBotApp {
             skills: SkillProjection::default(),
             workspaces: WorkspaceProjection::default(),
             checkpoint_diff: None,
+            vcs_commit_message: String::new(),
+            vcs_branch_name: String::new(),
+            vcs_base_branch: "main".to_owned(),
+            vcs_pr_title: String::new(),
+            pending_push: None,
+            pending_pull_request: None,
             active_deep_link: None,
             notification_center: NotificationCenter::default(),
             notification_sink: SystemNotificationSink::new(deep_link_sender),
@@ -129,6 +164,9 @@ impl HomeBotApp {
             .as_ref()
             .map_or_else(Vec::new, |transport| transport.try_events().collect());
         for event in events {
+            let Some(event) = self.apply_vcs_transport_event(event) else {
+                continue;
+            };
             match event {
                 DesktopEvent::Connecting => self.roster.connection = ConnectionState::Connecting,
                 DesktopEvent::Connected => {
@@ -165,6 +203,26 @@ impl HomeBotApp {
                         _ => self.roster.selected,
                     };
                     let _ = self.timeline.apply_event(event.clone());
+                    if let ServerEventBody::ApprovalChanged { approval } = &event.body
+                        && self
+                            .pending_push
+                            .as_ref()
+                            .and_then(|pending| pending.approval_id)
+                            == Some(approval.id)
+                        && approval.status == homebot_protocol::ApprovalStatus::Denied
+                    {
+                        self.pending_push = None;
+                    }
+                    if let ServerEventBody::ApprovalChanged { approval } = &event.body
+                        && self
+                            .pending_pull_request
+                            .as_ref()
+                            .and_then(|pending| pending.approval_id)
+                            == Some(approval.id)
+                        && approval.status == homebot_protocol::ApprovalStatus::Denied
+                    {
+                        self.pending_pull_request = None;
+                    }
                     let _ = self.apply_notification_event(context, &event, bot_id);
                     if self.timeline.needs_snapshot {
                         self.load_selected_timeline();
@@ -189,8 +247,53 @@ impl HomeBotApp {
                 DesktopEvent::MutationFailed(error) => {
                     self.transport_error = Some(error.to_string());
                 }
+                _ => unreachable!("source-control events are consumed before primary dispatch"),
             }
         }
+    }
+
+    fn apply_vcs_transport_event(&mut self, event: DesktopEvent) -> Option<DesktopEvent> {
+        match event {
+            DesktopEvent::VcsStatus { chat_id, status } => {
+                self.workspaces.apply_vcs_status(chat_id, status);
+            }
+            DesktopEvent::VcsDiff { chat_id, diff } => {
+                self.workspaces.apply_vcs_diff(chat_id, diff);
+            }
+            DesktopEvent::VcsCommit { chat_id, .. } => {
+                self.vcs_commit_message.clear();
+                self.send_transport(DesktopCommand::Workspace(WorkspaceCommand::LoadStatus {
+                    chat_id,
+                }));
+            }
+            DesktopEvent::VcsRemoteMutation { chat_id, response } => {
+                if response.status == homebot_protocol::VcsMutationStatus::ApprovalRequired {
+                    if let Some(pending) = &mut self.pending_push {
+                        pending.approval_id = response.approval.as_ref().map(|value| value.id);
+                    }
+                } else {
+                    self.pending_push = None;
+                }
+                self.workspaces.apply_remote_mutation(chat_id, response);
+            }
+            DesktopEvent::PullRequestMetadata { chat_id, metadata } => {
+                self.workspaces.apply_pull_request(chat_id, metadata);
+            }
+            DesktopEvent::PullRequestMutation { chat_id, response } => {
+                if response.status == homebot_protocol::VcsMutationStatus::ApprovalRequired {
+                    if let Some(pending) = &mut self.pending_pull_request {
+                        pending.approval_id = response.approval.as_ref().map(|value| value.id);
+                    }
+                } else {
+                    self.pending_pull_request = None;
+                    self.vcs_pr_title.clear();
+                }
+                self.workspaces
+                    .apply_pull_request_mutation(chat_id, response);
+            }
+            other => return Some(other),
+        }
+        None
     }
 
     fn flush_transport(&mut self) {
@@ -222,7 +325,13 @@ impl HomeBotApp {
             return;
         };
         if let Some(chat) = self.chats.iter().find(|chat| chat.bot_id == bot_id) {
-            self.send_transport(DesktopCommand::LoadTimeline(chat.id));
+            let chat_id = chat.id;
+            self.send_transport(DesktopCommand::LoadTimeline(chat_id));
+            if self.workspaces.for_chat(chat_id).is_some() {
+                self.send_transport(DesktopCommand::Workspace(WorkspaceCommand::LoadStatus {
+                    chat_id,
+                }));
+            }
         } else {
             self.timeline = TimelineModel::default();
         }
@@ -501,7 +610,7 @@ impl HomeBotApp {
             let attached = self.workspaces.for_chat(chat_id).cloned();
             let first_repository = self.workspaces.repositories().next().cloned();
             ui.horizontal(|ui| {
-                if let Some(workspace) = attached {
+                if let Some(workspace) = attached.as_ref() {
                     ui.label(format!(
                         "Repository · {} · {:?}",
                         workspace.branch_name.as_deref().unwrap_or("detached HEAD"),
@@ -511,6 +620,11 @@ impl HomeBotApp {
                         self.send_transport(DesktopCommand::Workspace(WorkspaceCommand::Detach {
                             chat_id,
                         }));
+                    }
+                    if ui.button("Source control").clicked() {
+                        self.send_transport(DesktopCommand::Workspace(
+                            WorkspaceCommand::LoadStatus { chat_id },
+                        ));
                     }
                 } else if let Some(repository) = first_repository
                     && ui.button("Attach isolated repository").clicked()
@@ -524,7 +638,214 @@ impl HomeBotApp {
                     }));
                 }
             });
+            if attached.is_some() {
+                self.source_control_controls(ui, chat_id);
+            }
         }
+    }
+
+    fn source_control_controls(&mut self, ui: &mut egui::Ui, chat_id: Uuid) {
+        let status = self.workspaces.vcs_status(chat_id).cloned();
+        let Some(status) = status else {
+            return;
+        };
+        let pull_request = self.workspaces.pull_request(chat_id).cloned();
+        ui.collapsing("Source control", |ui| {
+            ui.label(format!(
+                "{} · {} changed · ↑{} ↓{}",
+                status.branch.as_deref().unwrap_or("detached HEAD"),
+                status.entries.len(),
+                status.ahead,
+                status.behind
+            ));
+            self.vcs_diff_controls(ui, chat_id);
+            self.vcs_commit_controls(ui, chat_id);
+            self.vcs_branch_push_controls(ui, chat_id, &status);
+            self.vcs_pull_request_controls(ui, chat_id, &status, pull_request.as_ref());
+        });
+    }
+
+    fn vcs_diff_controls(&mut self, ui: &mut egui::Ui, chat_id: Uuid) {
+        ui.horizontal(|ui| {
+            for (label, staged) in [("Staged diff", true), ("Working diff", false)] {
+                if ui.button(label).clicked() {
+                    self.send_transport(DesktopCommand::Workspace(WorkspaceCommand::LoadDiff {
+                        chat_id,
+                        staged,
+                    }));
+                }
+            }
+            if let Some(diff) = self.workspaces.vcs_diff(chat_id, true) {
+                ui.label(format!("{} staged", diff.files.len()));
+            }
+            if let Some(diff) = self.workspaces.vcs_diff(chat_id, false) {
+                ui.label(format!("{} working", diff.files.len()));
+            }
+        });
+    }
+
+    fn vcs_commit_controls(&mut self, ui: &mut egui::Ui, chat_id: Uuid) {
+        ui.horizontal(|ui| {
+            ui.text_edit_singleline(&mut self.vcs_commit_message);
+            if ui
+                .add_enabled(
+                    !self.vcs_commit_message.trim().is_empty(),
+                    egui::Button::new("Commit all"),
+                )
+                .clicked()
+            {
+                self.send_transport(DesktopCommand::Workspace(WorkspaceCommand::Commit {
+                    chat_id,
+                    message: self.vcs_commit_message.clone(),
+                    stage_all: true,
+                }));
+            }
+        });
+    }
+
+    fn vcs_branch_push_controls(&mut self, ui: &mut egui::Ui, chat_id: Uuid, status: &VcsStatus) {
+        ui.horizontal(|ui| {
+            ui.text_edit_singleline(&mut self.vcs_branch_name);
+            if ui
+                .add_enabled(
+                    !self.vcs_branch_name.trim().is_empty() && status.entries.is_empty(),
+                    egui::Button::new("Create branch"),
+                )
+                .clicked()
+            {
+                self.send_transport(DesktopCommand::Workspace(WorkspaceCommand::CreateBranch {
+                    chat_id,
+                    branch: self.vcs_branch_name.trim().to_owned(),
+                    start_point: Some("HEAD".to_owned()),
+                }));
+            }
+            let can_push = status.branch.is_some()
+                && status.remotes.iter().any(|remote| remote.push_configured);
+            if ui
+                .add_enabled(can_push, egui::Button::new("Push"))
+                .clicked()
+            {
+                self.push_current_branch(chat_id, status);
+            }
+        });
+    }
+
+    fn push_current_branch(&mut self, chat_id: Uuid, status: &VcsStatus) {
+        let Some(branch) = status.branch.clone() else {
+            return;
+        };
+        let pending = self.pending_push.clone().unwrap_or_else(|| PendingPush {
+            chat_id,
+            request_id: Uuid::now_v7(),
+            idempotency_key: Uuid::now_v7(),
+            remote: status
+                .remotes
+                .iter()
+                .find(|remote| remote.push_configured)
+                .map_or_else(|| "origin".to_owned(), |remote| remote.name.clone()),
+            branch,
+            approval_id: None,
+        });
+        self.send_transport(DesktopCommand::Workspace(WorkspaceCommand::Push {
+            chat_id: pending.chat_id,
+            request_id: pending.request_id,
+            idempotency_key: pending.idempotency_key,
+            remote: pending.remote.clone(),
+            branch: pending.branch.clone(),
+            set_upstream: true,
+            approval_id: pending.approval_id,
+        }));
+        self.pending_push = Some(pending);
+    }
+
+    fn vcs_pull_request_controls(
+        &mut self,
+        ui: &mut egui::Ui,
+        chat_id: Uuid,
+        status: &VcsStatus,
+        metadata: Option<&PullRequestMetadata>,
+    ) {
+        let remote = status
+            .remotes
+            .iter()
+            .find(|remote| remote.push_configured)
+            .map(|remote| remote.name.clone());
+        let head = status.branch.clone();
+        ui.horizontal(|ui| {
+            ui.label("Base");
+            ui.text_edit_singleline(&mut self.vcs_base_branch);
+            let can_load =
+                remote.is_some() && head.is_some() && !self.vcs_base_branch.trim().is_empty();
+            if ui
+                .add_enabled(can_load, egui::Button::new("PR status"))
+                .clicked()
+                && let (Some(remote), Some(head_branch)) = (remote.clone(), head.clone())
+            {
+                self.send_transport(DesktopCommand::Workspace(
+                    WorkspaceCommand::LoadPullRequest {
+                        chat_id,
+                        remote,
+                        head_branch,
+                        base_branch: self.vcs_base_branch.trim().to_owned(),
+                    },
+                ));
+            }
+            if let Some(current) = metadata.and_then(|value| value.current.as_ref()) {
+                ui.label(format!("PR #{} · {}", current.number, current.state));
+            }
+        });
+        if metadata.is_some_and(|value| value.current.is_none() && value.create_available) {
+            self.vcs_create_pull_request_controls(ui, chat_id, remote, head);
+        }
+    }
+
+    fn vcs_create_pull_request_controls(
+        &mut self,
+        ui: &mut egui::Ui,
+        chat_id: Uuid,
+        remote: Option<String>,
+        head: Option<String>,
+    ) {
+        ui.horizontal(|ui| {
+            ui.text_edit_singleline(&mut self.vcs_pr_title);
+            if ui
+                .add_enabled(
+                    !self.vcs_pr_title.trim().is_empty(),
+                    egui::Button::new("Create PR"),
+                )
+                .clicked()
+                && let (Some(remote), Some(head_branch)) = (remote, head)
+            {
+                let pending =
+                    self.pending_pull_request
+                        .clone()
+                        .unwrap_or_else(|| PendingPullRequest {
+                            chat_id,
+                            request_id: Uuid::now_v7(),
+                            idempotency_key: Uuid::now_v7(),
+                            remote,
+                            head_branch,
+                            base_branch: self.vcs_base_branch.trim().to_owned(),
+                            title: self.vcs_pr_title.trim().to_owned(),
+                            approval_id: None,
+                        });
+                self.send_transport(DesktopCommand::Workspace(
+                    WorkspaceCommand::CreatePullRequest {
+                        chat_id: pending.chat_id,
+                        request_id: pending.request_id,
+                        idempotency_key: pending.idempotency_key,
+                        remote: pending.remote.clone(),
+                        head_branch: pending.head_branch.clone(),
+                        base_branch: pending.base_branch.clone(),
+                        title: pending.title.clone(),
+                        body: "Created with HomeBot.".to_owned(),
+                        draft: false,
+                        approval_id: pending.approval_id,
+                    },
+                ));
+                self.pending_pull_request = Some(pending);
+            }
+        });
     }
 
     fn checkpoint_controls(&mut self, ui: &mut egui::Ui) {

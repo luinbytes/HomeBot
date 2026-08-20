@@ -380,10 +380,15 @@ pub(super) fn vcs_error(error: &VcsError) -> ApiError {
     match error {
         VcsError::GitUnavailable => ApiError::unavailable("Git is not installed"),
         VcsError::InvalidPath | VcsError::NotRepository => ApiError::validation(&error.to_string()),
-        VcsError::DirtyWorktree | VcsError::RestoreConflict | VcsError::UnsafeWorktreePath => {
-            ApiError::conflict(&error.to_string())
+        VcsError::DirtyWorktree
+        | VcsError::RestoreConflict
+        | VcsError::NoRemote
+        | VcsError::UnsafeWorktreePath
+        | VcsError::Git(_) => ApiError::conflict(&error.to_string()),
+        VcsError::AuthenticationFailed => ApiError::conflict("Remote authentication failed"),
+        VcsError::PullRequestUnavailable => {
+            ApiError::unavailable("Pull-request integration is unavailable")
         }
-        VcsError::Git(_) => ApiError::conflict(&error.to_string()),
         VcsError::Timeout | VcsError::OutputLimit | VcsError::Io(_) => ApiError::internal(),
     }
 }

@@ -13,21 +13,23 @@ use homebot_protocol::{
     ChatWorkspaceSummary, CheckpointDiffResponse, CheckpointPhase, CheckpointRestoreSummary,
     ConversationReconciliation, CreateAttachmentRequest, CreateAttachmentResponse,
     CreateBotRequest, CreateDirectChatRequest, CreateDirectChatResponse, CreateGroupChatRequest,
-    CreateGroupChatResponse, CreateLocalMcpPluginRequest, CreateRepositoryWorkspaceRequest,
-    CreateRoutineRequest, CreateRoutineTriggerRequest, CreateSkillRequest,
-    DeliverRoutineTriggerRequest, DetachChatWorkspaceRequest, DuplicateRoutineRequest,
-    DuplicateSkillRequest, FinalizeAttachmentRequest, GroupBotStatus, GroupTimelineResponse,
-    HandoffGroupRequest, ImportSkillRequest, MissedRunPolicy, OverlapPolicy, PluginConnectionState,
-    PluginMutationRequest, PluginSummary, RecordedAction, RecordedActor,
-    RepositoryWorkspaceSummary, RestoreCheckpointRequest, RetryPolicy, RoutineDefinition,
-    RoutineInput, RoutineInputKind, RoutineJobSummary, RoutineRecordingSummary, RoutineRunSummary,
-    RoutineSchedule, RoutineStep, RoutineStepStatus, RoutineSummary, RoutineTriggerDefinition,
-    RoutineTriggerSource, RunRoutineRequest, SecretSummary, SendGroupMessageRequest,
-    SendMessageRequest, SendMessageResponse, SkillAssignmentRequest, SkillBundle, SkillContext,
-    SkillDefinition, SkillImportConflictPolicy, SkillSummary, SkillToolReference,
-    StartRoutineRecordingRequest, TurnCheckpointSummary, UpdateBotRequest,
-    UpdateGroupParticipantRequest, UpdateRoutineRequest, UpdateSkillRequest, WorkingTreeCondition,
-    WorkspaceBranchesResponse, WorkspaceMode,
+    CreateGroupChatResponse, CreateLocalMcpPluginRequest, CreatePullRequestRequest,
+    CreateRepositoryWorkspaceRequest, CreateRoutineRequest, CreateRoutineTriggerRequest,
+    CreateSkillRequest, DeliverRoutineTriggerRequest, DetachChatWorkspaceRequest,
+    DuplicateRoutineRequest, DuplicateSkillRequest, FinalizeAttachmentRequest, GroupBotStatus,
+    GroupTimelineResponse, HandoffGroupRequest, ImportSkillRequest, MissedRunPolicy, OverlapPolicy,
+    PluginConnectionState, PluginMutationRequest, PluginSummary, PullRequestMetadata,
+    PullRequestMutationResponse, RecordedAction, RecordedActor, RepositoryWorkspaceSummary,
+    RestoreCheckpointRequest, RetryPolicy, RoutineDefinition, RoutineInput, RoutineInputKind,
+    RoutineJobSummary, RoutineRecordingSummary, RoutineRunSummary, RoutineSchedule, RoutineStep,
+    RoutineStepStatus, RoutineSummary, RoutineTriggerDefinition, RoutineTriggerSource,
+    RunRoutineRequest, SecretSummary, SendGroupMessageRequest, SendMessageRequest,
+    SendMessageResponse, SkillAssignmentRequest, SkillBundle, SkillContext, SkillDefinition,
+    SkillImportConflictPolicy, SkillSummary, SkillToolReference, StartRoutineRecordingRequest,
+    TurnCheckpointSummary, UpdateBotRequest, UpdateGroupParticipantRequest, UpdateRoutineRequest,
+    UpdateSkillRequest, VcsCommitRequest, VcsCommitResult, VcsCreateBranchRequest,
+    VcsMutationStatus, VcsPushRequest, VcsRemoteMutationResponse, VcsStatus, WorkingTreeCondition,
+    WorkingTreeDiffResponse, WorkspaceBranchesResponse, WorkspaceMode,
 };
 use homebot_providers::{
     ActivityKind, ActivityStatus as ProviderActivityStatus, ApprovalDecision, CompactRequest,
@@ -3448,5 +3450,428 @@ async fn generated_artifacts_are_server_owned_authenticated_and_remotely_address
         )
         .await?;
     assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+    Ok(())
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn source_control_is_server_owned_idempotent_and_remote_push_requires_approval()
+-> Result<(), Box<dyn std::error::Error>> {
+    use std::process::Command as StdCommand;
+
+    let repository = tempfile::tempdir()?;
+    let remote = tempfile::tempdir()?;
+    let run_git = |root: &std::path::Path,
+                   arguments: &[&str]|
+     -> Result<String, Box<dyn std::error::Error>> {
+        let output = StdCommand::new("/usr/bin/git")
+            .arg("-C")
+            .arg(root)
+            .args(arguments)
+            .output()?;
+        if !output.status.success() {
+            return Err(String::from_utf8_lossy(&output.stderr).into_owned().into());
+        }
+        Ok(String::from_utf8(output.stdout)?)
+    };
+    run_git(repository.path(), &["init", "-b", "main"])?;
+    run_git(
+        repository.path(),
+        &["config", "user.name", "HomeBot Fixture"],
+    )?;
+    run_git(
+        repository.path(),
+        &["config", "user.email", "fixture@homebot.invalid"],
+    )?;
+    std::fs::write(repository.path().join("README.md"), "baseline\n")?;
+    run_git(repository.path(), &["add", "README.md"])?;
+    run_git(repository.path(), &["commit", "-m", "baseline"])?;
+    run_git(remote.path(), &["init", "--bare"])?;
+    run_git(
+        repository.path(),
+        &[
+            "remote",
+            "add",
+            "origin",
+            remote.path().to_str().ok_or("invalid remote path")?,
+        ],
+    )?;
+    run_git(
+        repository.path(),
+        &[
+            "remote",
+            "add",
+            "github",
+            "https://github.com/luinbytes/HomeBot.git",
+        ],
+    )?;
+    let gh_fixture = tempfile::tempdir()?;
+    let gh = gh_fixture.path().join("gh");
+    std::fs::write(
+        &gh,
+        "#!/bin/sh\nif [ \"$2\" = \"create\" ]; then echo https://github.com/luinbytes/HomeBot/pull/42; exit 0; fi\necho '{\"number\":42,\"url\":\"https://github.com/luinbytes/HomeBot/pull/42\",\"title\":\"HomeBot source control\",\"state\":\"OPEN\",\"headRefName\":\"homebot/approved\",\"baseRefName\":\"main\"}'\n",
+    )?;
+    let mut gh_permissions = std::fs::metadata(&gh)?.permissions();
+    gh_permissions.set_mode(0o700);
+    std::fs::set_permissions(&gh, gh_permissions)?;
+
+    let directory = tempfile::tempdir()?;
+    let storage = Storage::open(&directory.path().join("homebot.db")).await?;
+    let bot = storage
+        .create_bot(
+            Uuid::nil(),
+            homebot_domain::Bot::create("Patch", "Coding")?,
+            1,
+        )
+        .await?;
+    let chat = storage
+        .create_direct_chat(Uuid::nil(), bot.id.0, Uuid::now_v7(), 2)
+        .await?;
+    let workspace_id = Uuid::now_v7();
+    storage
+        .create_repository_workspace(&homebot_storage::RepositoryWorkspaceRecord {
+            id: workspace_id,
+            owner_id: Uuid::nil(),
+            name: "Fixture".to_owned(),
+            root_path: std::fs::canonicalize(repository.path())?
+                .to_string_lossy()
+                .into_owned(),
+            created_at_ms: 3,
+            updated_at_ms: 3,
+        })
+        .await?;
+    storage
+        .attach_chat_workspace(&homebot_storage::ChatWorkspaceRecord {
+            owner_id: Uuid::nil(),
+            chat_id: chat.id,
+            workspace_id,
+            mode: WorkspaceMode::Primary,
+            worktree_path: None,
+            branch_name: Some("main".to_owned()),
+            base_ref: None,
+            created_at_ms: 4,
+            updated_at_ms: 4,
+        })
+        .await?;
+    let app = router(
+        AppState::new(storage.clone(), "correct-token").with_git_runtime(
+            Arc::new(homebot_vcs::GitRuntime::discover()?.with_github_cli(Some(gh))),
+            directory.path().join("worktrees"),
+        ),
+    );
+    let status_url = format!("/api/v1/chats/{}/vcs/status", chat.id);
+    let unauthorized = app
+        .clone()
+        .oneshot(Request::get(&status_url).body(Body::empty())?)
+        .await?;
+    assert_eq!(unauthorized.status(), StatusCode::UNAUTHORIZED);
+
+    std::fs::write(repository.path().join("README.md"), "working change\n")?;
+    std::fs::write(repository.path().join("new.txt"), "new file\n")?;
+    run_git(repository.path(), &["add", "new.txt"])?;
+    let status = app
+        .clone()
+        .oneshot(
+            Request::get(&status_url)
+                .header("authorization", "Bearer correct-token")
+                .body(Body::empty())?,
+        )
+        .await?;
+    let status: VcsStatus = response_json(status).await?;
+    assert_eq!(status.branch.as_deref(), Some("main"));
+    assert_eq!(status.entries.len(), 2);
+    assert!(status.remotes.iter().any(|remote| remote.name == "origin"));
+    let staged = app
+        .clone()
+        .oneshot(
+            Request::get(format!("/api/v1/chats/{}/vcs/diff?staged=true", chat.id))
+                .header("authorization", "Bearer correct-token")
+                .body(Body::empty())?,
+        )
+        .await?;
+    assert!(
+        response_json::<WorkingTreeDiffResponse>(staged)
+            .await?
+            .patch
+            .contains("new.txt")
+    );
+    let unstaged = app
+        .clone()
+        .oneshot(
+            Request::get(format!("/api/v1/chats/{}/vcs/diff", chat.id))
+                .header("authorization", "Bearer correct-token")
+                .body(Body::empty())?,
+        )
+        .await?;
+    assert!(
+        response_json::<WorkingTreeDiffResponse>(unstaged)
+            .await?
+            .patch
+            .contains("working change")
+    );
+
+    let commit = VcsCommitRequest {
+        request_id: Uuid::now_v7(),
+        idempotency_key: Uuid::now_v7(),
+        message: "Apply working changes".to_owned(),
+        stage_all: true,
+    };
+    let created = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            &format!("/api/v1/chats/{}/vcs/commit", chat.id),
+            &commit,
+        ))
+        .await?;
+    assert_eq!(created.status(), StatusCode::CREATED);
+    let committed: VcsCommitResult = response_json(created).await?;
+    let replay = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            &format!("/api/v1/chats/{}/vcs/commit", chat.id),
+            &commit,
+        ))
+        .await?;
+    assert_eq!(replay.status(), StatusCode::OK);
+    assert_eq!(response_json::<VcsCommitResult>(replay).await?, committed);
+
+    let branch = VcsCreateBranchRequest {
+        request_id: Uuid::now_v7(),
+        idempotency_key: Uuid::now_v7(),
+        branch: "homebot/approved".to_owned(),
+        start_point: Some("main".to_owned()),
+    };
+    let created = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            &format!("/api/v1/chats/{}/vcs/branches", chat.id),
+            &branch,
+        ))
+        .await?;
+    assert_eq!(created.status(), StatusCode::CREATED);
+    assert_eq!(
+        response_json::<VcsStatus>(created).await?.branch.as_deref(),
+        Some("homebot/approved")
+    );
+
+    let mut push = VcsPushRequest {
+        request_id: Uuid::now_v7(),
+        idempotency_key: Uuid::now_v7(),
+        remote: "origin".to_owned(),
+        branch: "homebot/approved".to_owned(),
+        set_upstream: true,
+        approval_id: None,
+    };
+    let pending = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            &format!("/api/v1/chats/{}/vcs/push", chat.id),
+            &push,
+        ))
+        .await?;
+    assert_eq!(pending.status(), StatusCode::ACCEPTED);
+    let pending: VcsRemoteMutationResponse = response_json(pending).await?;
+    assert_eq!(pending.status, VcsMutationStatus::ApprovalRequired);
+    let approval = pending.approval.ok_or("missing approval")?;
+    let duplicate = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            &format!("/api/v1/chats/{}/vcs/push", chat.id),
+            &push,
+        ))
+        .await?;
+    assert_eq!(
+        response_json::<VcsRemoteMutationResponse>(duplicate)
+            .await?
+            .approval
+            .ok_or("missing duplicate approval")?
+            .id,
+        approval.id
+    );
+    let denied = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            &format!("/api/v1/approvals/{}/decision", approval.id),
+            &ApprovalDecisionRequest {
+                request_id: Uuid::now_v7(),
+                idempotency_key: Uuid::now_v7(),
+                allow: false,
+            },
+        ))
+        .await?;
+    assert_eq!(denied.status(), StatusCode::OK);
+    push.approval_id = Some(approval.id);
+    let blocked = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            &format!("/api/v1/chats/{}/vcs/push", chat.id),
+            &push,
+        ))
+        .await?;
+    assert_eq!(blocked.status(), StatusCode::CONFLICT);
+    assert!(
+        run_git(
+            remote.path(),
+            &["show-ref", "--verify", "refs/heads/homebot/approved"]
+        )
+        .is_err()
+    );
+
+    push.request_id = Uuid::now_v7();
+    push.idempotency_key = Uuid::now_v7();
+    push.approval_id = None;
+    let pending = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            &format!("/api/v1/chats/{}/vcs/push", chat.id),
+            &push,
+        ))
+        .await?;
+    let pending: VcsRemoteMutationResponse = response_json(pending).await?;
+    let approval = pending.approval.ok_or("missing approval")?;
+    let allowed = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            &format!("/api/v1/approvals/{}/decision", approval.id),
+            &ApprovalDecisionRequest {
+                request_id: Uuid::now_v7(),
+                idempotency_key: Uuid::now_v7(),
+                allow: true,
+            },
+        ))
+        .await?;
+    assert_eq!(allowed.status(), StatusCode::OK);
+    push.approval_id = Some(approval.id);
+    let pushed = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            &format!("/api/v1/chats/{}/vcs/push", chat.id),
+            &push,
+        ))
+        .await?;
+    assert_eq!(pushed.status(), StatusCode::CREATED);
+    let pushed: VcsRemoteMutationResponse = response_json(pushed).await?;
+    assert_eq!(pushed.status, VcsMutationStatus::Completed);
+    assert_eq!(
+        run_git(remote.path(), &["rev-parse", "refs/heads/homebot/approved"])?.trim(),
+        committed.commit_oid
+    );
+    let replay = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            &format!("/api/v1/chats/{}/vcs/push", chat.id),
+            &push,
+        ))
+        .await?;
+    assert_eq!(replay.status(), StatusCode::OK);
+    assert_eq!(
+        response_json::<VcsRemoteMutationResponse>(replay).await?,
+        pushed
+    );
+    assert!(
+        storage
+            .vcs_operation_result(Uuid::nil(), chat.id, push.idempotency_key, "push")
+            .await?
+            .is_some()
+    );
+
+    let metadata = app
+        .clone()
+        .oneshot(
+            Request::get(format!(
+                "/api/v1/chats/{}/vcs/pull-request?remote=github&head_branch=homebot%2Fapproved&base_branch=main",
+                chat.id
+            ))
+            .header("authorization", "Bearer correct-token")
+            .body(Body::empty())?,
+        )
+        .await?;
+    let metadata: PullRequestMetadata = response_json(metadata).await?;
+    assert_eq!(metadata.repository.as_deref(), Some("luinbytes/HomeBot"));
+    assert_eq!(
+        metadata.current.as_ref().map(|current| current.number),
+        Some(42)
+    );
+    assert!(
+        metadata
+            .compare_url
+            .as_deref()
+            .is_some_and(|url| url.starts_with("https://github.com/luinbytes/HomeBot/compare/"))
+    );
+
+    let mut pull_request = CreatePullRequestRequest {
+        request_id: Uuid::now_v7(),
+        idempotency_key: Uuid::now_v7(),
+        remote: "github".to_owned(),
+        head_branch: "homebot/approved".to_owned(),
+        base_branch: "main".to_owned(),
+        title: "HomeBot source control".to_owned(),
+        body: "Verified through the shared server contract.".to_owned(),
+        draft: false,
+        approval_id: None,
+    };
+    let pending = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            &format!("/api/v1/chats/{}/vcs/pull-request", chat.id),
+            &pull_request,
+        ))
+        .await?;
+    assert_eq!(pending.status(), StatusCode::ACCEPTED);
+    let pending: PullRequestMutationResponse = response_json(pending).await?;
+    let approval = pending.approval.ok_or("missing pull request approval")?;
+    let allowed = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            &format!("/api/v1/approvals/{}/decision", approval.id),
+            &ApprovalDecisionRequest {
+                request_id: Uuid::now_v7(),
+                idempotency_key: Uuid::now_v7(),
+                allow: true,
+            },
+        ))
+        .await?;
+    assert_eq!(allowed.status(), StatusCode::OK);
+    pull_request.approval_id = Some(approval.id);
+    let created = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            &format!("/api/v1/chats/{}/vcs/pull-request", chat.id),
+            &pull_request,
+        ))
+        .await?;
+    assert_eq!(created.status(), StatusCode::CREATED);
+    let created: PullRequestMutationResponse = response_json(created).await?;
+    assert_eq!(created.status, VcsMutationStatus::Completed);
+    assert_eq!(
+        created.result.as_ref().map(|result| result.number),
+        Some(42)
+    );
+    let replay = app
+        .oneshot(json_request(
+            "POST",
+            &format!("/api/v1/chats/{}/vcs/pull-request", chat.id),
+            &pull_request,
+        ))
+        .await?;
+    assert_eq!(replay.status(), StatusCode::OK);
+    assert_eq!(
+        response_json::<PullRequestMutationResponse>(replay).await?,
+        created
+    );
     Ok(())
 }

@@ -316,7 +316,7 @@ fn validate_pair(
     Ok(())
 }
 
-async fn workspace_path(
+pub(super) async fn workspace_path(
     state: &AppState,
     chat_id: Uuid,
 ) -> Result<(homebot_storage::ChatWorkspaceRecord, String), ApiError> {

@@ -259,6 +259,48 @@ data class DetachChatWorkspaceRequest(val request_id: String, val idempotency_ke
 data class WorkspaceBranchesResponse(val branches: List<String>)
 
 @Serializable
+data class VcsStatusEntry(val path: String, val previous_path: String? = null, val staged: String? = null, val unstaged: String? = null, val conflicted: Boolean)
+
+@Serializable
+data class VcsRemoteSummary(val name: String, val fetch_configured: Boolean, val push_configured: Boolean)
+
+@Serializable
+data class VcsStatus(val head_oid: String? = null, val branch: String? = null, val detached: Boolean, val upstream: String? = null, val ahead: Int, val behind: Int, val conflicted: Boolean, val entries: List<VcsStatusEntry>, val remotes: List<VcsRemoteSummary>)
+
+@Serializable
+data class WorkingTreeDiffResponse(val staged: Boolean, val patch: String, val files: List<FileChange>)
+
+@Serializable
+data class VcsCommitRequest(val request_id: String, val idempotency_key: String, val message: String, val stage_all: Boolean)
+
+@Serializable
+data class VcsCommitResult(val commit_oid: String, val branch: String? = null)
+
+@Serializable
+data class VcsCreateBranchRequest(val request_id: String, val idempotency_key: String, val branch: String, val start_point: String? = null)
+
+@Serializable
+data class VcsPushRequest(val request_id: String, val idempotency_key: String, val remote: String, val branch: String, val set_upstream: Boolean, val approval_id: String? = null)
+
+@Serializable
+data class VcsPushResult(val remote: String, val branch: String, val updated: Boolean)
+
+@Serializable
+data class VcsRemoteMutationResponse(val status: String, val approval: ApprovalSummary? = null, val result: VcsPushResult? = null)
+
+@Serializable
+data class PullRequestSummary(val number: Long, val url: String, val title: String, val state: String, val head_branch: String, val base_branch: String)
+
+@Serializable
+data class PullRequestMetadata(val remote: String, val provider: String, val repository: String? = null, val head_branch: String, val base_branch: String, val compare_url: String? = null, val create_available: Boolean, val current: PullRequestSummary? = null)
+
+@Serializable
+data class CreatePullRequestRequest(val request_id: String, val idempotency_key: String, val remote: String, val head_branch: String, val base_branch: String, val title: String, val body: String, val draft: Boolean, val approval_id: String? = null)
+
+@Serializable
+data class PullRequestMutationResponse(val status: String, val approval: ApprovalSummary? = null, val result: PullRequestSummary? = null)
+
+@Serializable
 data class TurnCheckpointSummary(val id: String, val chat_id: String, val workspace_id: String, val message_id: String? = null, val phase: String, val created_at_unix_ms: Long)
 
 @Serializable

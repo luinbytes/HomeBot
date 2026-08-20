@@ -61,6 +61,9 @@
     "create_local_mcp_plugin_request": {
       "$ref": "#/$defs/CreateLocalMcpPluginRequest"
     },
+    "create_pull_request_request": {
+      "$ref": "#/$defs/CreatePullRequestRequest"
+    },
     "create_repository_workspace_request": {
       "$ref": "#/$defs/CreateRepositoryWorkspaceRequest"
     },
@@ -108,6 +111,12 @@
     },
     "plugin_mutation_request": {
       "$ref": "#/$defs/PluginMutationRequest"
+    },
+    "pull_request_metadata": {
+      "$ref": "#/$defs/PullRequestMetadata"
+    },
+    "pull_request_mutation_response": {
+      "$ref": "#/$defs/PullRequestMutationResponse"
     },
     "repository_workspace": {
       "$ref": "#/$defs/RepositoryWorkspaceSummary"
@@ -172,6 +181,27 @@
     "update_skill_request": {
       "$ref": "#/$defs/UpdateSkillRequest"
     },
+    "vcs_commit_request": {
+      "$ref": "#/$defs/VcsCommitRequest"
+    },
+    "vcs_commit_result": {
+      "$ref": "#/$defs/VcsCommitResult"
+    },
+    "vcs_create_branch_request": {
+      "$ref": "#/$defs/VcsCreateBranchRequest"
+    },
+    "vcs_push_request": {
+      "$ref": "#/$defs/VcsPushRequest"
+    },
+    "vcs_remote_mutation_response": {
+      "$ref": "#/$defs/VcsRemoteMutationResponse"
+    },
+    "vcs_status": {
+      "$ref": "#/$defs/VcsStatus"
+    },
+    "working_tree_diff": {
+      "$ref": "#/$defs/WorkingTreeDiffResponse"
+    },
     "workspace_branches": {
       "$ref": "#/$defs/WorkspaceBranchesResponse"
     }
@@ -201,6 +231,16 @@
     "repository_workspace",
     "chat_workspace",
     "workspace_branches",
+    "vcs_status",
+    "working_tree_diff",
+    "vcs_commit_request",
+    "vcs_commit_result",
+    "vcs_create_branch_request",
+    "vcs_push_request",
+    "vcs_remote_mutation_response",
+    "pull_request_metadata",
+    "create_pull_request_request",
+    "pull_request_mutation_response",
     "turn_checkpoint",
     "checkpoint_diff",
     "restore_checkpoint_request",
@@ -1464,6 +1504,55 @@
         "program"
       ]
     },
+    "CreatePullRequestRequest": {
+      "type": "object",
+      "properties": {
+        "approval_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid"
+        },
+        "base_branch": {
+          "type": "string"
+        },
+        "body": {
+          "type": "string"
+        },
+        "draft": {
+          "type": "boolean"
+        },
+        "head_branch": {
+          "type": "string"
+        },
+        "idempotency_key": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "remote": {
+          "type": "string"
+        },
+        "request_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "title": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "request_id",
+        "idempotency_key",
+        "remote",
+        "head_branch",
+        "base_branch",
+        "title",
+        "body",
+        "draft"
+      ]
+    },
     "CreateRepositoryWorkspaceRequest": {
       "type": "object",
       "properties": {
@@ -2454,6 +2543,129 @@
       "required": [
         "minimum",
         "maximum"
+      ]
+    },
+    "PullRequestMetadata": {
+      "type": "object",
+      "properties": {
+        "base_branch": {
+          "type": "string"
+        },
+        "compare_url": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "create_available": {
+          "type": "boolean"
+        },
+        "current": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PullRequestSummary"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "head_branch": {
+          "type": "string"
+        },
+        "provider": {
+          "$ref": "#/$defs/PullRequestProvider"
+        },
+        "remote": {
+          "type": "string"
+        },
+        "repository": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "remote",
+        "provider",
+        "head_branch",
+        "base_branch",
+        "create_available"
+      ]
+    },
+    "PullRequestMutationResponse": {
+      "type": "object",
+      "properties": {
+        "approval": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ApprovalSummary"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "result": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PullRequestSummary"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "status": {
+          "$ref": "#/$defs/VcsMutationStatus"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "status"
+      ]
+    },
+    "PullRequestProvider": {
+      "type": "string",
+      "enum": [
+        "git_hub",
+        "unsupported"
+      ]
+    },
+    "PullRequestSummary": {
+      "type": "object",
+      "properties": {
+        "base_branch": {
+          "type": "string"
+        },
+        "head_branch": {
+          "type": "string"
+        },
+        "number": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "state": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "url": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "number",
+        "url",
+        "title",
+        "state",
+        "head_branch",
+        "base_branch"
       ]
     },
     "QueuedPromptSummary": {
@@ -3892,6 +4104,27 @@
         {
           "type": "object",
           "properties": {
+            "chat_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "kind": {
+              "type": "string",
+              "const": "vcs_status_changed"
+            },
+            "status": {
+              "$ref": "#/$defs/VcsStatus"
+            }
+          },
+          "required": [
+            "kind",
+            "chat_id",
+            "status"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
             "checkpoint": {
               "$ref": "#/$defs/TurnCheckpointSummary"
             },
@@ -4589,6 +4822,309 @@
         "definition"
       ]
     },
+    "VcsChangeKind": {
+      "type": "string",
+      "enum": [
+        "added",
+        "modified",
+        "deleted",
+        "renamed",
+        "copied",
+        "type_changed",
+        "unmerged",
+        "untracked"
+      ]
+    },
+    "VcsCommitRequest": {
+      "type": "object",
+      "properties": {
+        "idempotency_key": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "message": {
+          "type": "string"
+        },
+        "request_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "stage_all": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "request_id",
+        "idempotency_key",
+        "message",
+        "stage_all"
+      ]
+    },
+    "VcsCommitResult": {
+      "type": "object",
+      "properties": {
+        "branch": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "commit_oid": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "commit_oid"
+      ]
+    },
+    "VcsCreateBranchRequest": {
+      "type": "object",
+      "properties": {
+        "branch": {
+          "type": "string"
+        },
+        "idempotency_key": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "request_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "start_point": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "request_id",
+        "idempotency_key",
+        "branch"
+      ]
+    },
+    "VcsMutationStatus": {
+      "type": "string",
+      "enum": [
+        "completed",
+        "approval_required"
+      ]
+    },
+    "VcsPushRequest": {
+      "type": "object",
+      "properties": {
+        "approval_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid"
+        },
+        "branch": {
+          "type": "string"
+        },
+        "idempotency_key": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "remote": {
+          "type": "string"
+        },
+        "request_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "set_upstream": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "request_id",
+        "idempotency_key",
+        "remote",
+        "branch",
+        "set_upstream"
+      ]
+    },
+    "VcsPushResult": {
+      "type": "object",
+      "properties": {
+        "branch": {
+          "type": "string"
+        },
+        "remote": {
+          "type": "string"
+        },
+        "updated": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "remote",
+        "branch",
+        "updated"
+      ]
+    },
+    "VcsRemoteMutationResponse": {
+      "type": "object",
+      "properties": {
+        "approval": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ApprovalSummary"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "result": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/VcsPushResult"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "status": {
+          "$ref": "#/$defs/VcsMutationStatus"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "status"
+      ]
+    },
+    "VcsRemoteSummary": {
+      "type": "object",
+      "properties": {
+        "fetch_configured": {
+          "type": "boolean"
+        },
+        "name": {
+          "type": "string"
+        },
+        "push_configured": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "fetch_configured",
+        "push_configured"
+      ]
+    },
+    "VcsStatus": {
+      "type": "object",
+      "properties": {
+        "ahead": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "behind": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "branch": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "conflicted": {
+          "type": "boolean"
+        },
+        "detached": {
+          "type": "boolean"
+        },
+        "entries": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/VcsStatusEntry"
+          }
+        },
+        "head_oid": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "remotes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/VcsRemoteSummary"
+          }
+        },
+        "upstream": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "detached",
+        "ahead",
+        "behind",
+        "conflicted",
+        "entries",
+        "remotes"
+      ]
+    },
+    "VcsStatusEntry": {
+      "type": "object",
+      "properties": {
+        "conflicted": {
+          "type": "boolean"
+        },
+        "path": {
+          "type": "string"
+        },
+        "previous_path": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "staged": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/VcsChangeKind"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "unstaged": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/VcsChangeKind"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "conflicted"
+      ]
+    },
     "WorkingTreeCondition": {
       "oneOf": [
         {
@@ -4604,6 +5140,29 @@
           "type": "string",
           "const": "unavailable"
         }
+      ]
+    },
+    "WorkingTreeDiffResponse": {
+      "type": "object",
+      "properties": {
+        "files": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/FileChange"
+          }
+        },
+        "patch": {
+          "type": "string"
+        },
+        "staged": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "staged",
+        "patch",
+        "files"
       ]
     },
     "WorkspaceBranchesResponse": {

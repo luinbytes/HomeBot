@@ -148,7 +148,287 @@ async fn execute_workspace(
             });
             Ok(())
         }
+        command => execute_vcs(client, config, command, events).await,
     }
+}
+
+async fn execute_vcs(
+    client: &Client,
+    config: &RuntimeConfig,
+    command: WorkspaceCommand,
+    events: &Sender<DesktopEvent>,
+) -> Result<(), TransportFailure> {
+    match command {
+        WorkspaceCommand::LoadStatus { chat_id } => {
+            load_vcs_status(client, config, events, chat_id).await
+        }
+        WorkspaceCommand::LoadDiff { chat_id, staged } => {
+            load_vcs_diff(client, config, events, chat_id, staged).await
+        }
+        WorkspaceCommand::Commit {
+            chat_id,
+            message,
+            stage_all,
+        } => commit_vcs(client, config, events, chat_id, message, stage_all).await,
+        WorkspaceCommand::CreateBranch {
+            chat_id,
+            branch,
+            start_point,
+        } => create_vcs_branch(client, config, events, chat_id, branch, start_point).await,
+        WorkspaceCommand::Push {
+            chat_id,
+            request_id,
+            idempotency_key,
+            remote,
+            branch,
+            set_upstream,
+            approval_id,
+        } => {
+            push_vcs(
+                client,
+                config,
+                events,
+                chat_id,
+                super::VcsPushRequest {
+                    request_id,
+                    idempotency_key,
+                    remote,
+                    branch,
+                    set_upstream,
+                    approval_id,
+                },
+            )
+            .await
+        }
+        WorkspaceCommand::LoadPullRequest {
+            chat_id,
+            remote,
+            head_branch,
+            base_branch,
+        } => {
+            load_pull_request(
+                client,
+                config,
+                events,
+                chat_id,
+                remote,
+                head_branch,
+                base_branch,
+            )
+            .await
+        }
+        WorkspaceCommand::CreatePullRequest {
+            chat_id,
+            request_id,
+            idempotency_key,
+            remote,
+            head_branch,
+            base_branch,
+            title,
+            body,
+            draft,
+            approval_id,
+        } => {
+            create_pull_request(
+                client,
+                config,
+                events,
+                chat_id,
+                super::CreatePullRequestRequest {
+                    request_id,
+                    idempotency_key,
+                    remote,
+                    head_branch,
+                    base_branch,
+                    title,
+                    body,
+                    draft,
+                    approval_id,
+                },
+            )
+            .await
+        }
+        _ => unreachable!("repository workspace commands are handled before VCS dispatch"),
+    }
+}
+
+async fn load_vcs_status(
+    client: &Client,
+    config: &RuntimeConfig,
+    events: &Sender<DesktopEvent>,
+    chat_id: Uuid,
+) -> Result<(), TransportFailure> {
+    let status = get_json(
+        client,
+        config,
+        &format!("/api/v1/chats/{chat_id}/vcs/status"),
+    )
+    .await?;
+    let _ = events.send(DesktopEvent::VcsStatus { chat_id, status });
+    Ok(())
+}
+
+async fn load_vcs_diff(
+    client: &Client,
+    config: &RuntimeConfig,
+    events: &Sender<DesktopEvent>,
+    chat_id: Uuid,
+    staged: bool,
+) -> Result<(), TransportFailure> {
+    let diff = get_json(
+        client,
+        config,
+        &format!("/api/v1/chats/{chat_id}/vcs/diff?staged={staged}"),
+    )
+    .await?;
+    let _ = events.send(DesktopEvent::VcsDiff { chat_id, diff });
+    Ok(())
+}
+
+async fn commit_vcs(
+    client: &Client,
+    config: &RuntimeConfig,
+    events: &Sender<DesktopEvent>,
+    chat_id: Uuid,
+    message: String,
+    stage_all: bool,
+) -> Result<(), TransportFailure> {
+    let body = super::VcsCommitRequest {
+        request_id: Uuid::now_v7(),
+        idempotency_key: Uuid::now_v7(),
+        message,
+        stage_all,
+    };
+    let result = post_json(
+        client,
+        config,
+        &format!("/api/v1/chats/{chat_id}/vcs/commit"),
+        &body,
+    )
+    .await?;
+    let _ = events.send(DesktopEvent::VcsCommit { chat_id, result });
+    Ok(())
+}
+
+async fn create_vcs_branch(
+    client: &Client,
+    config: &RuntimeConfig,
+    events: &Sender<DesktopEvent>,
+    chat_id: Uuid,
+    branch: String,
+    start_point: Option<String>,
+) -> Result<(), TransportFailure> {
+    let body = super::VcsCreateBranchRequest {
+        request_id: Uuid::now_v7(),
+        idempotency_key: Uuid::now_v7(),
+        branch,
+        start_point,
+    };
+    let status = post_json(
+        client,
+        config,
+        &format!("/api/v1/chats/{chat_id}/vcs/branches"),
+        &body,
+    )
+    .await?;
+    let _ = events.send(DesktopEvent::VcsStatus { chat_id, status });
+    Ok(())
+}
+
+async fn push_vcs(
+    client: &Client,
+    config: &RuntimeConfig,
+    events: &Sender<DesktopEvent>,
+    chat_id: Uuid,
+    body: super::VcsPushRequest,
+) -> Result<(), TransportFailure> {
+    let response = post_json(
+        client,
+        config,
+        &format!("/api/v1/chats/{chat_id}/vcs/push"),
+        &body,
+    )
+    .await?;
+    let _ = events.send(DesktopEvent::VcsRemoteMutation { chat_id, response });
+    Ok(())
+}
+
+async fn load_pull_request(
+    client: &Client,
+    config: &RuntimeConfig,
+    events: &Sender<DesktopEvent>,
+    chat_id: Uuid,
+    remote: String,
+    head_branch: String,
+    base_branch: String,
+) -> Result<(), TransportFailure> {
+    let metadata = response_json(
+        authenticated(
+            client,
+            config,
+            Method::GET,
+            &format!("/api/v1/chats/{chat_id}/vcs/pull-request"),
+        )
+        .query(&[
+            ("remote", remote),
+            ("head_branch", head_branch),
+            ("base_branch", base_branch),
+        ])
+        .send()
+        .await
+        .map_err(request_error)?,
+    )
+    .await?;
+    let _ = events.send(DesktopEvent::PullRequestMetadata { chat_id, metadata });
+    Ok(())
+}
+
+async fn create_pull_request(
+    client: &Client,
+    config: &RuntimeConfig,
+    events: &Sender<DesktopEvent>,
+    chat_id: Uuid,
+    body: super::CreatePullRequestRequest,
+) -> Result<(), TransportFailure> {
+    let response = post_json(
+        client,
+        config,
+        &format!("/api/v1/chats/{chat_id}/vcs/pull-request"),
+        &body,
+    )
+    .await?;
+    let _ = events.send(DesktopEvent::PullRequestMutation { chat_id, response });
+    Ok(())
+}
+
+async fn get_json<T: serde::de::DeserializeOwned>(
+    client: &Client,
+    config: &RuntimeConfig,
+    path: &str,
+) -> Result<T, TransportFailure> {
+    response_json(
+        authenticated(client, config, Method::GET, path)
+            .send()
+            .await
+            .map_err(request_error)?,
+    )
+    .await
+}
+
+async fn post_json<T: serde::de::DeserializeOwned, B: serde::Serialize>(
+    client: &Client,
+    config: &RuntimeConfig,
+    path: &str,
+    body: &B,
+) -> Result<T, TransportFailure> {
+    response_json(
+        authenticated(client, config, Method::POST, path)
+            .json(body)
+            .send()
+            .await
+            .map_err(request_error)?,
+    )
+    .await
 }
 
 async fn execute_bot(

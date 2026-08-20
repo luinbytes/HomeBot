@@ -179,6 +179,21 @@ pub(super) async fn resolve_approval(
         .storage
         .chat_approval(state.owner_id, approval_id)
         .await?;
+    if approval.capability.starts_with("homebot.git.") {
+        state
+            .policy_engine
+            .decide(
+                approval_id,
+                if allow {
+                    homebot_tools::ApprovalDecision::AllowOnce
+                } else {
+                    homebot_tools::ApprovalDecision::Deny
+                },
+            )
+            .await
+            .map_err(|_| ApiError::conflict("The Git approval is no longer active"))?;
+        return Ok(());
+    }
     let operation = state
         .chat_operations
         .lock()

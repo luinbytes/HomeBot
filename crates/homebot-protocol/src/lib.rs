@@ -7,8 +7,9 @@ pub use homebot_routines::{
 };
 pub use homebot_skills::{SkillContext, SkillDefinition, SkillToolReference};
 pub use homebot_vcs::{
-    CheckpointPhase, ConversationReconciliation, FileChange, FileChangeStatus,
-    WorkingTreeCondition, WorkspaceMode,
+    CheckpointPhase, ConversationReconciliation, FileChange, FileChangeStatus, PullRequestMetadata,
+    PullRequestProvider, PullRequestSummary, VcsChangeKind, VcsCommitResult, VcsPushResult,
+    VcsRemoteSummary, VcsStatus, VcsStatusEntry, WorkingTreeCondition, WorkspaceMode,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -140,6 +141,10 @@ pub enum ServerEventBody {
     },
     ChatWorkspaceRemoved {
         chat_id: Uuid,
+    },
+    VcsStatusChanged {
+        chat_id: Uuid,
+        status: VcsStatus,
     },
     TurnCheckpointChanged {
         checkpoint: TurnCheckpointSummary,
@@ -1032,6 +1037,80 @@ pub struct WorkspaceBranchesResponse {
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
+pub struct WorkingTreeDiffResponse {
+    pub staged: bool,
+    pub patch: String,
+    pub files: Vec<FileChange>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct VcsCommitRequest {
+    pub request_id: Uuid,
+    pub idempotency_key: Uuid,
+    pub message: String,
+    pub stage_all: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct VcsCreateBranchRequest {
+    pub request_id: Uuid,
+    pub idempotency_key: Uuid,
+    pub branch: String,
+    pub start_point: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct VcsPushRequest {
+    pub request_id: Uuid,
+    pub idempotency_key: Uuid,
+    pub remote: String,
+    pub branch: String,
+    pub set_upstream: bool,
+    pub approval_id: Option<Uuid>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VcsMutationStatus {
+    Completed,
+    ApprovalRequired,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct VcsRemoteMutationResponse {
+    pub status: VcsMutationStatus,
+    pub approval: Option<ApprovalSummary>,
+    pub result: Option<VcsPushResult>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CreatePullRequestRequest {
+    pub request_id: Uuid,
+    pub idempotency_key: Uuid,
+    pub remote: String,
+    pub head_branch: String,
+    pub base_branch: String,
+    pub title: String,
+    pub body: String,
+    pub draft: bool,
+    pub approval_id: Option<Uuid>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PullRequestMutationResponse {
+    pub status: VcsMutationStatus,
+    pub approval: Option<ApprovalSummary>,
+    pub result: Option<PullRequestSummary>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct TurnCheckpointSummary {
     pub id: Uuid,
     pub chat_id: Uuid,
@@ -1302,6 +1381,16 @@ pub struct ProtocolV1Schema {
     pub repository_workspace: RepositoryWorkspaceSummary,
     pub chat_workspace: ChatWorkspaceSummary,
     pub workspace_branches: WorkspaceBranchesResponse,
+    pub vcs_status: VcsStatus,
+    pub working_tree_diff: WorkingTreeDiffResponse,
+    pub vcs_commit_request: VcsCommitRequest,
+    pub vcs_commit_result: VcsCommitResult,
+    pub vcs_create_branch_request: VcsCreateBranchRequest,
+    pub vcs_push_request: VcsPushRequest,
+    pub vcs_remote_mutation_response: VcsRemoteMutationResponse,
+    pub pull_request_metadata: PullRequestMetadata,
+    pub create_pull_request_request: CreatePullRequestRequest,
+    pub pull_request_mutation_response: PullRequestMutationResponse,
     pub turn_checkpoint: TurnCheckpointSummary,
     pub checkpoint_diff: CheckpointDiffResponse,
     pub restore_checkpoint_request: RestoreCheckpointRequest,

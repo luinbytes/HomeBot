@@ -10,7 +10,7 @@ This file is operational state for coding agents. It is not user-facing product 
 - Current Linear issues: 6C7-35 CI verification and 6C7-36 SQLite persistence
 - Parallel scaffold issue: 6C7-35 remains In Progress but cannot close until compilation and CI are verified
 - Current Git branch: `feat/m0-contracts`
-- Latest verified remote commit: `fbd43e6311e79a3c493cbdfab5829bd2940d9d7a`
+- Latest verified remote commit: `9b365871f76e815f646849b2775fd688e07ee90e`
 - Public repository: `https://github.com/luinbytes/HomeBot`
 - Repository owner and commit identity: `luinbytes <42706009+luinbytes@users.noreply.github.com>`
 
@@ -31,6 +31,7 @@ Current blockers:
 - Rust is installed in isolated task paths under `/tmp/homebot-rustup` and `/tmp/homebot-cargo`.
 - GitHub Actions runs 1 and 2 are queued; CI success is unverified.
 - Exact current-app pixel captures remain deliberately gated to 6C7-42.
+- The first SQLx CI audit exposed an unused default MySQL/RSA dependency with RUSTSEC-2023-0071 and missing `checks: write` permission. The working tree disables SQLx default features, has verified `rsa` is absent from the graph, and grants only the check-report permission required by the audit action.
 - GitHub Actions at `4166431` verified Rust quality, Linux, macOS arm64, dependency audit, and dependency policy. The macOS Intel job exposed a retired `macos-13` label; the working tree now uses GitHub's documented `macos-15-intel` label.
 - 6C7-36 now has an initial transactional migration, WAL/integrity-safe storage open, monotonic outbox, replay, backup, non-overwriting restore, restart durability, migration rollback, corruption, and concurrent reader/writer tests in the working tree.
 

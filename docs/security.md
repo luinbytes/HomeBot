@@ -2,6 +2,10 @@
 
 Status: M0 security contract. HomeBot assumes model output, repository content, websites, attachments, provider events, plugins, and MCP servers are untrusted.
 
+## Dependency audit exceptions
+
+`RUSTSEC-2023-0071` is ignored only in the GitHub cargo-audit lockfile scan because Cargo locks SQLx's optional MySQL/RSA graph even though HomeBot builds SQLx with default features disabled and SQLite alone. CI separately fails if `rsa` appears in the selected dependency tree. The exception must be removed if SQLx changes its lock graph or HomeBot selects a feature that makes RSA reachable.
+
 ## Protected assets
 
 User files and repositories, browser sessions, credentials, provider accounts, device sessions, chat history, routine authority, source-control remotes, local processes, and availability of the host.

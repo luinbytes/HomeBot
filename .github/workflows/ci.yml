@@ -6,6 +6,7 @@ on:
   pull_request:
 
 permissions:
+  checks: write
   contents: read
 
 jobs:
@@ -54,7 +55,11 @@ jobs:
       - uses: actions/checkout@v4
       - uses: rustsec/audit-check@v2
         with:
+          # Cargo locks SQLx's unselected optional MySQL/RSA graph. HomeBot enables
+          # SQLite only; the reproducible check below proves rsa is unreachable.
+          ignore: RUSTSEC-2023-0071
           token: ${{ secrets.GITHUB_TOKEN }}
+      - run: test -z "$(cargo tree | grep -E '(^| )rsa v')"
 
   dependency-policy:
     name: Dependency policy

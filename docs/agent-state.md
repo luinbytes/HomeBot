@@ -6,10 +6,10 @@ This file is operational state for coding agents. It is not user-facing product 
 
 ## Current state
 
-- Current milestone: M1, Local Runtime Foundation
-- Current Linear issue: 6C7-72 local computer capability layer
+- Current milestone: M2, Grok Bot Desktop Parity
+- Current Linear issue: 6C7-42 visual token system and screenshot regression harness
 - Current Git branch: `feat/m0-contracts`
-- Latest verified remote commit: `1d2ce03685bcafa0acc224e372832a15bc4418c1`
+- Latest verified remote commit: `51aa3f845c75096fea3a9ee18790ae689f770b83`
 - Public repository: `https://github.com/luinbytes/HomeBot`
 - Repository owner and commit identity: `luinbytes <42706009+luinbytes@users.noreply.github.com>`
 
@@ -34,12 +34,13 @@ Architecture decisions currently frozen:
 Current blockers:
 
 - Rust is installed in isolated task paths under `/tmp/homebot-rustup` and `/tmp/homebot-cargo`.
-- Exact current-app pixel captures remain deliberately gated to 6C7-42.
+- Exact current-app pixel captures remain required during 6C7-42; only legitimate public/current-app references may be used.
 - 6C7-37 is Done. GitHub Actions run 32352700967 passed all six Linux, macOS Intel, macOS arm64, quality, dependency-policy, and audit jobs.
 - 6C7-38 is Done. GitHub Actions run 32354047604 passed the full six-job matrix.
 - 6C7-39 is Done. GitHub Actions run 32355805077 passed the full six-job matrix. The current environment has no `codex` binary, so the real-binary smoke test skips with an explicit reason; fake executable App Server fixtures verify structured start, resume, streaming, approval, and interruption round trips.
 - 6C7-40 is Done. GitHub Actions run 32358033480 passed the full six-job matrix after the dependency policy explicitly admitted webpki-roots' permissive CDLA-Permissive-2.0 license.
-- 6C7-72 is In Progress. The complete local capability layer is implemented locally and passes the full workspace quality gate plus cargo-deny. The exact next action is to publish the coherent change, verify the full remote CI matrix, add evidence to Linear and close the issue only after every job passes.
+- M1 is complete. 6C7-72 and epic 6C7-34 are Done after GitHub Actions run 32361115615 passed all six jobs.
+- 6C7-42 is In Progress. The exact next action is to implement the reusable egui visual token/component layer and deterministic macOS/Linux screenshot golden harness, then verify it locally and remotely.
 
 ## Completed work
 
@@ -57,18 +58,20 @@ Current blockers:
 - ProviderAdapter lifecycle/runtime and bounded child-process supervision completed; Linear 6C7-38 is Done.
 - Codex App Server adapter implemented with profile-scoped binary/environment configuration, auth and model discovery, structured threads/turns, streaming activities, approvals, usage, cancellation, compaction, normalized failures, and fixture-backed protocol tests; Linear 6C7-39 is Done.
 - Claude Code, OpenAI-compatible BYOK and constrained generic process adapters implemented with normalized streaming, cancellation, failures and request-time secret references; Linear 6C7-40 is Done.
+- Scoped filesystem, PTY/process and loopback CDP browser capabilities with server-side policy, approvals, activity and hostile-input tests completed; Linear 6C7-72 is Done.
+- M1 epic 6C7-34 is Done.
 
 ## Immediate next work
 
-1. Publish the completed 6C7-72 local capability layer to `main` under the `luinbytes` identity.
-2. Verify Rust quality, dependency policy/audit and all three platform build jobs remotely, then update and close 6C7-72.
-3. Refresh Linear, close M1 epic 6C7-34 if all of its children remain verified, and immediately start the highest-priority unblocked M2 issue.
+1. Implement 6C7-42 visual tokens for typography, spacing, radii, surfaces, shadows, avatars, layout, composer and motion.
+2. Add deterministic screenshot fixtures and cross-platform golden comparison tooling for the major shell states.
+3. Verify the full workspace and remote CI matrix, update Linear with evidence, then immediately continue to 6C7-43.
 
 ## Verification state
 
 Verified:
 
-- Local and remote Git trees matched at `1d2ce03` before the current coherent 6C7-72 change. GitHub Actions run 32358417587 passed all six jobs for that transition commit.
+- Local and remote Git trees match at `51aa3f8`. GitHub Actions run 32361115615 passed all six jobs for 6C7-72.
 - All three remote commits are attributed to GitHub account `luinbytes`.
 - Working tree was clean before `feat/m0-contracts` was created.
 - All committed TOML files parse with Python `tomllib`.
@@ -95,7 +98,7 @@ Not yet verified:
 
 - `homebot-server` covers every stated 6C7-37 transport behaviour locally and in the passing remote matrix.
 - The first-class Codex and Claude adapters cannot perform real authenticated provider messages in this environment because neither CLI binary is installed. Their structured protocol fixtures pass. The OpenAI-compatible adapter is verified against a local protocol-faithful HTTP/SSE fixture, not a user credential. The local computer capability layer is implemented but no real Chrome process is installed in this environment, so CDP behavior is verified against a protocol-faithful loopback fixture. Desktop egui, Android, routines, plugins, VCS, pairing, and packaging are not implemented.
-- The protocol defines product-level v1 envelopes and lifecycle contracts; server persistence and transport behaviour remain implementation work in later issues.
+- Desktop visual tokens and screenshot regression infrastructure are the active implementation work.
 - No release artifact exists. Do not describe the project as installable or v1-ready.
 
 ## Environment notes

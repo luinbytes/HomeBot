@@ -3,5 +3,6 @@
   "sequence": 42,
   "event_id": "00000000-0000-0000-0000-000000000000",
   "kind": "snapshot",
-  "snapshot_version": 7
+  "boundary_sequence": 42,
+  "snapshot": { "bots": [], "chats": [] }
 }

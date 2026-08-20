@@ -12,7 +12,10 @@ async fn main() -> anyhow::Result<()> {
 
     let app = Router::new().route("/health", get(health));
     let listener = TcpListener::bind(DEFAULT_BIND).await?;
-    tracing::info!(address = DEFAULT_BIND, "HomeBot server listening on loopback");
+    tracing::info!(
+        address = DEFAULT_BIND,
+        "HomeBot server listening on loopback"
+    );
     axum::serve(listener, app).await?;
     Ok(())
 }

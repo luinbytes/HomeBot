@@ -1,4 +1,4 @@
-//! Provider-independent HomeBot product concepts.
+//! Provider-independent `HomeBot` product concepts.
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -18,6 +18,10 @@ pub struct Bot {
 
 impl Bot {
     /// Creates a Bot after applying domain-level validation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DomainError::EmptyBotName`] when `name` is blank.
     pub fn create(name: impl Into<String>, title: impl Into<String>) -> Result<Self, DomainError> {
         let name = name.into().trim().to_owned();
         if name.is_empty() {

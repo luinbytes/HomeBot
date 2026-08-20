@@ -1,0 +1,6 @@
+{
+  "kind": "command",
+  "request_id": "00000000-0000-0000-0000-000000000001",
+  "idempotency_key": "00000000-0000-0000-0000-000000000002",
+  "command": { "type": "create_bot", "name": "Ada", "title": "Engineer" }
+}

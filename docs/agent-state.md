@@ -7,10 +7,10 @@ This file is operational state for coding agents. It is not user-facing product 
 ## Current state
 
 - Current milestone: M0, Product & Architecture Baseline
-- Current Linear issues: 6C7-31 parity inventory and visual states; 6C7-32 protocol contract
+- Current Linear issue: 6C7-32 protocol contract
 - Parallel scaffold issue: 6C7-35 remains In Progress but cannot close until compilation and CI are verified
 - Current Git branch: `feat/m0-contracts`
-- Latest verified remote commit: `1a8e24317514dcb52cd9247f797696466be10aae`
+- Latest verified remote commit: `40269eb0917f9df1c9cc7f3756a5d0b9b5d0de2c`
 - Public repository: `https://github.com/luinbytes/HomeBot`
 - Repository owner and commit identity: `luinbytes <42706009+luinbytes@users.noreply.github.com>`
 
@@ -28,10 +28,10 @@ Architecture decisions currently frozen:
 
 Current blockers:
 
-- This execution host has no `rustc` or `cargo`, so Rust formatting, clippy, compilation, and tests cannot run locally.
+- Rust is installed in isolated task paths under `/tmp/homebot-rustup` and `/tmp/homebot-cargo`.
 - GitHub Actions runs 1 and 2 are queued; CI success is unverified.
-- 6C7-31 now has a complete behavioural reference/golden-ID index, but exact current-app pixel captures remain deliberately gated to 6C7-42.
-- Android protocol generation or mechanical schema validation has not been implemented, so 6C7-32 is not complete.
+- Exact current-app pixel captures remain deliberately gated to 6C7-42.
+- 6C7-32 implementation is locally verified and awaits commit, push, and Linear evidence.
 
 ## Completed work
 
@@ -40,14 +40,14 @@ Current blockers:
 - Architecture, protocol, provider, Android, routines, plugins, development, release, installation, and security documents created.
 - Initial Grok Bot feature parity matrix created from authoritative SpaceXAI documentation.
 - M0 security/capability threat model implemented in `docs/security.md`; Linear 6C7-33 is Done.
+- Grok Bot behavioural parity inventory and 56-state visual reference index completed; Linear 6C7-31 is Done.
 
 ## Immediate next work
 
-1. Review 6C7-31 against `docs/visual-reference-index.md`; keep exact pixel capture as an explicit 6C7-42 implementation gate.
-2. Complete 6C7-32 with full protocol schemas, golden fixtures, malformed/skew fixtures, and Android mechanical validation scaffolding.
-3. Close epic 6C7-30 only after its remaining children are genuinely Done.
-4. Finish 6C7-35 by running rustfmt, clippy, tests, dependency policy, and all target compile jobs through a working Rust environment/CI.
-5. Refresh Linear and start 6C7-36, SQLite persistence, migrations, and event outbox.
+1. Commit and push the verified 6C7-32 protocol contract, then attach evidence and mark it Done.
+2. Close epic 6C7-30 after confirming all three child issues remain Done.
+3. Finish 6C7-35 by verifying GitHub Actions and all target compile jobs.
+4. Refresh Linear and start 6C7-36, SQLite persistence, migrations, and event outbox.
 
 ## Verification state
 
@@ -60,24 +60,28 @@ Verified:
 - Protocol JSON schema and golden JSON fixture parse successfully.
 - Local documentation link targets referenced by the README exist.
 - `git diff --check` passed for the committed baseline.
+- `cargo fmt --all -- --check` passes.
+- `cargo test --workspace` passes with six tests.
+- `cargo clippy --workspace --all-targets -- -D warnings` passes.
+- Rust JSON Schema and generated Android binding drift checks pass.
 
 Not yet verified:
 
-- Rust formatting, clippy, compilation, unit tests, integration tests, or server health endpoint.
 - GitHub Actions jobs.
-- Android build or schema compatibility.
+- Android application build; the generated protocol source is not compiled until the M4 Gradle module lands.
 - Any end-user HomeBot behaviour beyond static contract inspection.
 
 ## Known failures and incomplete implementation
 
 - `homebot-server` is a development-only unauthenticated loopback health stub.
 - Storage, authentication, WebSocket replay, providers, desktop egui, Android, routines, plugins, tools, VCS, pairing, and packaging are not implemented.
-- The committed protocol schema is an initial envelope subset, not the complete v1 schema required by 6C7-32.
+- The protocol defines product-level v1 envelopes and lifecycle contracts; server persistence and transport behaviour remain implementation work in later issues.
 - No release artifact exists. Do not describe the project as installable or v1-ready.
 
 ## Environment notes
 
 - Workspace path in the current Work Mode environment: `/workspace/scratch/e0bbfdbe8a8b/HomeBot`.
+- For Rust commands export `RUSTUP_HOME=/tmp/homebot-rustup`, `CARGO_HOME=/tmp/homebot-cargo`, and prepend `/tmp/homebot-cargo/bin` to `PATH`.
 - Shell Git cannot authenticate to GitHub in this environment. Use the connected GitHub tools for remote writes, or configure normal Git authentication in a future environment.
 - The GitHub connector can create trees, commits, and update refs; remote commits created this way are correctly attributed to `luinbytes`.
 - Local repository config already sets the correct `luinbytes` noreply identity.

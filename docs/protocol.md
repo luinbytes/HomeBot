@@ -1,6 +1,6 @@
 # Client/server protocol v1
 
-Status: M0 contract. Wire schemas begin in `protocol/schema/` and are Rust-owned.
+Status: M0 v1 contract. The Rust types in `homebot-protocol` own the wire contract. The checked JSON Schema lives in `protocol/schema/`, and the checked Android binding is generated into `android/protocol/`.
 
 ## Transport
 
@@ -47,3 +47,14 @@ The server sends nonce-bearing pings. A client responds with pong before the adv
 - Unknown event kinds are ignored only if the negotiated version marks them ignorable; otherwise the client resnapshots or fails closed.
 - Android models must be generated from or mechanically checked against the committed schema in CI.
 - Golden fixtures cover every envelope, malformed input, unknown fields, skew, reconnect, duplicate mutation, cancellation race, and slow-client path.
+
+## Contract drift checks
+
+Run both checks before changing a wire type:
+
+```sh
+cargo run -p homebot-protocol --example export_schema -- --check
+cargo run -p homebot-protocol --example export_android -- --check
+```
+
+Regenerate without `--check` after an intentional compatible contract change. A breaking change requires a new protocol version and parallel schema/binding rather than rewriting v1 semantics.

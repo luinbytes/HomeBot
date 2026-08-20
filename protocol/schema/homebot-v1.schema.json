@@ -1,16 +1,687 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://homebot.dev/protocol/v1/homebot.schema.json",
-  "title": "HomeBot protocol v1 envelope",
+  "title": "ProtocolV1Schema",
+  "description": "Root exported to the committed machine-readable JSON Schema.",
   "type": "object",
-  "required": ["protocol_version", "sequence", "event_id", "kind"],
   "properties": {
-    "protocol_version": { "const": 1 },
-    "sequence": { "type": "integer", "minimum": 1 },
-    "event_id": { "type": "string", "format": "uuid" },
-    "kind": {
-      "enum": ["hello", "snapshot", "command_accepted", "command_completed", "command_failed", "ping"]
+    "attachment": {
+      "$ref": "#/$defs/Attachment"
+    },
+    "client_message": {
+      "$ref": "#/$defs/ClientMessage"
+    },
+    "create_attachment_request": {
+      "$ref": "#/$defs/CreateAttachmentRequest"
+    },
+    "create_attachment_response": {
+      "$ref": "#/$defs/CreateAttachmentResponse"
+    },
+    "error": {
+      "$ref": "#/$defs/ErrorEnvelope"
+    },
+    "finalize_attachment_request": {
+      "$ref": "#/$defs/FinalizeAttachmentRequest"
+    },
+    "server_event": {
+      "$ref": "#/$defs/ServerEvent"
     }
   },
-  "additionalProperties": true
+  "required": [
+    "client_message",
+    "server_event",
+    "error",
+    "create_attachment_request",
+    "create_attachment_response",
+    "finalize_attachment_request",
+    "attachment"
+  ],
+  "$defs": {
+    "Attachment": {
+      "type": "object",
+      "properties": {
+        "filename": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "media_type": {
+          "type": "string"
+        },
+        "sha256": {
+          "type": "string"
+        },
+        "size_bytes": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "filename",
+        "media_type",
+        "size_bytes",
+        "sha256"
+      ]
+    },
+    "BotSummary": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "name": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "name",
+        "title"
+      ]
+    },
+    "ChatSummary": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "last_sequence": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "title": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "title",
+        "last_sequence"
+      ]
+    },
+    "ClientMessage": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "client_version": {
+              "type": "string"
+            },
+            "device_session": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "const": "hello"
+            },
+            "protocol_version": {
+              "type": "integer",
+              "format": "uint16",
+              "maximum": 65535,
+              "minimum": 0
+            },
+            "resume_after": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint64",
+              "minimum": 0
+            }
+          },
+          "required": [
+            "kind",
+            "protocol_version",
+            "client_version",
+            "device_session"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "command": {
+              "$ref": "#/$defs/Command"
+            },
+            "idempotency_key": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "kind": {
+              "type": "string",
+              "const": "command"
+            },
+            "request_id": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          "required": [
+            "kind",
+            "request_id",
+            "idempotency_key",
+            "command"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "cancel"
+            },
+            "operation_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "request_id": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          "required": [
+            "kind",
+            "request_id",
+            "operation_id"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "pong"
+            },
+            "nonce": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          "required": [
+            "kind",
+            "nonce"
+          ]
+        }
+      ]
+    },
+    "Command": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "title": {
+              "type": "string"
+            },
+            "type": {
+              "type": "string",
+              "const": "create_bot"
+            }
+          },
+          "required": [
+            "type",
+            "name",
+            "title"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "chat_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "content": {
+              "type": "string"
+            },
+            "type": {
+              "type": "string",
+              "const": "send_message"
+            }
+          },
+          "required": [
+            "type",
+            "chat_id",
+            "content"
+          ]
+        }
+      ]
+    },
+    "CreateAttachmentRequest": {
+      "type": "object",
+      "properties": {
+        "filename": {
+          "type": "string"
+        },
+        "idempotency_key": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "media_type": {
+          "type": "string"
+        },
+        "request_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "sha256": {
+          "type": "string"
+        },
+        "size_bytes": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "request_id",
+        "idempotency_key",
+        "filename",
+        "media_type",
+        "size_bytes",
+        "sha256"
+      ]
+    },
+    "CreateAttachmentResponse": {
+      "type": "object",
+      "properties": {
+        "attachment_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "expires_at_unix_ms": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "upload_url": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "attachment_id",
+        "upload_url",
+        "expires_at_unix_ms"
+      ]
+    },
+    "ErrorCode": {
+      "type": "string",
+      "enum": [
+        "unauthenticated",
+        "forbidden",
+        "approval_required",
+        "not_found",
+        "conflict",
+        "validation_failed",
+        "rate_limited",
+        "provider_unavailable",
+        "operation_cancelled",
+        "resume_unavailable",
+        "protocol_version_unsupported",
+        "internal"
+      ]
+    },
+    "ErrorEnvelope": {
+      "type": "object",
+      "properties": {
+        "code": {
+          "$ref": "#/$defs/ErrorCode"
+        },
+        "details": true,
+        "message": {
+          "type": "string"
+        },
+        "request_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid"
+        },
+        "retry_after_ms": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "retryable": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "code",
+        "message",
+        "retryable"
+      ]
+    },
+    "FinalizeAttachmentRequest": {
+      "type": "object",
+      "properties": {
+        "idempotency_key": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "request_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "sha256": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "request_id",
+        "idempotency_key",
+        "sha256"
+      ]
+    },
+    "ProtocolRange": {
+      "type": "object",
+      "properties": {
+        "maximum": {
+          "type": "integer",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0
+        },
+        "minimum": {
+          "type": "integer",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "minimum",
+        "maximum"
+      ]
+    },
+    "ResumeDisposition": {
+      "type": "string",
+      "enum": [
+        "replayed",
+        "snapshot_required"
+      ]
+    },
+    "ServerEvent": {
+      "type": "object",
+      "properties": {
+        "event_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "protocol_version": {
+          "type": "integer",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0
+        },
+        "sequence": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "heartbeat_interval_ms": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "heartbeat_timeout_ms": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "kind": {
+              "type": "string",
+              "const": "hello"
+            },
+            "resume": {
+              "$ref": "#/$defs/ResumeDisposition"
+            },
+            "server_version": {
+              "type": "string"
+            },
+            "supported_protocols": {
+              "$ref": "#/$defs/ProtocolRange"
+            }
+          },
+          "required": [
+            "kind",
+            "server_version",
+            "supported_protocols",
+            "resume",
+            "heartbeat_interval_ms",
+            "heartbeat_timeout_ms"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "boundary_sequence": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            },
+            "kind": {
+              "type": "string",
+              "const": "snapshot"
+            },
+            "snapshot": {
+              "$ref": "#/$defs/Snapshot"
+            }
+          },
+          "required": [
+            "kind",
+            "boundary_sequence",
+            "snapshot"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "bot": {
+              "$ref": "#/$defs/BotSummary"
+            },
+            "kind": {
+              "type": "string",
+              "const": "bot_changed"
+            }
+          },
+          "required": [
+            "kind",
+            "bot"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "chat_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "delta": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "const": "message_delta"
+            },
+            "message_id": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          "required": [
+            "kind",
+            "chat_id",
+            "message_id",
+            "delta"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "command_accepted"
+            },
+            "operation_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "request_id": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          "required": [
+            "kind",
+            "request_id",
+            "operation_id"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "command_completed"
+            },
+            "operation_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "request_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "result": true
+          },
+          "required": [
+            "kind",
+            "request_id",
+            "operation_id",
+            "result"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "error": {
+              "$ref": "#/$defs/ErrorEnvelope"
+            },
+            "kind": {
+              "type": "string",
+              "const": "command_failed"
+            },
+            "operation_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "request_id": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          "required": [
+            "kind",
+            "request_id",
+            "operation_id",
+            "error"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "command_cancelled"
+            },
+            "operation_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "request_id": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          "required": [
+            "kind",
+            "request_id",
+            "operation_id"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "ping"
+            },
+            "nonce": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          "required": [
+            "kind",
+            "nonce"
+          ]
+        }
+      ],
+      "required": [
+        "protocol_version",
+        "sequence",
+        "event_id"
+      ]
+    },
+    "Snapshot": {
+      "type": "object",
+      "properties": {
+        "bots": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/BotSummary"
+          }
+        },
+        "chats": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ChatSummary"
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "bots",
+        "chats"
+      ]
+    }
+  }
 }

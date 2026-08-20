@@ -1843,14 +1843,23 @@ dependencies = [
 name = "homebot-desktop"
 version = "0.0.1"
 dependencies = [
+ "axum",
  "eframe",
  "egui",
  "egui_kittest",
+ "futures-util",
  "homebot-protocol",
+ "homebot-server",
+ "homebot-storage",
  "image",
  "notify-rust",
+ "reqwest",
  "serde",
  "serde_json",
+ "sha2",
+ "tempfile",
+ "tokio",
+ "tokio-tungstenite",
  "uuid",
 ]
 

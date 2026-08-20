@@ -43,9 +43,9 @@ Current blockers:
 
 ## Immediate next work
 
-1. Implement 6C7-73's transport/runtime layer and wire it into the real `HomeBotApp` startup and update lifecycle.
-2. Verify local-server supervision, authentication/version negotiation, snapshot hydration, sequenced WebSocket replay/fallback and authenticated Bot/chat/approval/attachment/stop mutations.
-3. Add end-to-end tests for clean local launch, authentication/version failures, unavailable server, restart/resume without duplicates and graceful shutdown.
+1. Commit and push the completed 6C7-73 transport/runtime integration, then verify all remote CI jobs.
+2. Record acceptance evidence in Linear and close 6C7-73 only after remote CI passes; re-close M2 epic 6C7-41 only after reconciling every child and the integrated-app postcondition.
+3. Refresh the dependency graph and immediately start the next highest-priority unblocked M3 issue.
 
 ## Verification state
 
@@ -57,7 +57,7 @@ Verified at the latest remote baseline:
 
 Verified locally for the active issue:
 
-- `./scripts/check.sh` passes on Rust 1.98.0: formatting, clippy, the complete workspace suite with 114 tests, protocol/schema drift checks, generated Android binding drift checks, and all 15 exact desktop visual fixtures.
+- `./scripts/check.sh` passes on Rust 1.98.0: formatting, clippy, the complete workspace suite with 117 tests, protocol/schema drift checks, generated Android binding drift checks, and all 15 exact desktop visual fixtures.
 - Targeted routine/plugin/storage/server/desktop suites also pass independently.
 - The routine verification patch proves durable version 2 edits, recording conversion, dry-run side-effect freedom, real manual Bot dispatch, MCP `tools/call`, approval stops, safe durable failures, editable recovery after invalid finish, restart persistence and server-event-only desktop projection updates.
 - Secret-specific coverage passes: three vault tests, two policy-gated secret-tool tests, one authenticated API canary test, and two storage/migration tests.
@@ -65,6 +65,7 @@ Verified locally for the active issue:
 - Protocol schema and generated Android bindings match the Rust-owned contract with no drift.
 
 - Cargo-deny 0.20.2 reports advisories, bans, licenses, and sources all OK with only the existing documented warnings.
+- 6C7-73 integration tests prove clean loopback supervision, authenticated version/hello/snapshot startup, real Bot/chat/message and attachment APIs, restart persistence, cursor resume without duplicate events, graceful WebSocket shutdown, and distinct authentication/version/unavailable failures. Existing server coverage proves stale-cursor snapshot fallback.
 
 6C7-52 completion evidence is recorded in Linear and the issue is Done.
 

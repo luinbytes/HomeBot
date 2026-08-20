@@ -134,7 +134,7 @@ impl Default for DesktopSettings {
             theme: ThemePreference::System,
             notifications: NotificationPreferences::default(),
             launch_at_login: false,
-            server_endpoint: "http://127.0.0.1:7777".to_owned(),
+            server_endpoint: "http://127.0.0.1:7123".to_owned(),
             provider_status: "Codex · Ready".to_owned(),
             paired_devices: 0,
             update_state: UpdateState::Current,

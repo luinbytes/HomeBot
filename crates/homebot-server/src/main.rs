@@ -1,4 +1,4 @@
-use homebot_server::{AppState, router};
+use homebot_server::{AppState, serve};
 use homebot_storage::Storage;
 use tokio::net::TcpListener;
 
@@ -21,12 +21,15 @@ async fn main() -> anyhow::Result<()> {
         .parent()
         .unwrap_or_else(|| std::path::Path::new("."))
         .join("artifacts");
-    let app = router(AppState::new(storage, &token).with_artifact_root(artifact_root));
-    let listener = TcpListener::bind(DEFAULT_BIND).await?;
-    tracing::info!(
-        address = DEFAULT_BIND,
-        "HomeBot server listening on loopback"
-    );
-    axum::serve(listener, app).await?;
+    let state = AppState::new(storage, &token).with_artifact_root(artifact_root);
+    let bind = std::env::var("HOMEBOT_BIND").unwrap_or_else(|_| DEFAULT_BIND.to_owned());
+    let listener = TcpListener::bind(&bind).await?;
+    tracing::info!(address = bind, "HomeBot server listening on loopback");
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+    tokio::spawn(async move {
+        let _ = tokio::signal::ctrl_c().await;
+        let _ = shutdown_tx.send(());
+    });
+    serve(listener, state, shutdown_rx).await?;
     Ok(())
 }

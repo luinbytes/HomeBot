@@ -10,7 +10,9 @@ The self-host machine replaces Grok Bot's hosted computer. This is a deployment 
 
 ## Process topology
 
-The headless `homebot-server` is authoritative. Desktop and Android use its authenticated HTTP and WebSocket API. Desktop can launch and supervise a bundled child server, discover its loopback endpoint, and reconnect after restart, but it has no privileged side channel.
+The headless `homebot-server` is authoritative. Desktop and Android use its authenticated HTTP and WebSocket API. In local mode the desktop binds the loopback listener and supervises the bundled server runtime on a dedicated Tokio thread; remote mode attaches to an already-running endpoint. Both modes then use the same bearer-authenticated HTTP mutations and versioned WebSocket stream. The egui roster, timeline and routine models are replaceable projections and have no privileged side channel.
+
+Desktop startup is deterministic: resolve the configured endpoint, probe health, start the bundled local runtime only when a loopback server is unavailable, negotiate the protocol range, authenticate, send the client hello, hydrate the server snapshot and then consume sequenced events. The client retains its last safe projection across a disconnect. Reconnect sends the last applied cursor, drops duplicate event IDs/sequences, applies replay in order and accepts a fresh boundary snapshot when server retention makes replay unavailable. UI command queues are drained only into authenticated Bot, chat, approval, attachment and stop endpoints. The supervisor signals upgraded WebSocket connections before graceful local shutdown so a restart cannot strand a client on an orphaned stream.
 
 Server-owned responsibilities:
 

@@ -34,6 +34,7 @@ use sha2::{Digest, Sha256};
 use std::{collections::HashMap, path::PathBuf, sync::Arc};
 use subtle::ConstantTimeEq;
 use tokio::sync::{Mutex, Notify, broadcast, mpsc, watch};
+use tokio::{net::TcpListener, sync::oneshot};
 use uuid::Uuid;
 
 const HEARTBEAT_INTERVAL: std::time::Duration = std::time::Duration::from_secs(15);
@@ -72,12 +73,14 @@ pub struct AppState {
     secret_vault: Arc<dyn SecretVault>,
     chat_operations: Arc<Mutex<HashMap<Uuid, ChatOperation>>>,
     live_events: broadcast::Sender<ServerEvent>,
+    server_shutdown: watch::Sender<bool>,
 }
 
 impl AppState {
     #[must_use]
     pub fn new(storage: Storage, bearer_token: &str) -> Self {
         let (live_events, _) = broadcast::channel(LIVE_EVENT_CAPACITY);
+        let (server_shutdown, _) = watch::channel(false);
         Self {
             storage,
             bearer_digest: Sha256::digest(bearer_token.as_bytes()).into(),
@@ -93,6 +96,7 @@ impl AppState {
             secret_vault: Arc::new(OsSecretVault::new()),
             chat_operations: Arc::new(Mutex::new(HashMap::new())),
             live_events,
+            server_shutdown,
         }
     }
 
@@ -283,12 +287,35 @@ pub fn router(state: AppState) -> Router {
         .with_state(state)
 }
 
+/// Serves the authoritative API on an already-bound listener until shutdown is requested.
+///
+/// Keeping listener ownership outside the server lets the desktop supervisor and the headless
+/// binary share exactly the same transport implementation without duplicating product logic.
+///
+/// # Errors
+///
+/// Returns a listener/connection I/O error if Axum cannot continue serving requests.
+pub async fn serve(
+    listener: TcpListener,
+    state: AppState,
+    shutdown: oneshot::Receiver<()>,
+) -> std::io::Result<()> {
+    let shutdown_signal = state.server_shutdown.clone();
+    axum::serve(listener, router(state))
+        .with_graceful_shutdown(async move {
+            let _ = shutdown.await;
+            let _ = shutdown_signal.send(true);
+        })
+        .await
+}
+
 async fn events_socket(State(state): State<AppState>, upgrade: WebSocketUpgrade) -> Response {
     upgrade.on_upgrade(move |socket| serve_events(socket, state))
 }
 
 async fn serve_events(mut socket: WebSocket, state: AppState) {
     let mut live_events = state.live_events.subscribe();
+    let mut server_shutdown = state.server_shutdown.subscribe();
     let Some(mut last_queued) = initial_sync(&mut socket, &state).await else {
         return;
     };
@@ -310,6 +337,9 @@ async fn serve_events(mut socket: WebSocket, state: AppState) {
     let mut pending_nonce = None;
     loop {
         tokio::select! {
+            changed = server_shutdown.changed() => {
+                if changed.is_err() || *server_shutdown.borrow() { break; }
+            }
             _ = heartbeat.tick() => {
                 if last_pong.elapsed() >= state.heartbeat_timeout {
                     let _ = disconnect_tx.send(true);

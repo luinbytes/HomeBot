@@ -1,7 +1,8 @@
 use eframe::egui;
 use egui::{Align, CentralPanel, Layout, RichText, SidePanel, TopBottomPanel};
 use homebot_protocol::{
-    BotAttention, BotColor, BotProviderStatus, BotShape, BotSummary, ServerEvent,
+    BotAttention, BotColor, BotProviderStatus, BotShape, BotSummary, ChatSummary, ServerEvent,
+    ServerEventBody,
 };
 use std::sync::mpsc::{Receiver, channel};
 
@@ -15,6 +16,7 @@ use crate::{
     settings::{DesktopSettings, settings_view},
     timeline::{ComposerError, TimelineModel},
     tokens::HomeBotTheme,
+    transport::{DesktopCommand, DesktopEvent, DesktopTransport, RuntimeConfig},
 };
 
 const SETTINGS_STORAGE_KEY: &str = "homebot.desktop.settings.v1";
@@ -31,6 +33,9 @@ pub struct HomeBotApp {
     settings_open: bool,
     editor_error: Option<EditorError>,
     composer_error: Option<ComposerError>,
+    transport_error: Option<String>,
+    chats: Vec<ChatSummary>,
+    transport: Option<DesktopTransport>,
 }
 
 impl Default for HomeBotApp {
@@ -48,6 +53,9 @@ impl Default for HomeBotApp {
             settings_open: false,
             editor_error: None,
             composer_error: None,
+            transport_error: None,
+            chats: Vec::new(),
+            transport: None,
         }
     }
 }
@@ -75,10 +83,14 @@ impl HomeBotApp {
         {
             app.settings = settings;
         }
+        app.transport = Some(DesktopTransport::start(RuntimeConfig::desktop_default(
+            app.settings.server_endpoint.clone(),
+        )));
         app
     }
 
     pub fn render(&mut self, context: &egui::Context) {
+        self.pump_transport(context);
         let activated: Vec<_> = self.deep_link_receiver.try_iter().collect();
         for deep_link in activated {
             self.open_deep_link(deep_link);
@@ -99,6 +111,108 @@ impl HomeBotApp {
             }
         });
         self.editor(context);
+        self.flush_transport();
+        context.request_repaint_after(std::time::Duration::from_millis(100));
+    }
+
+    fn pump_transport(&mut self, context: &egui::Context) {
+        let events = self
+            .transport
+            .as_ref()
+            .map_or_else(Vec::new, |transport| transport.try_events().collect());
+        for event in events {
+            match event {
+                DesktopEvent::Connecting => self.roster.connection = ConnectionState::Connecting,
+                DesktopEvent::Connected => {
+                    self.roster.connection = ConnectionState::Connected;
+                    self.transport_error = None;
+                }
+                DesktopEvent::Disconnected(error) => {
+                    self.roster.connection = ConnectionState::Disconnected;
+                    self.transport_error = Some(error.to_string());
+                }
+                DesktopEvent::Snapshot { snapshot, .. } => {
+                    self.roster.apply_snapshot(snapshot.bots);
+                    self.chats = snapshot.chats;
+                    self.load_selected_timeline();
+                }
+                DesktopEvent::Server(event) => {
+                    let bot_id = match &event.body {
+                        ServerEventBody::BotChanged { bot } => {
+                            self.roster.apply_change(bot.clone());
+                            Some(bot.id)
+                        }
+                        ServerEventBody::ChatChanged { chat } => {
+                            upsert_chat(&mut self.chats, chat.clone());
+                            if self.roster.selected == Some(chat.bot_id) {
+                                self.send_transport(DesktopCommand::LoadTimeline(chat.id));
+                            }
+                            Some(chat.bot_id)
+                        }
+                        _ => self.roster.selected,
+                    };
+                    let _ = self.timeline.apply_event(event.clone());
+                    let _ = self.apply_notification_event(context, &event, bot_id);
+                    if self.timeline.needs_snapshot {
+                        self.load_selected_timeline();
+                    }
+                }
+                DesktopEvent::Timeline(timeline) => self.timeline.hydrate(timeline),
+                DesktopEvent::BotMutation(response) => self.roster.apply_change(response.bot),
+                DesktopEvent::AttachmentUploaded(attachment_id) => {
+                    self.timeline.composer.attachment_ids.push(attachment_id);
+                }
+                DesktopEvent::MutationFailed(error) => {
+                    self.transport_error = Some(error.to_string());
+                }
+            }
+        }
+    }
+
+    fn flush_transport(&mut self) {
+        for command in self.roster.take_commands() {
+            self.send_transport(DesktopCommand::Bot(command));
+        }
+        let Some(bot_id) = self.roster.selected else {
+            let _ = self.timeline.take_commands();
+            return;
+        };
+        let chat_id = self
+            .timeline
+            .chat
+            .as_ref()
+            .filter(|chat| chat.bot_id == bot_id)
+            .map(|chat| chat.id);
+        for command in self.timeline.take_commands() {
+            self.send_transport(DesktopCommand::Timeline {
+                bot_id,
+                chat_id,
+                command,
+            });
+        }
+    }
+
+    fn load_selected_timeline(&mut self) {
+        let Some(bot_id) = self.roster.selected else {
+            self.timeline = TimelineModel::default();
+            return;
+        };
+        if let Some(chat) = self.chats.iter().find(|chat| chat.bot_id == bot_id) {
+            self.send_transport(DesktopCommand::LoadTimeline(chat.id));
+        } else {
+            self.timeline = TimelineModel::default();
+        }
+    }
+
+    fn send_transport(&mut self, command: DesktopCommand) {
+        let result = self.transport.as_ref().map_or_else(
+            || Err(crate::transport::TransportFailure::ServerUnavailable),
+            |transport| transport.send(command),
+        );
+        if let Err(error) = result {
+            self.transport_error = Some(error.to_string());
+            self.roster.connection = ConnectionState::Disconnected;
+        }
     }
 
     /// Emits a native notification for a newly observed server event when policy permits.
@@ -173,6 +287,7 @@ impl HomeBotApp {
                     );
                     if response.clicked() {
                         self.roster.selected = Some(bot.id);
+                        self.load_selected_timeline();
                         if bot.unread_count > 0 {
                             self.roster.queue_mark_read(bot.id);
                         }
@@ -231,6 +346,9 @@ impl HomeBotApp {
                 ConnectionState::Disconnected => {
                     ui.heading("HomeBot is offline");
                     ui.label("Your Bots are safe on the server. Reconnect to make changes.");
+                    if let Some(error) = &self.transport_error {
+                        ui.colored_label(self.theme.palette.danger, error);
+                    }
                 }
                 ConnectionState::Connecting => {
                     ui.spinner();
@@ -405,6 +523,14 @@ impl HomeBotApp {
         if keep_open && self.roster.editor.is_none() {
             self.roster.editor = Some(draft);
         }
+    }
+}
+
+fn upsert_chat(chats: &mut Vec<ChatSummary>, changed: ChatSummary) {
+    if let Some(chat) = chats.iter_mut().find(|chat| chat.id == changed.id) {
+        *chat = changed;
+    } else {
+        chats.push(changed);
     }
 }
 

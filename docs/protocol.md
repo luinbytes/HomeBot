@@ -42,6 +42,12 @@ Authenticated `/api/v1/secrets` endpoints list, create, update, and delete owner
 
 Authenticated `/api/v1/plugins` operations expose provider-neutral summaries and exact `connect`, `waiting`, `reopen`, `connected`, and `error` states. Summaries include authentication state, bounded discovered-tool metadata, enablement and Bot assignments, but never raw MCP frames or secret values. Mutations emit monotonic `plugin_changed` and `plugin_removed` events so desktop and Android render server state rather than inferring transport health.
 
+## Native desktop transport
+
+`HomeBotApp` uses `homebot-desktop::transport` as its only state-changing path. Startup probes the public health endpoint, supervises an embedded loopback server when local mode has no listener, then calls the authenticated version endpoint and opens `/api/v1/events` with the same bearer session used by remote clients. The first client frame is `hello` with protocol/client versions and an optional resume cursor. A `snapshot_required` hello is followed by a boundary snapshot; `replayed` is followed only by strictly newer retained events.
+
+The transport advances its durable cursor only for accepted state events. Heartbeat pings are answered without advancing it, duplicate or older sequences are ignored, and a sequence gap forces reconnect/replay. If replay retention has advanced, the server sends a fresh snapshot and the client atomically replaces its projections. Bot create/edit/archive/read, direct-chat creation/messages/steering/retry, approvals, stop, and the three-step attachment upload/finalize flow all use authenticated HTTP with fresh request and idempotency identifiers. Commands queued while disconnected remain pending until an authenticated connection returns.
+
 ## Routines
 
 Routine definitions contain typed inputs, expected outputs and tagged structured steps. Recording actions use the same step representation, so replay never depends on UI coordinates. Create/edit/duplicate/enable/disable/delete, recording append/finish/cancel, dry run, Run now and run history are authenticated server operations. `routine_changed`, `routine_removed`, `routine_recording_changed` and `routine_run_changed` events are durable and sequenced.

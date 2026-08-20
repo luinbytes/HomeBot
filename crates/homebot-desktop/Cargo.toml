@@ -9,15 +9,24 @@ rust-version.workspace = true
 [dependencies]
 egui.workspace = true
 eframe.workspace = true
+futures-util.workspace = true
 homebot-protocol.workspace = true
+homebot-server = { version = "=0.0.1", path = "../homebot-server" }
+homebot-storage = { version = "=0.0.1", path = "../homebot-storage" }
 notify-rust.workspace = true
+reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
+tokio.workspace = true
+tokio-tungstenite.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
+axum.workspace = true
 egui_kittest = { version = "0.32.3", features = ["snapshot"] }
 image = { version = "0.25.10", default-features = false, features = ["png"] }
+tempfile = "3.20"
 
 [lints]
 workspace = true

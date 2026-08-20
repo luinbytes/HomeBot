@@ -9,6 +9,7 @@ pub mod settings;
 pub mod showcase;
 pub mod timeline;
 pub mod tokens;
+pub mod transport;
 
 pub use showcase::{FixtureState, render_fixture};
 pub use tokens::{HomeBotTheme, ThemeMode};

@@ -6,11 +6,11 @@ This file is operational state for coding agents. It is not user-facing product 
 
 ## Current state
 
-- Current milestone: M3, Skills, Plugins, Routines & Secrets. M2 is verified complete after corrective integration.
-- Current Linear issue: 6C7-49, Skill model, library, import/export and Bot assignment (`In Progress`).
+- Current milestone: M4, T3 Code Developer Superpowers. M2 and M3 are verified complete.
+- Current Linear issue: 6C7-55, coding workspaces and isolated Git worktrees per chat (`In Progress`).
 - Current Git branch: `main`.
-- Latest verified implementation commit: `7405c8c47d3963085e4375eccfbce86daf246985`.
-- Latest verified GitHub Actions run: `32416289234`, all nine jobs passed.
+- Latest verified implementation commit: `323660afb543b6869dc17a22fba7f7d65cf6d4f4`.
+- Latest verified GitHub Actions run: `32419854283`, all nine jobs passed.
 - Public repository: `https://github.com/luinbytes/HomeBot`.
 - Required commit identity: `luinbytes <42706009+luinbytes@users.noreply.github.com>`.
 
@@ -41,13 +41,15 @@ Current blockers:
 - 6C7-52, durable routine create/edit/versioning, structured recording conversion, deterministic Bot/MCP replay, dry run, Run now, approval preservation, restart persistence, durable failures and server-driven desktop projections.
 - 6C7-73, real `HomeBotApp` authenticated transport, local authoritative-server supervision, snapshot/replay reconnect, HTTP mutation routing and restart/failure verification. M2 epic 6C7-41 is Done again with corrective evidence.
 - 6C7-53, durable headless one-shot/interval/timezone schedules, missed-run recovery, outbox-backed event/plugin triggers, deduplicated webhooks, version-pinned jobs, concurrency/overlap policy, retries, cancellation, redacted run history and v10→v11 migration safety.
-- Most recent completed issue: 6C7-53.
+- 6C7-49, provider-neutral versioned Skills, authenticated library/import/export/assignment, deterministic provider assembly, exact historical message versions, desktop projection and Android/schema contract.
+- M3 epic 6C7-48: plugins/MCP, OS-backed secrets, routine recording/replay, schedules/triggers/history, and reusable Skills.
+- Most recent completed issue: 6C7-49.
 
 ## Immediate next work
 
-1. Define 6C7-49's versioned Skill instruction/context/tool-bundle contract and migration without leaking provider-specific prompt formats.
-2. Implement owner-scoped create/edit/duplicate/delete, import/export conflict handling and multi-Bot assignment through authenticated server APIs.
-3. Assemble assigned Skill versions deterministically into provider turns and persist the exact applied versions on historical messages before completing the protocol/desktop/Android drift gates.
+1. Inventory the existing minimal `homebot-vcs` crate and define owner-scoped repository/workspace/worktree records plus the authenticated protocol contract for 6C7-55.
+2. Implement safe repository discovery/validation and optional deterministic per-chat worktree creation without changing or cleaning the user's primary working tree.
+3. Add branch/conflict/lifecycle handling, server APIs/events, SQLite migration/restart tests, hostile dirty-repository fixtures, and desktop/Android projections.
 
 ## Verification state
 
@@ -65,17 +67,19 @@ Verified locally for the active issue:
 - Secret-specific coverage passes: three vault tests, two policy-gated secret-tool tests, one authenticated API canary test, and two storage/migration tests.
 - Secret API canary coverage proves values are absent from response bytes and message/activity/outbox JSON; locked-store mutation fails with `secret_store_locked`; delete removes the value.
 - Protocol schema and generated Android bindings match the Rust-owned contract with no drift.
+- 6C7-49's full gate passes with 130 Rust tests and all 15 desktop visual fixtures. Coverage proves CRUD/duplicate/delete, import conflict policy, multi-Bot assignment, immutable idempotent edit replay, deterministic provider assembly, exact historical version retention after edit/delete/restart, v11→v12 migration, and scheduler/provider write concurrency.
 
 - Cargo-deny 0.20.2 reports advisories, bans, licenses, and sources all OK with only the existing documented warnings.
 - 6C7-73 integration tests prove clean loopback supervision, authenticated version/hello/snapshot startup, real Bot/chat/message and attachment APIs, restart persistence, cursor resume without duplicate events, graceful WebSocket shutdown, and distinct authentication/version/unavailable failures. Existing server coverage proves stale-cursor snapshot fallback.
 - 6C7-53's full gate passes at commit `7405c8c`: headless schedule restart, durable event restart, plugin filtering, forged-event denial, webhook deduplication, DST transitions, overlap/concurrency, exponential retry, cancellation, interrupted-job recovery, redacted history, v10 migration, generated schema/Android drift and desktop projections. GitHub Actions run `32416289234` passed all nine jobs.
+- GitHub Actions run `32419854283` passed all nine jobs for 6C7-49 commit `323660a`: Rust quality, dependency audit/policy, Linux, macOS Intel/Apple Silicon builds, and all three visual-golden platforms.
 
-6C7-73 and reopened M2 epic 6C7-41 completion evidence is recorded in Linear; both are Done. 6C7-53 is verified Done and 6C7-49 is In Progress.
+6C7-73 and reopened M2 epic 6C7-41 completion evidence is recorded in Linear; both are Done. 6C7-49 and M3 epic 6C7-48 are verified Done. M4 epic 6C7-54 and 6C7-55 are In Progress.
 
 ## Known failures and incomplete implementation
 
-- Android app, skills, VCS/worktrees/checkpoints, device pairing/Tailscale, packaging, and release artifacts remain incomplete roadmap work.
-- 6C7-49 Skill persistence, assignment, import/export and deterministic historical prompt application are not implemented yet.
+- Android app, VCS/worktrees/checkpoints, device pairing/Tailscale, packaging, and release artifacts remain incomplete roadmap work.
+- 6C7-55 repository workspace association and isolated worktree lifecycle are not implemented yet; `homebot-vcs` currently contains only a working-tree condition enum.
 - Real authenticated Codex/Claude round trips are unavailable in this environment. OpenAI-compatible and CDP behavior use protocol-faithful local fixtures.
 - No release artifact exists. Do not describe HomeBot as installable or v1-ready.
 

@@ -94,7 +94,8 @@ async fn bot_lifecycle_validates_persists_streams_and_reports_provider_health()
     let directory = tempfile::tempdir()?;
     let database = directory.path().join("homebot.db");
     let storage = Storage::open(&database).await?;
-    let app = router(AppState::new(storage.clone(), "correct-token"));
+    let state = AppState::new(storage.clone(), "correct-token");
+    let app = router(state.clone());
     let key = Uuid::now_v7();
     let create = CreateBotRequest {
         request_id: Uuid::now_v7(),
@@ -224,6 +225,12 @@ async fn bot_lifecycle_validates_persists_streams_and_reports_provider_health()
             .len(),
         1
     );
+    let snapshot = current_snapshot(&state).await;
+    assert_eq!(snapshot.bots.len(), 1);
+    assert_eq!(snapshot.bots[0].title, "Lead researcher");
+    let events = storage.events_after(Uuid::nil(), 0, 100).await?;
+    assert!(events.len() >= 5);
+    assert!(events.iter().all(|event| event.event_kind == "bot_changed"));
     storage.pool().close().await;
     let reopened = Storage::open(&database).await?;
     assert_eq!(reopened.list_bots(Uuid::nil(), true).await?.len(), 1);

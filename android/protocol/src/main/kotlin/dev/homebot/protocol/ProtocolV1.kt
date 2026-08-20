@@ -241,7 +241,19 @@ data class RoutineRecordingSummary(val id: String, val bot_id: String, val name:
 data class RunRoutineRequest(val request_id: String, val idempotency_key: String, val inputs: JsonElement)
 
 @Serializable
-data class RoutineRunSummary(val id: String, val routine_id: String, val routine_version_id: String, val status: String, val dry_run: Boolean, val results: List<RoutineExecutionResult>, val error_message: String? = null, val started_at_unix_ms: Long, val finished_at_unix_ms: Long? = null)
+data class RoutineRunSummary(val id: String, val routine_id: String, val routine_version_id: String, val bot_id: String, val status: String, val trigger: JsonElement, val input_metadata: JsonElement, val dry_run: Boolean, val results: List<RoutineExecutionResult>, val error_message: String? = null, val attempt_count: Int, val scheduled_for_unix_ms: Long? = null, val started_at_unix_ms: Long, val finished_at_unix_ms: Long? = null)
+
+@Serializable
+data class RoutineTriggerSummary(val id: String, val routine_id: String, val definition: JsonElement, val enabled: Boolean, val last_evaluated_at_unix_ms: Long? = null, val next_fire_at_unix_ms: Long? = null, val created_at_unix_ms: Long, val updated_at_unix_ms: Long)
+
+@Serializable
+data class CreateRoutineTriggerRequest(val request_id: String, val idempotency_key: String, val definition: JsonElement, val enabled: Boolean = true)
+
+@Serializable
+data class DeliverRoutineTriggerRequest(val request_id: String, val idempotency_key: String, val delivery_key: String, val inputs: JsonElement)
+
+@Serializable
+data class RoutineJobSummary(val id: String, val trigger_id: String, val routine_id: String, val routine_version_id: String, val delivery_key: String, val trigger: JsonElement, val input_metadata: JsonElement, val status: String, val attempt_count: Int, val scheduled_for_unix_ms: Long, val next_attempt_at_unix_ms: Long, val cancel_requested: Boolean, val error_message: String? = null, val created_at_unix_ms: Long, val started_at_unix_ms: Long? = null, val finished_at_unix_ms: Long? = null)
 
 @Serializable
 class CreateSecretRequest(val request_id: String, val idempotency_key: String, val label: String, val value: String) {

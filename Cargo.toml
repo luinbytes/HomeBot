@@ -27,6 +27,8 @@ async-trait = "0.1"
 axum = { version = "0.8", features = ["json", "ws"] }
 base64 = "0.22"
 cap-std = "4.0"
+chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
+chrono-tz = { version = "0.10", features = ["serde"] }
 egui = "0.32.3"
 eframe = { version = "0.32.3", default-features = false, features = ["accesskit", "default_fonts", "glow", "wayland", "x11"] }
 futures-util = "0.3"

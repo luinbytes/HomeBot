@@ -8,7 +8,10 @@ use homebot_domain::{
         MessageStatus, OwnershipHandoff, QueuedPrompt,
     },
 };
-use homebot_routines::{RecordedAction, RoutineDefinition, RoutineExecutionResult};
+use homebot_routines::{
+    OverlapPolicy, RecordedAction, RoutineDefinition, RoutineExecutionResult,
+    RoutineTriggerDefinition,
+};
 use serde_json::Value;
 use sqlx::{
     Row, SqlitePool,
@@ -18,7 +21,7 @@ use sqlx::{
 use std::{collections::HashSet, path::Path, str::FromStr, time::Duration};
 use uuid::Uuid;
 
-pub const SCHEMA_VERSION: u32 = 10;
+pub const SCHEMA_VERSION: u32 = 11;
 static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
 
 #[derive(Debug, thiserror::Error)]
@@ -69,6 +72,10 @@ pub enum StorageError {
     DuplicateRoutineName,
     #[error("Routine recording was not found or is no longer active")]
     RoutineRecordingNotFound,
+    #[error("Routine trigger was not found")]
+    RoutineTriggerNotFound,
+    #[error("Routine job was not found")]
+    RoutineJobNotFound,
     #[error("database JSON is invalid: {0}")]
     Serialization(String),
 }
@@ -217,13 +224,58 @@ pub struct RoutineRunRecord {
     pub owner_id: Uuid,
     pub routine_id: Uuid,
     pub routine_version_id: Uuid,
+    pub bot_id: Uuid,
     pub status: String,
+    pub trigger: Value,
     pub dry_run: bool,
     pub inputs: Value,
     pub results: Option<Vec<RoutineExecutionResult>>,
     pub error_message: Option<String>,
+    pub attempt_count: u16,
+    pub scheduled_for_ms: Option<i64>,
     pub started_at_ms: i64,
     pub finished_at_ms: Option<i64>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct RoutineTriggerRecord {
+    pub id: Uuid,
+    pub owner_id: Uuid,
+    pub routine_id: Uuid,
+    pub definition: RoutineTriggerDefinition,
+    pub enabled: bool,
+    pub last_evaluated_at_ms: Option<i64>,
+    pub next_fire_at_ms: Option<i64>,
+    pub last_event_sequence: u64,
+    pub created_at_ms: i64,
+    pub updated_at_ms: i64,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct RoutineJobRecord {
+    pub id: Uuid,
+    pub owner_id: Uuid,
+    pub trigger_id: Uuid,
+    pub routine_id: Uuid,
+    pub routine_version_id: Uuid,
+    pub delivery_key: String,
+    pub trigger: Value,
+    pub inputs: Value,
+    pub status: String,
+    pub attempt_count: u16,
+    pub scheduled_for_ms: i64,
+    pub next_attempt_at_ms: i64,
+    pub cancel_requested: bool,
+    pub error_message: Option<String>,
+    pub created_at_ms: i64,
+    pub started_at_ms: Option<i64>,
+    pub finished_at_ms: Option<i64>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum RoutineJobClaim {
+    Claimed,
+    Replayed,
 }
 
 pub struct RoutineUpdate<'a> {
@@ -269,6 +321,34 @@ impl Storage {
         ).bind(owner_id.to_string()).bind(id.to_string()).fetch_optional(&self.pool).await?
             .ok_or(StorageError::RoutineNotFound)?;
         routine_from_row(&row)
+    }
+
+    /// Loads one immutable routine version with its current owner-scoped routine metadata.
+    ///
+    /// # Errors
+    /// Returns not-found, database, serialization, or integrity errors.
+    pub async fn routine_version(
+        &self,
+        owner_id: Uuid,
+        routine_id: Uuid,
+        version_id: Uuid,
+    ) -> Result<RoutineRecord, StorageError> {
+        let row = sqlx::query(
+            "SELECT r.id, r.owner_id, r.bot_id, r.name, r.description, r.enabled, r.draft,
+                    r.active_version_id, r.created_at_ms, r.updated_at_ms,
+                    v.id AS selected_version_id, v.version, v.definition_json
+             FROM routines r JOIN routine_versions v ON v.routine_id = r.id
+             WHERE r.owner_id = ? AND r.id = ? AND v.id = ?",
+        )
+        .bind(owner_id.to_string())
+        .bind(routine_id.to_string())
+        .bind(version_id.to_string())
+        .fetch_optional(&self.pool)
+        .await?
+        .ok_or(StorageError::RoutineNotFound)?;
+        let mut routine = routine_from_row_selected(&row, "selected_version_id")?;
+        routine.active_version_id = version_id;
+        Ok(routine)
     }
 
     /// Creates a routine and immutable version 1 atomically.
@@ -479,10 +559,11 @@ impl Storage {
             .map(serde_json::to_string)
             .transpose()
             .map_err(|error| StorageError::Serialization(error.to_string()))?;
-        sqlx::query("INSERT INTO routine_runs (id, owner_id, routine_id, routine_version_id, status, trigger_json, dry_run, input_json, result_json, error_message, started_at_ms, finished_at_ms) VALUES (?, ?, ?, ?, ?, '{\"kind\":\"manual\"}', ?, ?, ?, ?, ?, ?)")
+        sqlx::query("INSERT INTO routine_runs (id, owner_id, routine_id, routine_version_id, bot_id, status, trigger_json, dry_run, input_json, result_json, error_message, attempt_count, scheduled_for_ms, started_at_ms, finished_at_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
             .bind(record.id.to_string()).bind(record.owner_id.to_string()).bind(record.routine_id.to_string())
-            .bind(record.routine_version_id.to_string()).bind(&record.status).bind(record.dry_run)
-            .bind(record.inputs.to_string()).bind(results).bind(&record.error_message).bind(record.started_at_ms).bind(record.finished_at_ms)
+            .bind(record.routine_version_id.to_string()).bind(record.bot_id.to_string()).bind(&record.status).bind(record.trigger.to_string()).bind(record.dry_run)
+            .bind(record.inputs.to_string()).bind(results).bind(&record.error_message).bind(i64::from(record.attempt_count))
+            .bind(record.scheduled_for_ms).bind(record.started_at_ms).bind(record.finished_at_ms)
             .execute(&self.pool).await?;
         Ok(())
     }
@@ -496,9 +577,336 @@ impl Storage {
         owner_id: Uuid,
         routine_id: Uuid,
     ) -> Result<Vec<RoutineRunRecord>, StorageError> {
-        let rows = sqlx::query("SELECT id, owner_id, routine_id, routine_version_id, status, dry_run, input_json, result_json, error_message, started_at_ms, finished_at_ms FROM routine_runs WHERE owner_id = ? AND routine_id = ? ORDER BY started_at_ms DESC, id LIMIT 100")
+        let rows = sqlx::query("SELECT rr.id, rr.owner_id, rr.routine_id, rr.routine_version_id, coalesce(rr.bot_id, r.bot_id) AS bot_id, rr.status, rr.trigger_json, rr.dry_run, rr.input_json, rr.result_json, rr.error_message, rr.attempt_count, rr.scheduled_for_ms, rr.started_at_ms, rr.finished_at_ms FROM routine_runs rr JOIN routines r ON r.id = rr.routine_id WHERE rr.owner_id = ? AND rr.routine_id = ? ORDER BY rr.started_at_ms DESC, rr.id LIMIT 100")
             .bind(owner_id.to_string()).bind(routine_id.to_string()).fetch_all(&self.pool).await?;
         rows.iter().map(routine_run_from_row).collect()
+    }
+
+    /// Creates an owner-scoped schedule, webhook, event, or plugin trigger.
+    ///
+    /// # Errors
+    /// Returns not-found, serialization, or database errors.
+    pub async fn create_routine_trigger(
+        &self,
+        record: &RoutineTriggerRecord,
+    ) -> Result<(), StorageError> {
+        let _ = self.routine(record.owner_id, record.routine_id).await?;
+        let definition = serde_json::to_string(&record.definition)
+            .map_err(|error| StorageError::Serialization(error.to_string()))?;
+        let last_event_sequence = i64::try_from(record.last_event_sequence)
+            .map_err(|_| StorageError::Integrity("event cursor exceeds SQLite range".to_owned()))?;
+        sqlx::query("INSERT INTO routine_triggers (id, owner_id, routine_id, kind, configuration_json, enabled, last_evaluated_at_ms, next_fire_at_ms, last_event_sequence, created_at_ms, updated_at_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+            .bind(record.id.to_string()).bind(record.owner_id.to_string()).bind(record.routine_id.to_string())
+            .bind(trigger_kind(&record.definition)).bind(definition).bind(record.enabled)
+            .bind(record.last_evaluated_at_ms).bind(record.next_fire_at_ms).bind(last_event_sequence).bind(record.created_at_ms).bind(record.updated_at_ms)
+            .execute(&self.pool).await?;
+        Ok(())
+    }
+
+    /// Lists durable owner-scoped triggers, optionally narrowed to one routine.
+    ///
+    /// # Errors
+    /// Returns database, serialization, or integrity errors.
+    pub async fn routine_triggers(
+        &self,
+        owner_id: Uuid,
+        routine_id: Option<Uuid>,
+    ) -> Result<Vec<RoutineTriggerRecord>, StorageError> {
+        let rows = if let Some(routine_id) = routine_id {
+            sqlx::query("SELECT id, owner_id, routine_id, configuration_json, enabled, last_evaluated_at_ms, next_fire_at_ms, last_event_sequence, created_at_ms, updated_at_ms FROM routine_triggers WHERE owner_id = ? AND routine_id = ? ORDER BY created_at_ms, id")
+                .bind(owner_id.to_string()).bind(routine_id.to_string()).fetch_all(&self.pool).await?
+        } else {
+            sqlx::query("SELECT id, owner_id, routine_id, configuration_json, enabled, last_evaluated_at_ms, next_fire_at_ms, last_event_sequence, created_at_ms, updated_at_ms FROM routine_triggers WHERE owner_id = ? ORDER BY created_at_ms, id")
+                .bind(owner_id.to_string()).fetch_all(&self.pool).await?
+        };
+        rows.iter().map(routine_trigger_from_row).collect()
+    }
+
+    /// Loads one owner-scoped routine trigger.
+    ///
+    /// # Errors
+    /// Returns not-found, database, serialization, or integrity errors.
+    pub async fn routine_trigger(
+        &self,
+        owner_id: Uuid,
+        trigger_id: Uuid,
+    ) -> Result<RoutineTriggerRecord, StorageError> {
+        let row = sqlx::query("SELECT id, owner_id, routine_id, configuration_json, enabled, last_evaluated_at_ms, next_fire_at_ms, last_event_sequence, created_at_ms, updated_at_ms FROM routine_triggers WHERE owner_id = ? AND id = ?")
+            .bind(owner_id.to_string()).bind(trigger_id.to_string()).fetch_optional(&self.pool).await?
+            .ok_or(StorageError::RoutineTriggerNotFound)?;
+        routine_trigger_from_row(&row)
+    }
+
+    /// Deletes one owner-scoped trigger and its pending jobs/delivery dedupe records.
+    ///
+    /// # Errors
+    /// Returns not-found or database errors.
+    pub async fn delete_routine_trigger(
+        &self,
+        owner_id: Uuid,
+        trigger_id: Uuid,
+    ) -> Result<(), StorageError> {
+        let result = sqlx::query("DELETE FROM routine_triggers WHERE owner_id = ? AND id = ?")
+            .bind(owner_id.to_string())
+            .bind(trigger_id.to_string())
+            .execute(&self.pool)
+            .await?;
+        if result.rows_affected() == 0 {
+            return Err(StorageError::RoutineTriggerNotFound);
+        }
+        Ok(())
+    }
+
+    /// Advances a trigger's durable schedule cursor after jobs are atomically enqueued.
+    ///
+    /// # Errors
+    /// Returns not-found or database errors.
+    pub async fn advance_routine_trigger(
+        &self,
+        owner_id: Uuid,
+        trigger_id: Uuid,
+        last_evaluated_at_ms: i64,
+        next_fire_at_ms: Option<i64>,
+        updated_at_ms: i64,
+    ) -> Result<(), StorageError> {
+        let result = sqlx::query("UPDATE routine_triggers SET last_evaluated_at_ms = ?, next_fire_at_ms = ?, updated_at_ms = ? WHERE owner_id = ? AND id = ?")
+            .bind(last_evaluated_at_ms).bind(next_fire_at_ms).bind(updated_at_ms)
+            .bind(owner_id.to_string()).bind(trigger_id.to_string()).execute(&self.pool).await?;
+        if result.rows_affected() == 0 {
+            return Err(StorageError::RoutineTriggerNotFound);
+        }
+        Ok(())
+    }
+
+    /// Advances an event trigger cursor after every preceding durable outbox event is handled.
+    ///
+    /// # Errors
+    /// Returns not-found, range, or database errors.
+    pub async fn advance_routine_trigger_event_cursor(
+        &self,
+        owner_id: Uuid,
+        trigger_id: Uuid,
+        sequence: u64,
+        updated_at_ms: i64,
+    ) -> Result<(), StorageError> {
+        let sequence = i64::try_from(sequence)
+            .map_err(|_| StorageError::Integrity("event cursor exceeds SQLite range".to_owned()))?;
+        let result = sqlx::query("UPDATE routine_triggers SET last_event_sequence = ?, updated_at_ms = ? WHERE owner_id = ? AND id = ?")
+            .bind(sequence).bind(updated_at_ms).bind(owner_id.to_string()).bind(trigger_id.to_string())
+            .execute(&self.pool).await?;
+        if result.rows_affected() == 0 {
+            return Err(StorageError::RoutineTriggerNotFound);
+        }
+        Ok(())
+    }
+
+    /// Atomically deduplicates an external delivery and enqueues its exact routine version once.
+    ///
+    /// # Errors
+    /// Returns not-found, serialization, conflict, or database errors.
+    pub async fn enqueue_routine_job(
+        &self,
+        record: &RoutineJobRecord,
+    ) -> Result<RoutineJobClaim, StorageError> {
+        let trigger = serde_json::to_string(&record.trigger)
+            .map_err(|error| StorageError::Serialization(error.to_string()))?;
+        let inputs = serde_json::to_string(&record.inputs)
+            .map_err(|error| StorageError::Serialization(error.to_string()))?;
+        let mut transaction = self.pool.begin().await?;
+        let delivery = sqlx::query("INSERT OR IGNORE INTO routine_trigger_deliveries (trigger_id, delivery_key, received_at_ms) VALUES (?, ?, ?)")
+            .bind(record.trigger_id.to_string()).bind(&record.delivery_key).bind(record.created_at_ms)
+            .execute(&mut *transaction).await?;
+        if delivery.rows_affected() == 0 {
+            transaction.rollback().await?;
+            return Ok(RoutineJobClaim::Replayed);
+        }
+        sqlx::query("INSERT INTO routine_jobs (id, owner_id, trigger_id, routine_id, routine_version_id, delivery_key, trigger_json, input_json, status, attempt_count, scheduled_for_ms, next_attempt_at_ms, cancel_requested, error_message, created_at_ms, started_at_ms, finished_at_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+            .bind(record.id.to_string()).bind(record.owner_id.to_string()).bind(record.trigger_id.to_string())
+            .bind(record.routine_id.to_string()).bind(record.routine_version_id.to_string()).bind(&record.delivery_key)
+            .bind(trigger).bind(inputs).bind(&record.status).bind(i64::from(record.attempt_count))
+            .bind(record.scheduled_for_ms).bind(record.next_attempt_at_ms).bind(record.cancel_requested)
+            .bind(&record.error_message).bind(record.created_at_ms).bind(record.started_at_ms).bind(record.finished_at_ms)
+            .execute(&mut *transaction).await?;
+        transaction.commit().await?;
+        Ok(RoutineJobClaim::Claimed)
+    }
+
+    /// Claims the next due job while enforcing its routine overlap policy transactionally.
+    ///
+    /// # Errors
+    /// Returns database, serialization, or integrity errors.
+    pub async fn claim_next_routine_job(
+        &self,
+        owner_id: Uuid,
+        now_ms: i64,
+    ) -> Result<Option<RoutineJobRecord>, StorageError> {
+        let mut transaction = self.pool.begin().await?;
+        let rows = sqlx::query("SELECT j.id, j.owner_id, j.trigger_id, j.routine_id, j.routine_version_id, j.delivery_key, j.trigger_json, j.input_json, j.status, j.attempt_count, j.scheduled_for_ms, j.next_attempt_at_ms, j.cancel_requested, j.error_message, j.created_at_ms, j.started_at_ms, j.finished_at_ms, t.configuration_json FROM routine_jobs j JOIN routine_triggers t ON t.id = j.trigger_id WHERE j.owner_id = ? AND j.status IN ('queued','retry_wait') AND j.next_attempt_at_ms <= ? ORDER BY j.next_attempt_at_ms, j.scheduled_for_ms, j.id LIMIT 100")
+            .bind(owner_id.to_string()).bind(now_ms).fetch_all(&mut *transaction).await?;
+        for row in rows {
+            let definition: RoutineTriggerDefinition =
+                serde_json::from_str(row.try_get("configuration_json")?)
+                    .map_err(|error| StorageError::Serialization(error.to_string()))?;
+            let attempt_count = u16::try_from(row.try_get::<i64, _>("attempt_count")?)
+                .map_err(|_| StorageError::Integrity("invalid routine attempt count".to_owned()))?;
+            let routine_id: String = row.try_get("routine_id")?;
+            let active: i64 = sqlx::query_scalar("SELECT count(*) FROM routine_jobs WHERE owner_id = ? AND routine_id = ? AND status = 'running'")
+                .bind(owner_id.to_string()).bind(&routine_id).fetch_one(&mut *transaction).await?;
+            let can_run = match definition.overlap_policy {
+                OverlapPolicy::Skip | OverlapPolicy::Queue => active == 0,
+                OverlapPolicy::Parallel { maximum } => active < i64::from(maximum.max(1)),
+            };
+            let id: String = row.try_get("id")?;
+            if attempt_count >= definition.retry_policy.maximum_attempts.max(1) {
+                sqlx::query("UPDATE routine_jobs SET status = 'failed', error_message = 'Routine execution was interrupted at its final attempt', finished_at_ms = ? WHERE id = ? AND status IN ('queued','retry_wait')")
+                    .bind(now_ms).bind(&id).execute(&mut *transaction).await?;
+                continue;
+            }
+            if !can_run && matches!(definition.overlap_policy, OverlapPolicy::Skip) {
+                sqlx::query("UPDATE routine_jobs SET status = 'skipped', error_message = 'Skipped because the routine was already running', finished_at_ms = ? WHERE id = ? AND status IN ('queued','retry_wait')")
+                    .bind(now_ms).bind(&id).execute(&mut *transaction).await?;
+                continue;
+            }
+            if !can_run {
+                continue;
+            }
+            let updated = sqlx::query("UPDATE routine_jobs SET status = 'running', attempt_count = attempt_count + 1, started_at_ms = coalesce(started_at_ms, ?) WHERE id = ? AND status IN ('queued','retry_wait') AND cancel_requested = 0")
+                .bind(now_ms).bind(&id).execute(&mut *transaction).await?;
+            if updated.rows_affected() == 1 {
+                let claimed = sqlx::query("SELECT id, owner_id, trigger_id, routine_id, routine_version_id, delivery_key, trigger_json, input_json, status, attempt_count, scheduled_for_ms, next_attempt_at_ms, cancel_requested, error_message, created_at_ms, started_at_ms, finished_at_ms FROM routine_jobs WHERE id = ?")
+                    .bind(&id).fetch_one(&mut *transaction).await?;
+                let claimed = routine_job_from_row(&claimed)?;
+                transaction.commit().await?;
+                return Ok(Some(claimed));
+            }
+        }
+        transaction.commit().await?;
+        Ok(None)
+    }
+
+    /// Completes a claimed job with a terminal status.
+    ///
+    /// # Errors
+    /// Returns not-found or database errors.
+    pub async fn finish_routine_job(
+        &self,
+        owner_id: Uuid,
+        job_id: Uuid,
+        status: &str,
+        error_message: Option<&str>,
+        finished_at_ms: i64,
+    ) -> Result<(), StorageError> {
+        if !matches!(status, "succeeded" | "failed" | "cancelled") {
+            return Err(StorageError::Integrity(
+                "invalid routine job terminal status".to_owned(),
+            ));
+        }
+        let result = sqlx::query("UPDATE routine_jobs SET status = ?, error_message = ?, finished_at_ms = ? WHERE owner_id = ? AND id = ? AND status = 'running'")
+            .bind(status).bind(error_message).bind(finished_at_ms).bind(owner_id.to_string()).bind(job_id.to_string())
+            .execute(&self.pool).await?;
+        if result.rows_affected() == 0 {
+            return Err(StorageError::RoutineJobNotFound);
+        }
+        Ok(())
+    }
+
+    /// Schedules bounded exponential retry or terminally fails a running job.
+    ///
+    /// # Errors
+    /// Returns not-found, serialization, integrity, or database errors.
+    pub async fn retry_or_fail_routine_job(
+        &self,
+        owner_id: Uuid,
+        job_id: Uuid,
+        error_message: &str,
+        now_ms: i64,
+    ) -> Result<bool, StorageError> {
+        let row = sqlx::query("SELECT j.attempt_count, t.configuration_json FROM routine_jobs j JOIN routine_triggers t ON t.id = j.trigger_id WHERE j.owner_id = ? AND j.id = ? AND j.status = 'running'")
+            .bind(owner_id.to_string()).bind(job_id.to_string()).fetch_optional(&self.pool).await?
+            .ok_or(StorageError::RoutineJobNotFound)?;
+        let attempts = u16::try_from(row.try_get::<i64, _>("attempt_count")?)
+            .map_err(|_| StorageError::Integrity("invalid routine job attempt count".to_owned()))?;
+        let configuration: String = row.try_get("configuration_json")?;
+        let definition: RoutineTriggerDefinition = serde_json::from_str(&configuration)
+            .map_err(|error| StorageError::Serialization(error.to_string()))?;
+        if attempts >= definition.retry_policy.maximum_attempts.max(1) {
+            self.finish_routine_job(owner_id, job_id, "failed", Some(error_message), now_ms)
+                .await?;
+            return Ok(false);
+        }
+        let exponent = u32::from(attempts.saturating_sub(1)).min(31);
+        let multiplier = 1_u64.checked_shl(exponent).unwrap_or(u64::MAX);
+        let backoff_seconds = u64::from(definition.retry_policy.initial_backoff_seconds)
+            .saturating_mul(multiplier)
+            .min(u64::from(
+                definition.retry_policy.maximum_backoff_seconds.max(1),
+            ));
+        let backoff_ms = i64::try_from(backoff_seconds.saturating_mul(1_000)).unwrap_or(i64::MAX);
+        sqlx::query("UPDATE routine_jobs SET status = 'retry_wait', error_message = ?, next_attempt_at_ms = ? WHERE owner_id = ? AND id = ? AND status = 'running'")
+            .bind(error_message).bind(now_ms.saturating_add(backoff_ms)).bind(owner_id.to_string()).bind(job_id.to_string())
+            .execute(&self.pool).await?;
+        Ok(true)
+    }
+
+    /// Requests cancellation and immediately cancels jobs that have not started.
+    ///
+    /// # Errors
+    /// Returns not-found or database errors.
+    pub async fn cancel_routine_job(
+        &self,
+        owner_id: Uuid,
+        job_id: Uuid,
+        now_ms: i64,
+    ) -> Result<(), StorageError> {
+        let result = sqlx::query("UPDATE routine_jobs SET cancel_requested = 1, status = CASE WHEN status IN ('queued','retry_wait') THEN 'cancelled' ELSE status END, finished_at_ms = CASE WHEN status IN ('queued','retry_wait') THEN ? ELSE finished_at_ms END WHERE owner_id = ? AND id = ? AND status IN ('queued','retry_wait','running')")
+            .bind(now_ms).bind(owner_id.to_string()).bind(job_id.to_string()).execute(&self.pool).await?;
+        if result.rows_affected() == 0 {
+            return Err(StorageError::RoutineJobNotFound);
+        }
+        Ok(())
+    }
+
+    /// Recovers jobs left running by a process interruption without losing cancellation intent.
+    ///
+    /// # Errors
+    /// Returns a database error.
+    pub async fn recover_interrupted_routine_jobs(
+        &self,
+        owner_id: Uuid,
+        now_ms: i64,
+    ) -> Result<u64, StorageError> {
+        let result = sqlx::query("UPDATE routine_jobs SET status = CASE WHEN cancel_requested = 1 THEN 'cancelled' ELSE 'retry_wait' END, next_attempt_at_ms = CASE WHEN cancel_requested = 1 THEN next_attempt_at_ms ELSE ? END, error_message = 'Routine execution was interrupted by server restart', finished_at_ms = CASE WHEN cancel_requested = 1 THEN ? ELSE NULL END WHERE owner_id = ? AND status = 'running'")
+            .bind(now_ms).bind(now_ms).bind(owner_id.to_string()).execute(&self.pool).await?;
+        Ok(result.rows_affected())
+    }
+
+    /// Lists recent durable jobs for run-history and recovery projections.
+    ///
+    /// # Errors
+    /// Returns database, serialization, or integrity errors.
+    pub async fn routine_jobs(
+        &self,
+        owner_id: Uuid,
+        routine_id: Uuid,
+    ) -> Result<Vec<RoutineJobRecord>, StorageError> {
+        let rows = sqlx::query("SELECT id, owner_id, trigger_id, routine_id, routine_version_id, delivery_key, trigger_json, input_json, status, attempt_count, scheduled_for_ms, next_attempt_at_ms, cancel_requested, error_message, created_at_ms, started_at_ms, finished_at_ms FROM routine_jobs WHERE owner_id = ? AND routine_id = ? ORDER BY created_at_ms DESC, id LIMIT 100")
+            .bind(owner_id.to_string()).bind(routine_id.to_string()).fetch_all(&self.pool).await?;
+        rows.iter().map(routine_job_from_row).collect()
+    }
+
+    /// Loads one owner-scoped durable routine job.
+    ///
+    /// # Errors
+    /// Returns not-found, database, serialization, or integrity errors.
+    pub async fn routine_job(
+        &self,
+        owner_id: Uuid,
+        job_id: Uuid,
+    ) -> Result<RoutineJobRecord, StorageError> {
+        let row = sqlx::query("SELECT id, owner_id, trigger_id, routine_id, routine_version_id, delivery_key, trigger_json, input_json, status, attempt_count, scheduled_for_ms, next_attempt_at_ms, cancel_requested, error_message, created_at_ms, started_at_ms, finished_at_ms FROM routine_jobs WHERE owner_id = ? AND id = ?")
+            .bind(owner_id.to_string()).bind(job_id.to_string()).fetch_optional(&self.pool).await?
+            .ok_or(StorageError::RoutineJobNotFound)?;
+        routine_job_from_row(&row)
     }
     /// Lists owner-scoped plugin registry records.
     ///
@@ -3273,6 +3681,13 @@ fn plugin_tool_from_row(row: &sqlx::sqlite::SqliteRow) -> Result<PluginToolRecor
 }
 
 fn routine_from_row(row: &sqlx::sqlite::SqliteRow) -> Result<RoutineRecord, StorageError> {
+    routine_from_row_selected(row, "active_version_id")
+}
+
+fn routine_from_row_selected(
+    row: &sqlx::sqlite::SqliteRow,
+    version_id_column: &str,
+) -> Result<RoutineRecord, StorageError> {
     let definition_json: String = row.try_get("definition_json")?;
     let version: i64 = row.try_get("version")?;
     Ok(RoutineRecord {
@@ -3283,7 +3698,7 @@ fn routine_from_row(row: &sqlx::sqlite::SqliteRow) -> Result<RoutineRecord, Stor
         description: row.try_get("description")?,
         enabled: row.try_get("enabled")?,
         draft: row.try_get("draft")?,
-        active_version_id: parse_uuid(row.try_get("active_version_id")?)?,
+        active_version_id: parse_uuid(row.try_get(version_id_column)?)?,
         version: u32::try_from(version)
             .map_err(|_| StorageError::Integrity("invalid routine version".to_owned()))?,
         definition: serde_json::from_str(&definition_json)
@@ -3311,6 +3726,7 @@ fn routine_recording_from_row(
 }
 
 fn routine_run_from_row(row: &sqlx::sqlite::SqliteRow) -> Result<RoutineRunRecord, StorageError> {
+    let trigger_json: String = row.try_get("trigger_json")?;
     let input_json: String = row.try_get("input_json")?;
     let result_json: Option<String> = row.try_get("result_json")?;
     Ok(RoutineRunRecord {
@@ -3318,7 +3734,10 @@ fn routine_run_from_row(row: &sqlx::sqlite::SqliteRow) -> Result<RoutineRunRecor
         owner_id: parse_uuid(row.try_get("owner_id")?)?,
         routine_id: parse_uuid(row.try_get("routine_id")?)?,
         routine_version_id: parse_uuid(row.try_get("routine_version_id")?)?,
+        bot_id: parse_uuid(row.try_get("bot_id")?)?,
         status: row.try_get("status")?,
+        trigger: serde_json::from_str(&trigger_json)
+            .map_err(|error| StorageError::Serialization(error.to_string()))?,
         dry_run: row.try_get("dry_run")?,
         inputs: serde_json::from_str(&input_json)
             .map_err(|error| StorageError::Serialization(error.to_string()))?,
@@ -3328,9 +3747,68 @@ fn routine_run_from_row(row: &sqlx::sqlite::SqliteRow) -> Result<RoutineRunRecor
             .transpose()
             .map_err(|error| StorageError::Serialization(error.to_string()))?,
         error_message: row.try_get("error_message")?,
+        attempt_count: u16::try_from(row.try_get::<i64, _>("attempt_count")?)
+            .map_err(|_| StorageError::Integrity("invalid routine attempt count".to_owned()))?,
+        scheduled_for_ms: row.try_get("scheduled_for_ms")?,
         started_at_ms: row.try_get("started_at_ms")?,
         finished_at_ms: row.try_get("finished_at_ms")?,
     })
+}
+
+fn routine_trigger_from_row(
+    row: &sqlx::sqlite::SqliteRow,
+) -> Result<RoutineTriggerRecord, StorageError> {
+    let configuration: String = row.try_get("configuration_json")?;
+    Ok(RoutineTriggerRecord {
+        id: parse_uuid(row.try_get("id")?)?,
+        owner_id: parse_uuid(row.try_get("owner_id")?)?,
+        routine_id: parse_uuid(row.try_get("routine_id")?)?,
+        definition: serde_json::from_str(&configuration)
+            .map_err(|error| StorageError::Serialization(error.to_string()))?,
+        enabled: row.try_get("enabled")?,
+        last_evaluated_at_ms: row.try_get("last_evaluated_at_ms")?,
+        next_fire_at_ms: row.try_get("next_fire_at_ms")?,
+        last_event_sequence: u64::try_from(row.try_get::<i64, _>("last_event_sequence")?)
+            .map_err(|_| StorageError::Integrity("invalid event cursor".to_owned()))?,
+        created_at_ms: row.try_get("created_at_ms")?,
+        updated_at_ms: row.try_get("updated_at_ms")?,
+    })
+}
+
+fn routine_job_from_row(row: &sqlx::sqlite::SqliteRow) -> Result<RoutineJobRecord, StorageError> {
+    let trigger_json: String = row.try_get("trigger_json")?;
+    let input_json: String = row.try_get("input_json")?;
+    Ok(RoutineJobRecord {
+        id: parse_uuid(row.try_get("id")?)?,
+        owner_id: parse_uuid(row.try_get("owner_id")?)?,
+        trigger_id: parse_uuid(row.try_get("trigger_id")?)?,
+        routine_id: parse_uuid(row.try_get("routine_id")?)?,
+        routine_version_id: parse_uuid(row.try_get("routine_version_id")?)?,
+        delivery_key: row.try_get("delivery_key")?,
+        trigger: serde_json::from_str(&trigger_json)
+            .map_err(|error| StorageError::Serialization(error.to_string()))?,
+        inputs: serde_json::from_str(&input_json)
+            .map_err(|error| StorageError::Serialization(error.to_string()))?,
+        status: row.try_get("status")?,
+        attempt_count: u16::try_from(row.try_get::<i64, _>("attempt_count")?)
+            .map_err(|_| StorageError::Integrity("invalid routine job attempt count".to_owned()))?,
+        scheduled_for_ms: row.try_get("scheduled_for_ms")?,
+        next_attempt_at_ms: row.try_get("next_attempt_at_ms")?,
+        cancel_requested: row.try_get("cancel_requested")?,
+        error_message: row.try_get("error_message")?,
+        created_at_ms: row.try_get("created_at_ms")?,
+        started_at_ms: row.try_get("started_at_ms")?,
+        finished_at_ms: row.try_get("finished_at_ms")?,
+    })
+}
+
+fn trigger_kind(definition: &RoutineTriggerDefinition) -> &'static str {
+    match &definition.source {
+        homebot_routines::RoutineTriggerSource::Schedule { .. } => "schedule",
+        homebot_routines::RoutineTriggerSource::Webhook { .. } => "webhook",
+        homebot_routines::RoutineTriggerSource::Event { .. } => "event",
+        homebot_routines::RoutineTriggerSource::Plugin { .. } => "plugin",
+    }
 }
 
 fn parse_uuid(value: &str) -> Result<Uuid, StorageError> {
@@ -3399,6 +3877,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(clippy::too_many_lines)]
     async fn routine_versions_recordings_and_runs_are_restart_durable() -> Result<(), StorageError>
     {
         let directory = tempfile::tempdir()?;
@@ -3479,11 +3958,15 @@ mod tests {
             owner_id: owner,
             routine_id: record.id,
             routine_version_id: edited.active_version_id,
+            bot_id: bot.id.0,
             status: "dry_run_succeeded".to_owned(),
+            trigger: json!({"kind": "manual"}),
             dry_run: true,
             inputs: json!({}),
             results: Some(vec![]),
             error_message: None,
+            attempt_count: 1,
+            scheduled_for_ms: None,
             started_at_ms: 6,
             finished_at_ms: Some(7),
         };
@@ -3499,6 +3982,265 @@ mod tests {
             vec![action]
         );
         assert_eq!(reopened.routine_runs(owner, record.id).await?, vec![run]);
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[allow(clippy::too_many_lines)]
+    async fn scheduler_jobs_deduplicate_survive_restart_and_enforce_overlap()
+    -> Result<(), StorageError> {
+        let directory = tempfile::tempdir()?;
+        let database = directory.path().join("homebot.db");
+        let storage = Storage::open(&database).await?;
+        let owner = Uuid::now_v7();
+        let bot = storage
+            .create_bot(owner, Bot::create("Nova", "Research")?, 1)
+            .await?;
+        let routine = RoutineRecord {
+            id: Uuid::now_v7(),
+            owner_id: owner,
+            bot_id: bot.id.0,
+            name: "Scheduled brief".to_owned(),
+            description: String::new(),
+            enabled: true,
+            draft: false,
+            active_version_id: Uuid::now_v7(),
+            version: 1,
+            definition: homebot_routines::RoutineDefinition {
+                inputs: Vec::new(),
+                steps: vec![homebot_routines::RoutineStep::BotPrompt {
+                    bot_id: bot.id.0,
+                    prompt_template: "Summarise".to_owned(),
+                    requires_approval: false,
+                }],
+                expected_outputs: Vec::new(),
+            },
+            created_at_ms: 2,
+            updated_at_ms: 2,
+        };
+        storage.create_routine(&routine).await?;
+        let trigger = RoutineTriggerRecord {
+            id: Uuid::now_v7(),
+            owner_id: owner,
+            routine_id: routine.id,
+            definition: homebot_routines::RoutineTriggerDefinition {
+                source: homebot_routines::RoutineTriggerSource::Schedule {
+                    schedule: homebot_routines::RoutineSchedule::Interval {
+                        anchor_unix_ms: 10,
+                        every_seconds: 60,
+                    },
+                },
+                missed_run_policy: homebot_routines::MissedRunPolicy::RunOnce,
+                overlap_policy: homebot_routines::OverlapPolicy::Skip,
+                retry_policy: homebot_routines::RetryPolicy {
+                    maximum_attempts: 3,
+                    initial_backoff_seconds: 1,
+                    maximum_backoff_seconds: 4,
+                },
+                catch_up_limit: 1,
+            },
+            enabled: true,
+            last_evaluated_at_ms: None,
+            next_fire_at_ms: Some(10),
+            last_event_sequence: 0,
+            created_at_ms: 3,
+            updated_at_ms: 3,
+        };
+        storage.create_routine_trigger(&trigger).await?;
+        let job = RoutineJobRecord {
+            id: Uuid::now_v7(),
+            owner_id: owner,
+            trigger_id: trigger.id,
+            routine_id: routine.id,
+            routine_version_id: routine.active_version_id,
+            delivery_key: "schedule:10".to_owned(),
+            trigger: json!({"kind":"schedule","scheduled_for_unix_ms":10}),
+            inputs: json!({}),
+            status: "queued".to_owned(),
+            attempt_count: 0,
+            scheduled_for_ms: 10,
+            next_attempt_at_ms: 10,
+            cancel_requested: false,
+            error_message: None,
+            created_at_ms: 3,
+            started_at_ms: None,
+            finished_at_ms: None,
+        };
+        assert_eq!(
+            storage.enqueue_routine_job(&job).await?,
+            RoutineJobClaim::Claimed
+        );
+        assert_eq!(
+            storage.enqueue_routine_job(&job).await?,
+            RoutineJobClaim::Replayed
+        );
+        drop(storage);
+
+        let reopened = Storage::open(&database).await?;
+        assert_eq!(
+            reopened.routine_triggers(owner, Some(routine.id)).await?,
+            vec![trigger]
+        );
+        let claimed = reopened
+            .claim_next_routine_job(owner, 10)
+            .await?
+            .ok_or(StorageError::RoutineJobNotFound)?;
+        assert_eq!(claimed.id, job.id);
+        assert_eq!(claimed.attempt_count, 1);
+
+        let overlapping = RoutineJobRecord {
+            id: Uuid::now_v7(),
+            delivery_key: "schedule:60010".to_owned(),
+            scheduled_for_ms: 60_010,
+            next_attempt_at_ms: 60_010,
+            created_at_ms: 4,
+            ..job.clone()
+        };
+        assert_eq!(
+            reopened.enqueue_routine_job(&overlapping).await?,
+            RoutineJobClaim::Claimed
+        );
+        assert!(
+            reopened
+                .claim_next_routine_job(owner, 60_010)
+                .await?
+                .is_none()
+        );
+        assert_eq!(
+            reopened
+                .routine_jobs(owner, routine.id)
+                .await?
+                .into_iter()
+                .find(|candidate| candidate.id == overlapping.id)
+                .ok_or(StorageError::RoutineJobNotFound)?
+                .status,
+            "skipped"
+        );
+        reopened
+            .finish_routine_job(owner, job.id, "succeeded", None, 60_011)
+            .await?;
+        assert_eq!(
+            reopened.routine_jobs(owner, routine.id).await?[1].status,
+            "succeeded"
+        );
+
+        let retrying = RoutineJobRecord {
+            id: Uuid::now_v7(),
+            delivery_key: "retry".to_owned(),
+            scheduled_for_ms: 70_000,
+            next_attempt_at_ms: 70_000,
+            created_at_ms: 5,
+            ..job.clone()
+        };
+        assert_eq!(
+            reopened.enqueue_routine_job(&retrying).await?,
+            RoutineJobClaim::Claimed
+        );
+        assert_eq!(
+            reopened
+                .claim_next_routine_job(owner, 70_000)
+                .await?
+                .ok_or(StorageError::RoutineJobNotFound)?
+                .attempt_count,
+            1
+        );
+        assert!(
+            reopened
+                .retry_or_fail_routine_job(owner, retrying.id, "temporary", 70_000)
+                .await?
+        );
+        assert!(
+            reopened
+                .claim_next_routine_job(owner, 70_999)
+                .await?
+                .is_none()
+        );
+        assert_eq!(
+            reopened
+                .claim_next_routine_job(owner, 71_000)
+                .await?
+                .ok_or(StorageError::RoutineJobNotFound)?
+                .attempt_count,
+            2
+        );
+        assert!(
+            reopened
+                .retry_or_fail_routine_job(owner, retrying.id, "temporary", 71_000)
+                .await?
+        );
+        assert_eq!(
+            reopened
+                .claim_next_routine_job(owner, 73_000)
+                .await?
+                .ok_or(StorageError::RoutineJobNotFound)?
+                .attempt_count,
+            3
+        );
+        assert!(
+            !reopened
+                .retry_or_fail_routine_job(owner, retrying.id, "terminal", 73_000)
+                .await?
+        );
+        let cancelled = RoutineJobRecord {
+            id: Uuid::now_v7(),
+            delivery_key: "cancelled".to_owned(),
+            scheduled_for_ms: 80_000,
+            next_attempt_at_ms: 80_000,
+            created_at_ms: 6,
+            ..job
+        };
+        reopened.enqueue_routine_job(&cancelled).await?;
+        reopened
+            .cancel_routine_job(owner, cancelled.id, 79_000)
+            .await?;
+        let jobs = reopened.routine_jobs(owner, routine.id).await?;
+        assert_eq!(
+            jobs.iter()
+                .find(|candidate| candidate.id == retrying.id)
+                .ok_or(StorageError::RoutineJobNotFound)?
+                .status,
+            "failed"
+        );
+        let cancelled = jobs
+            .iter()
+            .find(|candidate| candidate.id == cancelled.id)
+            .ok_or(StorageError::RoutineJobNotFound)?;
+        assert_eq!(cancelled.status, "cancelled");
+        assert!(cancelled.cancel_requested);
+        let interrupted = RoutineJobRecord {
+            id: Uuid::now_v7(),
+            delivery_key: "interrupted".to_owned(),
+            scheduled_for_ms: 90_000,
+            next_attempt_at_ms: 90_000,
+            created_at_ms: 7,
+            ..retrying
+        };
+        reopened.enqueue_routine_job(&interrupted).await?;
+        assert_eq!(
+            reopened
+                .claim_next_routine_job(owner, 90_000)
+                .await?
+                .ok_or(StorageError::RoutineJobNotFound)?
+                .attempt_count,
+            1
+        );
+        assert_eq!(
+            reopened
+                .recover_interrupted_routine_jobs(owner, 90_001)
+                .await?,
+            1
+        );
+        assert_eq!(
+            reopened
+                .claim_next_routine_job(owner, 90_001)
+                .await?
+                .ok_or(StorageError::RoutineJobNotFound)?
+                .attempt_count,
+            2
+        );
+        reopened
+            .finish_routine_job(owner, interrupted.id, "succeeded", None, 90_002)
+            .await?;
         Ok(())
     }
 
@@ -3648,6 +4390,91 @@ mod tests {
         assert_eq!(retained, 1);
         let storage = Storage { pool };
         assert!(storage.list_routines(Uuid::nil()).await?.is_empty());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn version_ten_upgrade_preserves_routines_and_initializes_scheduler_state()
+    -> Result<(), StorageError> {
+        let directory = tempfile::tempdir()?;
+        let database = directory.path().join("homebot-v10.db");
+        let options =
+            SqliteConnectOptions::from_str(database.to_str().ok_or(StorageError::InvalidPath)?)?
+                .create_if_missing(true)
+                .foreign_keys(true);
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(options)
+            .await?;
+        for migration in [
+            include_str!("../migrations/0001_initial.sql"),
+            include_str!("../migrations/0002_event_retention.sql"),
+            include_str!("../migrations/0003_attachments.sql"),
+            include_str!("../migrations/0004_bot_lifecycle.sql"),
+            include_str!("../migrations/0005_direct_chat.sql"),
+            include_str!("../migrations/0006_group_coordination.sql"),
+            include_str!("../migrations/0007_activity_artifacts.sql"),
+            include_str!("../migrations/0008_secret_references.sql"),
+            include_str!("../migrations/0009_plugins.sql"),
+            include_str!("../migrations/0010_routines.sql"),
+        ] {
+            sqlx::raw_sql(migration).execute(&pool).await?;
+        }
+        let storage = Storage { pool: pool.clone() };
+        let owner = Uuid::now_v7();
+        let bot = storage
+            .create_bot(owner, Bot::create("Nova", "Research")?, 1)
+            .await?;
+        let routine = RoutineRecord {
+            id: Uuid::now_v7(),
+            owner_id: owner,
+            bot_id: bot.id.0,
+            name: "Existing routine".to_owned(),
+            description: String::new(),
+            enabled: true,
+            draft: false,
+            active_version_id: Uuid::now_v7(),
+            version: 1,
+            definition: homebot_routines::RoutineDefinition {
+                inputs: Vec::new(),
+                steps: vec![homebot_routines::RoutineStep::BotPrompt {
+                    bot_id: bot.id.0,
+                    prompt_template: "Continue".to_owned(),
+                    requires_approval: false,
+                }],
+                expected_outputs: Vec::new(),
+            },
+            created_at_ms: 2,
+            updated_at_ms: 2,
+        };
+        storage.create_routine(&routine).await?;
+        let trigger_id = Uuid::now_v7();
+        let definition = homebot_routines::RoutineTriggerDefinition {
+            source: homebot_routines::RoutineTriggerSource::Webhook {
+                slug: "legacy".to_owned(),
+            },
+            missed_run_policy: homebot_routines::MissedRunPolicy::RunOnce,
+            overlap_policy: homebot_routines::OverlapPolicy::Queue,
+            retry_policy: homebot_routines::RetryPolicy::default(),
+            catch_up_limit: 1,
+        };
+        sqlx::query("INSERT INTO routine_triggers (id, routine_id, kind, configuration_json, enabled) VALUES (?, ?, 'webhook', ?, 1)")
+            .bind(trigger_id.to_string()).bind(routine.id.to_string()).bind(serde_json::to_string(&definition).map_err(|error| StorageError::Serialization(error.to_string()))?)
+            .execute(&pool).await?;
+        let run_id = Uuid::now_v7();
+        sqlx::query("INSERT INTO routine_runs (id, owner_id, routine_id, routine_version_id, status, trigger_json, dry_run, input_json, started_at_ms) VALUES (?, ?, ?, ?, 'succeeded', '{\"kind\":\"manual\"}', 0, '{}', 3)")
+            .bind(run_id.to_string()).bind(owner.to_string()).bind(routine.id.to_string()).bind(routine.active_version_id.to_string())
+            .execute(&pool).await?;
+        sqlx::raw_sql(include_str!("../migrations/0011_routine_scheduler.sql"))
+            .execute(&pool)
+            .await?;
+        let storage = Storage { pool };
+        let trigger = storage.routine_trigger(Uuid::nil(), trigger_id).await?;
+        assert_eq!(trigger.definition, definition);
+        assert_eq!(trigger.last_event_sequence, 0);
+        let runs = storage.routine_runs(owner, routine.id).await?;
+        assert_eq!(runs[0].id, run_id);
+        assert_eq!(runs[0].bot_id, bot.id.0);
         Ok(())
     }
 
@@ -4087,6 +4914,9 @@ mod tests {
             "plugins",
             "provider_profiles",
             "routine_runs",
+            "routine_jobs",
+            "routine_trigger_deliveries",
+            "routine_triggers",
             "routines",
             "secret_references",
             "skills",

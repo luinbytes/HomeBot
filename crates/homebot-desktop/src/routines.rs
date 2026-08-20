@@ -3,7 +3,8 @@
 use crate::tokens::HomeBotTheme;
 use egui::{Align, Frame, Layout, RichText, Stroke, Ui};
 use homebot_protocol::{
-    RoutineRecordingSummary, RoutineRunSummary, RoutineSummary, ServerEvent, ServerEventBody,
+    RoutineJobSummary, RoutineRecordingSummary, RoutineRunSummary, RoutineSummary,
+    RoutineTriggerSummary, ServerEvent, ServerEventBody,
 };
 use std::collections::BTreeMap;
 use uuid::Uuid;
@@ -14,6 +15,8 @@ pub struct RoutineProjection {
     routines: BTreeMap<Uuid, RoutineSummary>,
     recordings: BTreeMap<Uuid, RoutineRecordingSummary>,
     runs: BTreeMap<Uuid, Vec<RoutineRunSummary>>,
+    triggers: BTreeMap<Uuid, RoutineTriggerSummary>,
+    jobs: BTreeMap<Uuid, Vec<RoutineJobSummary>>,
 }
 
 impl RoutineProjection {
@@ -32,6 +35,9 @@ impl RoutineProjection {
             ServerEventBody::RoutineRemoved { routine_id } => {
                 self.routines.remove(routine_id);
                 self.runs.remove(routine_id);
+                self.jobs.remove(routine_id);
+                self.triggers
+                    .retain(|_, trigger| trigger.routine_id != *routine_id);
             }
             ServerEventBody::RoutineRecordingChanged { recording } => {
                 self.recordings.insert(recording.id, recording.clone());
@@ -44,6 +50,21 @@ impl RoutineProjection {
                     runs.push(run.clone());
                 }
                 runs.sort_by_key(|item| std::cmp::Reverse(item.started_at_unix_ms));
+            }
+            ServerEventBody::RoutineTriggerChanged { trigger } => {
+                self.triggers.insert(trigger.id, trigger.clone());
+            }
+            ServerEventBody::RoutineTriggerRemoved { trigger_id } => {
+                self.triggers.remove(trigger_id);
+            }
+            ServerEventBody::RoutineJobChanged { job } => {
+                let jobs = self.jobs.entry(job.routine_id).or_default();
+                if let Some(existing) = jobs.iter_mut().find(|existing| existing.id == job.id) {
+                    *existing = job.clone();
+                } else {
+                    jobs.push(job.clone());
+                }
+                jobs.sort_by_key(|item| std::cmp::Reverse(item.created_at_unix_ms));
             }
             _ => {}
         }
@@ -61,6 +82,17 @@ impl RoutineProjection {
     #[must_use]
     pub fn runs(&self, routine_id: Uuid) -> &[RoutineRunSummary] {
         self.runs.get(&routine_id).map_or(&[], Vec::as_slice)
+    }
+
+    pub fn triggers(&self, routine_id: Uuid) -> impl Iterator<Item = &RoutineTriggerSummary> {
+        self.triggers
+            .values()
+            .filter(move |trigger| trigger.routine_id == routine_id)
+    }
+
+    #[must_use]
+    pub fn jobs(&self, routine_id: Uuid) -> &[RoutineJobSummary] {
+        self.jobs.get(&routine_id).map_or(&[], Vec::as_slice)
     }
 }
 
@@ -273,7 +305,56 @@ mod tests {
             projection.routines().next().map(|item| item.name.as_str()),
             Some("Morning intelligence")
         );
+        let trigger_id = Uuid::now_v7();
+        projection.apply(&event(ServerEventBody::RoutineTriggerChanged {
+            trigger: RoutineTriggerSummary {
+                id: trigger_id,
+                routine_id: id,
+                definition: homebot_protocol::RoutineTriggerDefinition {
+                    source: homebot_protocol::RoutineTriggerSource::Webhook {
+                        slug: "deploy".to_owned(),
+                    },
+                    missed_run_policy: homebot_protocol::MissedRunPolicy::RunOnce,
+                    overlap_policy: homebot_protocol::OverlapPolicy::Queue,
+                    retry_policy: homebot_protocol::RetryPolicy::default(),
+                    catch_up_limit: 1,
+                },
+                enabled: true,
+                last_evaluated_at_unix_ms: None,
+                next_fire_at_unix_ms: None,
+                created_at_unix_ms: 2,
+                updated_at_unix_ms: 2,
+            },
+        }));
+        let job_id = Uuid::now_v7();
+        projection.apply(&event(ServerEventBody::RoutineJobChanged {
+            job: RoutineJobSummary {
+                id: job_id,
+                trigger_id,
+                routine_id: id,
+                routine_version_id: Uuid::now_v7(),
+                delivery_key: "delivery-1".to_owned(),
+                trigger: serde_json::json!({"kind":"webhook"}),
+                input_metadata: serde_json::json!({}),
+                status: "queued".to_owned(),
+                attempt_count: 0,
+                scheduled_for_unix_ms: 2,
+                next_attempt_at_unix_ms: 2,
+                cancel_requested: false,
+                error_message: None,
+                created_at_unix_ms: 2,
+                started_at_unix_ms: None,
+                finished_at_unix_ms: None,
+            },
+        }));
+        assert_eq!(projection.triggers(id).count(), 1);
+        assert_eq!(projection.jobs(id)[0].id, job_id);
+        projection.apply(&event(ServerEventBody::RoutineTriggerRemoved {
+            trigger_id,
+        }));
+        assert_eq!(projection.triggers(id).count(), 0);
         projection.apply(&event(ServerEventBody::RoutineRemoved { routine_id: id }));
         assert_eq!(projection.routines().count(), 0);
+        assert!(projection.jobs(id).is_empty());
     }
 }

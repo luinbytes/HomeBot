@@ -1,5 +1,12 @@
 //! Versioned routine definitions, demonstration recording, and deterministic replay.
 
+mod schedule;
+
+pub use schedule::{
+    MissedRunPolicy, OverlapPolicy, RetryPolicy, RoutineSchedule, RoutineTriggerDefinition,
+    RoutineTriggerSource, ScheduleError, due_occurrences, next_occurrence,
+};
+
 use async_trait::async_trait;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};

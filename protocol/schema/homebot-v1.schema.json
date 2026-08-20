@@ -49,8 +49,14 @@
     "create_routine_request": {
       "$ref": "#/$defs/CreateRoutineRequest"
     },
+    "create_routine_trigger_request": {
+      "$ref": "#/$defs/CreateRoutineTriggerRequest"
+    },
     "create_secret_request": {
       "$ref": "#/$defs/CreateSecretRequest"
+    },
+    "deliver_routine_trigger_request": {
+      "$ref": "#/$defs/DeliverRoutineTriggerRequest"
     },
     "duplicate_routine_request": {
       "$ref": "#/$defs/DuplicateRoutineRequest"
@@ -76,11 +82,17 @@
     "routine": {
       "$ref": "#/$defs/RoutineSummary"
     },
+    "routine_job": {
+      "$ref": "#/$defs/RoutineJobSummary"
+    },
     "routine_recording": {
       "$ref": "#/$defs/RoutineRecordingSummary"
     },
     "routine_run": {
       "$ref": "#/$defs/RoutineRunSummary"
+    },
+    "routine_trigger": {
+      "$ref": "#/$defs/RoutineTriggerSummary"
     },
     "run_routine_request": {
       "$ref": "#/$defs/RunRoutineRequest"
@@ -127,9 +139,13 @@
     "start_routine_recording_request",
     "append_routine_recording_request",
     "run_routine_request",
+    "create_routine_trigger_request",
+    "deliver_routine_trigger_request",
     "routine",
     "routine_recording",
     "routine_run",
+    "routine_trigger",
+    "routine_job",
     "create_attachment_request",
     "create_attachment_response",
     "finalize_attachment_request",
@@ -1211,6 +1227,32 @@
         "definition"
       ]
     },
+    "CreateRoutineTriggerRequest": {
+      "type": "object",
+      "properties": {
+        "definition": {
+          "$ref": "#/$defs/RoutineTriggerDefinition"
+        },
+        "enabled": {
+          "type": "boolean",
+          "default": true
+        },
+        "idempotency_key": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "request_id": {
+          "type": "string",
+          "format": "uuid"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "request_id",
+        "idempotency_key",
+        "definition"
+      ]
+    },
     "CreateSecretRequest": {
       "description": "Secret-bearing request. Deliberately does not implement `Debug` or `Serialize`.",
       "type": "object",
@@ -1236,6 +1278,31 @@
         "idempotency_key",
         "label",
         "value"
+      ]
+    },
+    "DeliverRoutineTriggerRequest": {
+      "type": "object",
+      "properties": {
+        "delivery_key": {
+          "type": "string"
+        },
+        "idempotency_key": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "inputs": {
+          "default": {}
+        },
+        "request_id": {
+          "type": "string",
+          "format": "uuid"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "request_id",
+        "idempotency_key",
+        "delivery_key"
       ]
     },
     "DuplicateRoutineRequest": {
@@ -1664,6 +1731,64 @@
         "created_at_ms"
       ]
     },
+    "MissedRunPolicy": {
+      "type": "string",
+      "enum": [
+        "skip",
+        "run_once",
+        "catch_up"
+      ]
+    },
+    "OverlapPolicy": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "skip"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "queue"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "parallel"
+            },
+            "maximum": {
+              "type": "integer",
+              "format": "uint16",
+              "maximum": 65535,
+              "minimum": 0
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "maximum"
+          ]
+        }
+      ]
+    },
     "OwnershipHandoffSummary": {
       "type": "object",
       "properties": {
@@ -1956,6 +2081,33 @@
         "snapshot_required"
       ]
     },
+    "RetryPolicy": {
+      "type": "object",
+      "properties": {
+        "initial_backoff_seconds": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "maximum_attempts": {
+          "type": "integer",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0
+        },
+        "maximum_backoff_seconds": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "maximum_attempts",
+        "initial_backoff_seconds",
+        "maximum_backoff_seconds"
+      ]
+    },
     "RiskLevel": {
       "type": "string",
       "enum": [
@@ -2046,6 +2198,97 @@
         "secret_reference"
       ]
     },
+    "RoutineJobSummary": {
+      "type": "object",
+      "properties": {
+        "attempt_count": {
+          "type": "integer",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0
+        },
+        "cancel_requested": {
+          "type": "boolean"
+        },
+        "created_at_unix_ms": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "delivery_key": {
+          "type": "string"
+        },
+        "error_message": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "finished_at_unix_ms": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "input_metadata": true,
+        "next_attempt_at_unix_ms": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "routine_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "routine_version_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "scheduled_for_unix_ms": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "started_at_unix_ms": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "status": {
+          "type": "string"
+        },
+        "trigger": true,
+        "trigger_id": {
+          "type": "string",
+          "format": "uuid"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "trigger_id",
+        "routine_id",
+        "routine_version_id",
+        "delivery_key",
+        "trigger",
+        "input_metadata",
+        "status",
+        "attempt_count",
+        "scheduled_for_unix_ms",
+        "next_attempt_at_unix_ms",
+        "cancel_requested",
+        "created_at_unix_ms"
+      ]
+    },
     "RoutineRecordingSummary": {
       "type": "object",
       "properties": {
@@ -2094,6 +2337,16 @@
     "RoutineRunSummary": {
       "type": "object",
       "properties": {
+        "attempt_count": {
+          "type": "integer",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0
+        },
+        "bot_id": {
+          "type": "string",
+          "format": "uuid"
+        },
         "dry_run": {
           "type": "boolean"
         },
@@ -2115,6 +2368,7 @@
           "type": "string",
           "format": "uuid"
         },
+        "input_metadata": true,
         "results": {
           "type": "array",
           "items": {
@@ -2129,6 +2383,14 @@
           "type": "string",
           "format": "uuid"
         },
+        "scheduled_for_unix_ms": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
         "started_at_unix_ms": {
           "type": "integer",
           "format": "uint64",
@@ -2136,17 +2398,99 @@
         },
         "status": {
           "type": "string"
-        }
+        },
+        "trigger": true
       },
       "additionalProperties": false,
       "required": [
         "id",
         "routine_id",
         "routine_version_id",
+        "bot_id",
         "status",
+        "trigger",
+        "input_metadata",
         "dry_run",
         "results",
+        "attempt_count",
         "started_at_unix_ms"
+      ]
+    },
+    "RoutineSchedule": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "at_unix_ms": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "kind": {
+              "type": "string",
+              "const": "one_shot"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "at_unix_ms"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "anchor_unix_ms": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "every_seconds": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "kind": {
+              "type": "string",
+              "const": "interval"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "anchor_unix_ms",
+            "every_seconds"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "hour": {
+              "type": "integer",
+              "format": "uint8",
+              "maximum": 255,
+              "minimum": 0
+            },
+            "kind": {
+              "type": "string",
+              "const": "daily_local"
+            },
+            "minute": {
+              "type": "integer",
+              "format": "uint8",
+              "maximum": 255,
+              "minimum": 0
+            },
+            "timezone": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "timezone",
+            "hour",
+            "minute"
+          ]
+        }
       ]
     },
     "RoutineStep": {
@@ -2294,6 +2638,168 @@
         "active_version_id",
         "version",
         "definition",
+        "created_at_unix_ms",
+        "updated_at_unix_ms"
+      ]
+    },
+    "RoutineTriggerDefinition": {
+      "type": "object",
+      "properties": {
+        "catch_up_limit": {
+          "type": "integer",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0
+        },
+        "missed_run_policy": {
+          "$ref": "#/$defs/MissedRunPolicy"
+        },
+        "overlap_policy": {
+          "$ref": "#/$defs/OverlapPolicy"
+        },
+        "retry_policy": {
+          "$ref": "#/$defs/RetryPolicy"
+        },
+        "source": {
+          "$ref": "#/$defs/RoutineTriggerSource"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "source",
+        "missed_run_policy",
+        "overlap_policy",
+        "retry_policy",
+        "catch_up_limit"
+      ]
+    },
+    "RoutineTriggerSource": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "schedule"
+            },
+            "schedule": {
+              "$ref": "#/$defs/RoutineSchedule"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "schedule"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "webhook"
+            },
+            "slug": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "slug"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "event_kind": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "const": "event"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "event_kind"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "event_kind": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "const": "plugin"
+            },
+            "plugin_id": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "plugin_id",
+            "event_kind"
+          ]
+        }
+      ]
+    },
+    "RoutineTriggerSummary": {
+      "type": "object",
+      "properties": {
+        "created_at_unix_ms": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "definition": {
+          "$ref": "#/$defs/RoutineTriggerDefinition"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "last_evaluated_at_unix_ms": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "next_fire_at_unix_ms": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "routine_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "updated_at_unix_ms": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "routine_id",
+        "definition",
+        "enabled",
         "created_at_unix_ms",
         "updated_at_unix_ms"
       ]
@@ -2841,6 +3347,55 @@
           "required": [
             "kind",
             "run"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "routine_trigger_changed"
+            },
+            "trigger": {
+              "$ref": "#/$defs/RoutineTriggerSummary"
+            }
+          },
+          "required": [
+            "kind",
+            "trigger"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "routine_trigger_removed"
+            },
+            "trigger_id": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          "required": [
+            "kind",
+            "trigger_id"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "job": {
+              "$ref": "#/$defs/RoutineJobSummary"
+            },
+            "kind": {
+              "type": "string",
+              "const": "routine_job_changed"
+            }
+          },
+          "required": [
+            "kind",
+            "job"
           ]
         },
         {

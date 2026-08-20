@@ -22,7 +22,9 @@ use homebot_routines::{
     RoutineActionExecutor, RoutineError, RoutineStep, definition_from_recording, replay, validate,
 };
 use homebot_storage::IdempotencyClaim;
-use homebot_storage::{RoutineRecord, RoutineRecordingRecord, RoutineRunRecord, RoutineUpdate};
+use homebot_storage::{
+    RoutineJobRecord, RoutineRecord, RoutineRecordingRecord, RoutineRunRecord, RoutineUpdate,
+};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
@@ -412,11 +414,73 @@ async fn execute(
         owner_id: state.owner_id,
         routine_id,
         routine_version_id: routine.active_version_id,
+        bot_id: routine.bot_id,
         status: status.to_owned(),
+        trigger: serde_json::json!({"kind": "manual"}),
         dry_run,
         inputs: redacted_input_metadata(&routine.definition, &request.inputs),
         results: Some(results),
         error_message,
+        attempt_count: 1,
+        scheduled_for_ms: None,
+        started_at_ms: started,
+        finished_at_ms: Some(unix_time_ms()),
+    };
+    state.storage.create_routine_run(&record).await?;
+    let run = run_summary(&record);
+    publish_run(state, run.clone()).await?;
+    Ok(run)
+}
+
+pub(super) async fn execute_job(
+    state: &AppState,
+    job: &RoutineJobRecord,
+) -> Result<RoutineRunSummary, ApiError> {
+    let current = state
+        .storage
+        .routine(state.owner_id, job.routine_id)
+        .await?;
+    if !current.enabled || current.draft {
+        return Err(ApiError::validation("Routine is disabled or still a draft"));
+    }
+    let routine = state
+        .storage
+        .routine_version(state.owner_id, job.routine_id, job.routine_version_id)
+        .await?;
+    let started = unix_time_ms();
+    let executor = ServerExecutor {
+        state,
+        routine_bot_id: routine.bot_id,
+    };
+    let (results, status, error_message) =
+        match replay(&executor, &routine.definition, &job.inputs, false).await {
+            Ok(results) => {
+                let status = if results
+                    .iter()
+                    .any(|step| step.status == RoutineStepStatus::ApprovalRequired)
+                {
+                    "waiting_approval"
+                } else {
+                    "succeeded"
+                };
+                (results, status, None)
+            }
+            Err(error) => (Vec::new(), "failed", Some(routine_error_message(&error))),
+        };
+    let record = RoutineRunRecord {
+        id: Uuid::now_v7(),
+        owner_id: state.owner_id,
+        routine_id: job.routine_id,
+        routine_version_id: job.routine_version_id,
+        bot_id: routine.bot_id,
+        status: status.to_owned(),
+        trigger: job.trigger.clone(),
+        dry_run: false,
+        inputs: redacted_input_metadata(&routine.definition, &job.inputs),
+        results: Some(results),
+        error_message,
+        attempt_count: job.attempt_count,
+        scheduled_for_ms: Some(job.scheduled_for_ms),
         started_at_ms: started,
         finished_at_ms: Some(unix_time_ms()),
     };
@@ -668,10 +732,15 @@ fn run_summary(record: &RoutineRunRecord) -> RoutineRunSummary {
         id: record.id,
         routine_id: record.routine_id,
         routine_version_id: record.routine_version_id,
+        bot_id: record.bot_id,
         status: record.status.clone(),
+        trigger: record.trigger.clone(),
+        input_metadata: record.inputs.clone(),
         dry_run: record.dry_run,
         results: record.results.clone().unwrap_or_default(),
         error_message: record.error_message.clone(),
+        attempt_count: record.attempt_count,
+        scheduled_for_unix_ms: record.scheduled_for_ms.map(millis),
         started_at_unix_ms: millis(record.started_at_ms),
         finished_at_unix_ms: record.finished_at_ms.map(millis),
     }

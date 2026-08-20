@@ -12,13 +12,15 @@ use homebot_protocol::{
     BotProviderStatus, BotResponse, BotShape, ChatTimelineResponse, CreateAttachmentRequest,
     CreateAttachmentResponse, CreateBotRequest, CreateDirectChatRequest, CreateDirectChatResponse,
     CreateGroupChatRequest, CreateGroupChatResponse, CreateLocalMcpPluginRequest,
-    CreateRoutineRequest, DuplicateRoutineRequest, FinalizeAttachmentRequest, GroupBotStatus,
-    GroupTimelineResponse, HandoffGroupRequest, PluginConnectionState, PluginMutationRequest,
-    PluginSummary, RecordedAction, RecordedActor, RoutineDefinition, RoutineRecordingSummary,
-    RoutineRunSummary, RoutineStep, RoutineStepStatus, RoutineSummary, RunRoutineRequest,
-    SecretSummary, SendGroupMessageRequest, SendMessageRequest, SendMessageResponse,
-    StartRoutineRecordingRequest, UpdateBotRequest, UpdateGroupParticipantRequest,
-    UpdateRoutineRequest,
+    CreateRoutineRequest, CreateRoutineTriggerRequest, DeliverRoutineTriggerRequest,
+    DuplicateRoutineRequest, FinalizeAttachmentRequest, GroupBotStatus, GroupTimelineResponse,
+    HandoffGroupRequest, MissedRunPolicy, OverlapPolicy, PluginConnectionState,
+    PluginMutationRequest, PluginSummary, RecordedAction, RecordedActor, RetryPolicy,
+    RoutineDefinition, RoutineInput, RoutineInputKind, RoutineJobSummary, RoutineRecordingSummary,
+    RoutineRunSummary, RoutineSchedule, RoutineStep, RoutineStepStatus, RoutineSummary,
+    RoutineTriggerDefinition, RoutineTriggerSource, RunRoutineRequest, SecretSummary,
+    SendGroupMessageRequest, SendMessageRequest, SendMessageResponse, StartRoutineRecordingRequest,
+    UpdateBotRequest, UpdateGroupParticipantRequest, UpdateRoutineRequest,
 };
 use homebot_providers::{
     ActivityKind, ActivityStatus as ProviderActivityStatus, ApprovalDecision, CompactRequest,
@@ -559,6 +561,353 @@ async fn routine_failures_are_durable_and_invalid_finish_keeps_recording_editabl
     assert_eq!(runs[0].id, run_id);
     assert_eq!(runs[0].status, "failed");
     Ok(())
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn headless_scheduler_survives_restart_deduplicates_and_redacts_history()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let database = directory.path().join("homebot.db");
+    let storage = Storage::open(&database).await?;
+    let bot = storage
+        .create_bot(
+            Uuid::nil(),
+            homebot_domain::Bot::create("Nova", "Research")?,
+            1,
+        )
+        .await?;
+    let state = AppState::new(storage.clone(), "correct-token");
+    let app = router(state.clone());
+    let routine_id = Uuid::now_v7();
+    let create = CreateRoutineRequest {
+        request_id: Uuid::now_v7(),
+        idempotency_key: routine_id,
+        bot_id: bot.id.0,
+        name: "Durable scheduler fixture".to_owned(),
+        description: String::new(),
+        definition: RoutineDefinition {
+            inputs: vec![RoutineInput {
+                key: "credential".to_owned(),
+                label: "Credential".to_owned(),
+                kind: RoutineInputKind::SecretReference,
+                required: false,
+            }],
+            steps: vec![RoutineStep::RecordOutput {
+                output_key: "result".to_owned(),
+                value_template: "done".to_owned(),
+            }],
+            expected_outputs: vec![homebot_protocol::ExpectedOutput {
+                key: "result".to_owned(),
+                description: "Deterministic fixture".to_owned(),
+                required: true,
+            }],
+        },
+        draft: false,
+    };
+    let response = app
+        .clone()
+        .oneshot(json_request("POST", "/api/v1/routines", &create))
+        .await?;
+    let routine: RoutineSummary = response_json(response).await?;
+    let response = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            &format!("/api/v1/routines/{routine_id}/enable"),
+            &PluginMutationRequest {
+                request_id: Uuid::now_v7(),
+                idempotency_key: Uuid::now_v7(),
+            },
+        ))
+        .await?;
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let scheduled_for = unix_time_ms() + 200;
+    let schedule_trigger_id = Uuid::now_v7();
+    let response = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            &format!("/api/v1/routines/{routine_id}/triggers"),
+            &CreateRoutineTriggerRequest {
+                request_id: Uuid::now_v7(),
+                idempotency_key: schedule_trigger_id,
+                definition: RoutineTriggerDefinition {
+                    source: RoutineTriggerSource::Schedule {
+                        schedule: RoutineSchedule::OneShot {
+                            at_unix_ms: scheduled_for,
+                        },
+                    },
+                    missed_run_policy: MissedRunPolicy::RunOnce,
+                    overlap_policy: OverlapPolicy::Queue,
+                    retry_policy: RetryPolicy::default(),
+                    catch_up_limit: 1,
+                },
+                enabled: true,
+            },
+        ))
+        .await?;
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let _ = state.server_shutdown.send(true);
+    drop(app);
+    tokio::time::sleep(Duration::from_millis(250)).await;
+
+    let restarted = AppState::new(storage.clone(), "correct-token");
+    let app = router(restarted.clone());
+    let scheduled =
+        wait_for_job_status(&app, routine_id, "succeeded", Duration::from_secs(2)).await?;
+    assert_eq!(scheduled.routine_version_id, routine.active_version_id);
+    assert_eq!(scheduled.trigger_id, schedule_trigger_id);
+
+    let event_trigger_id = Uuid::now_v7();
+    let response = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            &format!("/api/v1/routines/{routine_id}/triggers"),
+            &CreateRoutineTriggerRequest {
+                request_id: Uuid::now_v7(),
+                idempotency_key: event_trigger_id,
+                definition: trigger_definition(RoutineTriggerSource::Event {
+                    event_kind: "fixture_event".to_owned(),
+                }),
+                enabled: true,
+            },
+        ))
+        .await?;
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let rejected = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            &format!("/api/v1/routine-triggers/{event_trigger_id}/deliver"),
+            &DeliverRoutineTriggerRequest {
+                request_id: Uuid::now_v7(),
+                idempotency_key: Uuid::now_v7(),
+                delivery_key: "forged-event".to_owned(),
+                inputs: json!({}),
+            },
+        ))
+        .await?;
+    assert_eq!(rejected.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let _ = restarted.server_shutdown.send(true);
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    storage
+        .append_event(Uuid::nil(), "fixture_event", &json!({}), unix_time_ms())
+        .await?;
+    drop(app);
+
+    let final_state = AppState::new(storage.clone(), "correct-token");
+    let app = router(final_state.clone());
+    let event_job =
+        wait_for_trigger_job(&app, routine_id, event_trigger_id, Duration::from_secs(2)).await?;
+    assert_eq!(event_job.status, "succeeded");
+
+    let plugin_id = Uuid::now_v7();
+    let response = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/plugins",
+            &CreateLocalMcpPluginRequest {
+                request_id: Uuid::now_v7(),
+                idempotency_key: plugin_id,
+                name: "Scheduler event fixture".to_owned(),
+                description: String::new(),
+                program: "/bin/false".to_owned(),
+                arguments: Vec::new(),
+            },
+        ))
+        .await?;
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let plugin_trigger_id = Uuid::now_v7();
+    let response = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            &format!("/api/v1/routines/{routine_id}/triggers"),
+            &CreateRoutineTriggerRequest {
+                request_id: Uuid::now_v7(),
+                idempotency_key: plugin_trigger_id,
+                definition: trigger_definition(RoutineTriggerSource::Plugin {
+                    plugin_id,
+                    event_kind: "plugin_changed".to_owned(),
+                }),
+                enabled: true,
+            },
+        ))
+        .await?;
+    assert_eq!(response.status(), StatusCode::CREATED);
+    storage
+        .append_event(
+            Uuid::nil(),
+            "plugin_changed",
+            &json!({"kind":"plugin_changed","plugin":{"id":Uuid::now_v7()}}),
+            unix_time_ms(),
+        )
+        .await?;
+    storage
+        .append_event(
+            Uuid::nil(),
+            "plugin_changed",
+            &json!({"kind":"plugin_changed","plugin":{"id":plugin_id}}),
+            unix_time_ms(),
+        )
+        .await?;
+    let plugin_job =
+        wait_for_trigger_job(&app, routine_id, plugin_trigger_id, Duration::from_secs(2)).await?;
+    assert_eq!(plugin_job.status, "succeeded");
+    assert_eq!(
+        routine_jobs(&app, routine_id)
+            .await?
+            .iter()
+            .filter(|job| job.trigger_id == plugin_trigger_id)
+            .count(),
+        1
+    );
+
+    let webhook_trigger_id = Uuid::now_v7();
+    let response = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            &format!("/api/v1/routines/{routine_id}/triggers"),
+            &CreateRoutineTriggerRequest {
+                request_id: Uuid::now_v7(),
+                idempotency_key: webhook_trigger_id,
+                definition: trigger_definition(RoutineTriggerSource::Webhook {
+                    slug: "deploy".to_owned(),
+                }),
+                enabled: true,
+            },
+        ))
+        .await?;
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let sensitive_reference = Uuid::now_v7().to_string();
+    let delivery = DeliverRoutineTriggerRequest {
+        request_id: Uuid::now_v7(),
+        idempotency_key: Uuid::now_v7(),
+        delivery_key: "delivery-42".to_owned(),
+        inputs: json!({"credential":sensitive_reference.clone()}),
+    };
+    let first = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            &format!("/api/v1/routine-triggers/{webhook_trigger_id}/deliver"),
+            &delivery,
+        ))
+        .await?;
+    assert_eq!(first.status(), StatusCode::ACCEPTED);
+    let first: RoutineJobSummary = response_json(first).await?;
+    let duplicate = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            &format!("/api/v1/routine-triggers/{webhook_trigger_id}/deliver"),
+            &delivery,
+        ))
+        .await?;
+    assert_eq!(duplicate.status(), StatusCode::OK);
+    assert_eq!(
+        response_json::<RoutineJobSummary>(duplicate).await?.id,
+        first.id
+    );
+    let completed =
+        wait_for_trigger_job(&app, routine_id, webhook_trigger_id, Duration::from_secs(2)).await?;
+    assert_eq!(completed.status, "succeeded");
+    assert!(!serde_json::to_string(&completed)?.contains(&sensitive_reference));
+
+    let runs_response = app
+        .clone()
+        .oneshot(
+            Request::get(format!("/api/v1/routines/{routine_id}/runs"))
+                .header("authorization", "Bearer correct-token")
+                .body(Body::empty())?,
+        )
+        .await?;
+    let runs: Vec<RoutineRunSummary> = response_json(runs_response).await?;
+    assert_eq!(runs.len(), 4);
+    assert!(runs.iter().all(|run| run.bot_id == bot.id.0));
+    assert!(runs.iter().all(|run| run.scheduled_for_unix_ms.is_some()));
+    let webhook_run = runs
+        .iter()
+        .find(|run| run.trigger.get("kind") == Some(&json!("webhook")))
+        .ok_or("missing webhook run")?;
+    assert_eq!(
+        webhook_run.input_metadata,
+        json!({"credential":{"kind":"secret_reference","present":true}})
+    );
+    assert!(!serde_json::to_string(&runs)?.contains(&sensitive_reference));
+    let _ = final_state.server_shutdown.send(true);
+    Ok(())
+}
+
+fn trigger_definition(source: RoutineTriggerSource) -> RoutineTriggerDefinition {
+    RoutineTriggerDefinition {
+        source,
+        missed_run_policy: MissedRunPolicy::RunOnce,
+        overlap_policy: OverlapPolicy::Queue,
+        retry_policy: RetryPolicy::default(),
+        catch_up_limit: 1,
+    }
+}
+
+async fn wait_for_job_status(
+    app: &Router,
+    routine_id: Uuid,
+    status: &str,
+    timeout: Duration,
+) -> Result<RoutineJobSummary, Box<dyn std::error::Error>> {
+    let started = tokio::time::Instant::now();
+    loop {
+        let jobs = routine_jobs(app, routine_id).await?;
+        if let Some(job) = jobs.into_iter().find(|job| job.status == status) {
+            return Ok(job);
+        }
+        if started.elapsed() >= timeout {
+            return Err(format!("routine job did not reach {status}").into());
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+}
+
+async fn wait_for_trigger_job(
+    app: &Router,
+    routine_id: Uuid,
+    trigger_id: Uuid,
+    timeout: Duration,
+) -> Result<RoutineJobSummary, Box<dyn std::error::Error>> {
+    let started = tokio::time::Instant::now();
+    loop {
+        let jobs = routine_jobs(app, routine_id).await?;
+        if let Some(job) = jobs
+            .iter()
+            .find(|job| job.trigger_id == trigger_id && job.status == "succeeded")
+        {
+            return Ok(job.clone());
+        }
+        if started.elapsed() >= timeout {
+            return Err(format!("routine trigger job did not succeed: {jobs:?}").into());
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+}
+
+async fn routine_jobs(
+    app: &Router,
+    routine_id: Uuid,
+) -> Result<Vec<RoutineJobSummary>, Box<dyn std::error::Error>> {
+    let response = app
+        .clone()
+        .oneshot(
+            Request::get(format!("/api/v1/routines/{routine_id}/jobs"))
+                .header("authorization", "Bearer correct-token")
+                .body(Body::empty())?,
+        )
+        .await?;
+    response_json(response).await
 }
 
 async fn spawn_app(

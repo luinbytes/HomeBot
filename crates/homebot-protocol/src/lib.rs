@@ -1,8 +1,9 @@
 //! Versioned, provider-neutral contracts shared by every `HomeBot` client.
 
 pub use homebot_routines::{
-    ExpectedOutput, RecordedAction, RecordedActor, RoutineDefinition, RoutineExecutionResult,
-    RoutineInput, RoutineInputKind, RoutineStep, RoutineStepStatus,
+    ExpectedOutput, MissedRunPolicy, OverlapPolicy, RecordedAction, RecordedActor, RetryPolicy,
+    RoutineDefinition, RoutineExecutionResult, RoutineInput, RoutineInputKind, RoutineSchedule,
+    RoutineStep, RoutineStepStatus, RoutineTriggerDefinition, RoutineTriggerSource,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -131,6 +132,15 @@ pub enum ServerEventBody {
     },
     RoutineRunChanged {
         run: RoutineRunSummary,
+    },
+    RoutineTriggerChanged {
+        trigger: RoutineTriggerSummary,
+    },
+    RoutineTriggerRemoved {
+        trigger_id: Uuid,
+    },
+    RoutineJobChanged {
+        job: RoutineJobSummary,
     },
     CommandAccepted {
         request_id: Uuid,
@@ -930,11 +940,70 @@ pub struct RoutineRunSummary {
     pub id: Uuid,
     pub routine_id: Uuid,
     pub routine_version_id: Uuid,
+    pub bot_id: Uuid,
     pub status: String,
+    pub trigger: Value,
+    pub input_metadata: Value,
     pub dry_run: bool,
     pub results: Vec<RoutineExecutionResult>,
     pub error_message: Option<String>,
+    pub attempt_count: u16,
+    pub scheduled_for_unix_ms: Option<u64>,
     pub started_at_unix_ms: u64,
+    pub finished_at_unix_ms: Option<u64>,
+}
+
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RoutineTriggerSummary {
+    pub id: Uuid,
+    pub routine_id: Uuid,
+    pub definition: RoutineTriggerDefinition,
+    pub enabled: bool,
+    pub last_evaluated_at_unix_ms: Option<u64>,
+    pub next_fire_at_unix_ms: Option<u64>,
+    pub created_at_unix_ms: u64,
+    pub updated_at_unix_ms: u64,
+}
+
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CreateRoutineTriggerRequest {
+    pub request_id: Uuid,
+    pub idempotency_key: Uuid,
+    pub definition: RoutineTriggerDefinition,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct DeliverRoutineTriggerRequest {
+    pub request_id: Uuid,
+    pub idempotency_key: Uuid,
+    pub delivery_key: String,
+    #[serde(default = "empty_object")]
+    pub inputs: Value,
+}
+
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RoutineJobSummary {
+    pub id: Uuid,
+    pub trigger_id: Uuid,
+    pub routine_id: Uuid,
+    pub routine_version_id: Uuid,
+    pub delivery_key: String,
+    pub trigger: Value,
+    pub input_metadata: Value,
+    pub status: String,
+    pub attempt_count: u16,
+    pub scheduled_for_unix_ms: u64,
+    pub next_attempt_at_unix_ms: u64,
+    pub cancel_requested: bool,
+    pub error_message: Option<String>,
+    pub created_at_unix_ms: u64,
+    pub started_at_unix_ms: Option<u64>,
     pub finished_at_unix_ms: Option<u64>,
 }
 
@@ -1001,9 +1070,13 @@ pub struct ProtocolV1Schema {
     pub start_routine_recording_request: StartRoutineRecordingRequest,
     pub append_routine_recording_request: AppendRoutineRecordingRequest,
     pub run_routine_request: RunRoutineRequest,
+    pub create_routine_trigger_request: CreateRoutineTriggerRequest,
+    pub deliver_routine_trigger_request: DeliverRoutineTriggerRequest,
     pub routine: RoutineSummary,
     pub routine_recording: RoutineRecordingSummary,
     pub routine_run: RoutineRunSummary,
+    pub routine_trigger: RoutineTriggerSummary,
+    pub routine_job: RoutineJobSummary,
     pub create_attachment_request: CreateAttachmentRequest,
     pub create_attachment_response: CreateAttachmentResponse,
     pub finalize_attachment_request: FinalizeAttachmentRequest,

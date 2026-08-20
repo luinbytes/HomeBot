@@ -14,6 +14,18 @@ Routine create/update/list/delete, rename, duplicate and enable/disable operatio
 
 The API exposes Run now, Dry run and recent run history. Duplicate mutation retries return the prior run instead of dispatching steps twice. Successful, approval-waiting and failed attempts are all durable, use safe error summaries and survive restart. Invalid recording conversion leaves the recording open so the user can correct it. Durable history stores only input kind/presence metadata, never input values. Draft or disabled routines cannot run normally. The desktop includes routine list, editor and recording states plus a read-only projection updated by routine server events; 6C7-73 owns wiring that projection into the production authenticated desktop transport. Android uses the generated protocol models.
 
-## Scheduling boundary
+## Headless schedules and triggers
 
-Issue 6C7-53 adds the headless scheduler: one-shot/recurring/event triggers, time zones, missed-run policy, retries/backoff, cancellation, duplicate-event idempotency, concurrency limits and durable redacted run history. Routine execution does not depend on a connected client.
+The server evaluates enabled triggers without a connected client. A trigger can be a one-shot instant, an anchored interval, a daily wall-clock time in an IANA timezone, an authenticated webhook delivery, a durable HomeBot event, or a plugin-scoped event. Daily schedules skip nonexistent spring-forward times and choose the earlier UTC instant when a fall-back time is ambiguous. Each schedule stores its evaluation cursor, and each event trigger stores its monotonic outbox cursor, so restart recovery does not depend on an in-memory timer or broadcast.
+
+Missed occurrences use an explicit `skip`, `run_once`, or bounded `catch_up` policy. Every accepted occurrence becomes a durable job bound to the routine version that was active at enqueue time. External `delivery_key` values and schedule/event identifiers are unique per trigger, making retries safe. The scheduler claims jobs transactionally, applies `skip`, `queue`, or bounded `parallel` overlap policy, and executes independent allowed jobs concurrently. Failures use bounded exponential backoff; queued, retrying, or running jobs can be cancelled through the authenticated API.
+
+Routes:
+
+- `GET|POST /api/v1/routines/{routine_id}/triggers`
+- `DELETE /api/v1/routine-triggers/{trigger_id}`
+- `POST /api/v1/routine-triggers/{trigger_id}/deliver`
+- `GET /api/v1/routines/{routine_id}/jobs`
+- `POST /api/v1/routine-jobs/{job_id}/cancel`
+
+Run history records trigger metadata, exact routine version, Bot, scheduled/start/finish times, attempt and outcome. Input values are reduced to declared kind and presence metadata before the run row or protocol event is written. Plugin response bodies are never copied into durable routine activity. Approval-marked steps stop before dispatch; unattended jobs fail safely instead of bypassing the approval boundary.

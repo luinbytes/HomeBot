@@ -54,6 +54,8 @@ Routine definitions contain typed inputs, expected outputs and tagged structured
 
 Each run carries the immutable `routine_version_id`, step status and redacted structured output. Dry-run results are `planned` and have no output. Approval-required replay stops before executing the marked step.
 
+Routine triggers and jobs use authenticated HTTP mutations plus durable `routine_trigger_changed`, `routine_trigger_removed`, and `routine_job_changed` events. Trigger definitions carry timezone/missed-run/overlap/retry policy; job summaries expose only redacted input metadata. Schedule delivery keys and external webhook/event delivery keys are idempotent. Event triggers advance a durable outbox sequence only after all preceding events have been examined, which provides restart-safe delivery without treating WebSocket broadcasts as authority.
+
 ## Attachments
 
 Attachments are uploaded over authenticated HTTP with size/type limits, streaming digest verification, an idempotency key, and an explicit finalise step. WebSocket messages refer to completed attachment IDs. Partial uploads expire and cannot be consumed.

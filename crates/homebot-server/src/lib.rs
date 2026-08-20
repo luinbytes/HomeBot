@@ -8,6 +8,7 @@ mod groups;
 mod plugins;
 mod provider_turn;
 mod routines;
+mod scheduler;
 mod secrets;
 
 use axum::{
@@ -31,7 +32,14 @@ use homebot_secrets::{OsSecretVault, SecretVault};
 use homebot_storage::{IdempotencyClaim, ReplayWindow, Storage};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use std::{collections::HashMap, path::PathBuf, sync::Arc};
+use std::{
+    collections::HashMap,
+    path::PathBuf,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+};
 use subtle::ConstantTimeEq;
 use tokio::sync::{Mutex, Notify, broadcast, mpsc, watch};
 use tokio::{net::TcpListener, sync::oneshot};
@@ -74,6 +82,9 @@ pub struct AppState {
     chat_operations: Arc<Mutex<HashMap<Uuid, ChatOperation>>>,
     live_events: broadcast::Sender<ServerEvent>,
     server_shutdown: watch::Sender<bool>,
+    scheduler_started: Arc<AtomicBool>,
+    routine_cancellations: Arc<Mutex<HashMap<Uuid, Arc<Notify>>>>,
+    trigger_events: broadcast::Sender<(String, Uuid)>,
 }
 
 impl AppState {
@@ -81,6 +92,7 @@ impl AppState {
     pub fn new(storage: Storage, bearer_token: &str) -> Self {
         let (live_events, _) = broadcast::channel(LIVE_EVENT_CAPACITY);
         let (server_shutdown, _) = watch::channel(false);
+        let (trigger_events, _) = broadcast::channel(1_024);
         Self {
             storage,
             bearer_digest: Sha256::digest(bearer_token.as_bytes()).into(),
@@ -97,6 +109,9 @@ impl AppState {
             chat_operations: Arc::new(Mutex::new(HashMap::new())),
             live_events,
             server_shutdown,
+            scheduler_started: Arc::new(AtomicBool::new(false)),
+            routine_cancellations: Arc::new(Mutex::new(HashMap::new())),
+            trigger_events,
         }
     }
 
@@ -150,6 +165,9 @@ impl AppState {
 
 #[allow(clippy::too_many_lines)]
 pub fn router(state: AppState) -> Router {
+    if !state.scheduler_started.swap(true, Ordering::AcqRel) {
+        scheduler::start(state.clone());
+    }
     let authenticated = Router::new()
         .route("/api/v1/version", get(version))
         .route("/api/v1/events", get(events_socket))
@@ -264,6 +282,26 @@ pub fn router(state: AppState) -> Router {
             post(routines::dry_run),
         )
         .route("/api/v1/routines/{routine_id}/runs", get(routines::runs))
+        .route(
+            "/api/v1/routines/{routine_id}/triggers",
+            get(scheduler::list_triggers).post(scheduler::create_trigger),
+        )
+        .route(
+            "/api/v1/routine-triggers/{trigger_id}",
+            axum::routing::delete(scheduler::delete_trigger),
+        )
+        .route(
+            "/api/v1/routine-triggers/{trigger_id}/deliver",
+            post(scheduler::deliver_trigger),
+        )
+        .route(
+            "/api/v1/routines/{routine_id}/jobs",
+            get(scheduler::list_jobs),
+        )
+        .route(
+            "/api/v1/routine-jobs/{job_id}/cancel",
+            post(scheduler::cancel_job),
+        )
         .route(
             "/api/v1/routine-recordings",
             post(routines::start_recording),
@@ -753,6 +791,9 @@ async fn persist_event(
         .map_err(|_| ())?;
     let event: ServerEvent = serde_json::from_value(stored.payload).map_err(|_| ())?;
     let _ = state.live_events.send(event.clone());
+    if !kind.starts_with("routine_") {
+        let _ = state.trigger_events.send((kind.to_owned(), event.event_id));
+    }
     Ok(event)
 }
 

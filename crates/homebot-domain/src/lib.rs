@@ -1,5 +1,7 @@
 //! Provider-independent `HomeBot` product concepts.
 
+pub mod chat;
+
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 

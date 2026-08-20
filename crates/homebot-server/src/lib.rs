@@ -2,6 +2,7 @@
 
 mod attachments;
 mod bots;
+mod chats;
 
 use axum::{
     Json, Router,
@@ -117,6 +118,14 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/bots/{bot_id}/archive", post(bots::archive))
         .route("/api/v1/bots/{bot_id}/restore", post(bots::restore))
         .route("/api/v1/bots/{bot_id}/read", post(bots::mark_read))
+        .route("/api/v1/chats/direct", post(chats::create_direct))
+        .route("/api/v1/chats/{chat_id}/timeline", get(chats::timeline))
+        .route(
+            "/api/v1/chats/{chat_id}/messages",
+            post(chats::send_message),
+        )
+        .route("/api/v1/chats/{chat_id}/steer", post(chats::steer))
+        .route("/api/v1/chats/{chat_id}/stop", post(chats::stop))
         .route("/api/v1/attachments", post(attachments::create_attachment))
         .route(
             "/api/v1/attachments/{attachment_id}/content",
@@ -396,9 +405,17 @@ async fn current_snapshot(state: &AppState) -> Snapshot {
     for bot in bots {
         summaries.push(bots::summary(state, bot).await);
     }
+    let chats = state
+        .storage
+        .list_direct_chats(state.owner_id)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(chats::chat_summary)
+        .collect();
     Snapshot {
         bots: summaries,
-        chats: Vec::new(),
+        chats,
     }
 }
 

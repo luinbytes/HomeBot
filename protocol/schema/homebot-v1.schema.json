@@ -13,6 +13,9 @@
     "bot_response": {
       "$ref": "#/$defs/BotResponse"
     },
+    "chat_timeline_response": {
+      "$ref": "#/$defs/ChatTimelineResponse"
+    },
     "client_message": {
       "$ref": "#/$defs/ClientMessage"
     },
@@ -25,11 +28,26 @@
     "create_bot_request": {
       "$ref": "#/$defs/CreateBotRequest"
     },
+    "create_direct_chat_request": {
+      "$ref": "#/$defs/CreateDirectChatRequest"
+    },
+    "create_direct_chat_response": {
+      "$ref": "#/$defs/CreateDirectChatResponse"
+    },
     "error": {
       "$ref": "#/$defs/ErrorEnvelope"
     },
     "finalize_attachment_request": {
       "$ref": "#/$defs/FinalizeAttachmentRequest"
+    },
+    "message_mutation_request": {
+      "$ref": "#/$defs/MessageMutationRequest"
+    },
+    "send_message_request": {
+      "$ref": "#/$defs/SendMessageRequest"
+    },
+    "send_message_response": {
+      "$ref": "#/$defs/SendMessageResponse"
     },
     "server_event": {
       "$ref": "#/$defs/ServerEvent"
@@ -49,9 +67,136 @@
     "create_bot_request",
     "update_bot_request",
     "bot_mutation_request",
-    "bot_response"
+    "bot_response",
+    "create_direct_chat_request",
+    "create_direct_chat_response",
+    "send_message_request",
+    "send_message_response",
+    "message_mutation_request",
+    "chat_timeline_response"
   ],
   "$defs": {
+    "ActivityStatus": {
+      "type": "string",
+      "enum": [
+        "pending",
+        "running",
+        "succeeded",
+        "failed",
+        "cancelled"
+      ]
+    },
+    "ActivitySummary": {
+      "type": "object",
+      "properties": {
+        "chat_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "detail": {
+          "type": "string"
+        },
+        "finished_at_ms": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int64"
+        },
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "message_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid"
+        },
+        "requires_attention": {
+          "type": "boolean"
+        },
+        "started_at_ms": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "status": {
+          "$ref": "#/$defs/ActivityStatus"
+        },
+        "title": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "chat_id",
+        "title",
+        "detail",
+        "status",
+        "requires_attention",
+        "started_at_ms"
+      ]
+    },
+    "ApprovalStatus": {
+      "type": "string",
+      "enum": [
+        "pending",
+        "allowed",
+        "denied",
+        "expired"
+      ]
+    },
+    "ApprovalSummary": {
+      "type": "object",
+      "properties": {
+        "chat_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "created_at_ms": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "decided_at_ms": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int64"
+        },
+        "detail": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "message_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid"
+        },
+        "status": {
+          "$ref": "#/$defs/ApprovalStatus"
+        },
+        "title": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "chat_id",
+        "title",
+        "detail",
+        "status",
+        "created_at_ms"
+      ]
+    },
     "Attachment": {
       "type": "object",
       "properties": {
@@ -234,6 +379,10 @@
     "ChatSummary": {
       "type": "object",
       "properties": {
+        "bot_id": {
+          "type": "string",
+          "format": "uuid"
+        },
         "id": {
           "type": "string",
           "format": "uuid"
@@ -243,15 +392,78 @@
           "format": "uint64",
           "minimum": 0
         },
+        "queued_count": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "running": {
+          "type": "boolean"
+        },
         "title": {
           "type": "string"
+        },
+        "unread_count": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
         }
       },
       "additionalProperties": false,
       "required": [
         "id",
         "title",
+        "bot_id",
+        "unread_count",
+        "running",
+        "queued_count",
         "last_sequence"
+      ]
+    },
+    "ChatTimelineResponse": {
+      "type": "object",
+      "properties": {
+        "activities": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ActivitySummary"
+          }
+        },
+        "approvals": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ApprovalSummary"
+          }
+        },
+        "boundary_sequence": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "chat": {
+          "$ref": "#/$defs/ChatSummary"
+        },
+        "messages": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/MessageSummary"
+          }
+        },
+        "queued_prompts": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/QueuedPromptSummary"
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "chat",
+        "messages",
+        "activities",
+        "approvals",
+        "queued_prompts",
+        "boundary_sequence"
       ]
     },
     "ClientMessage": {
@@ -511,6 +723,41 @@
         "permission_profile"
       ]
     },
+    "CreateDirectChatRequest": {
+      "type": "object",
+      "properties": {
+        "bot_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "idempotency_key": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "request_id": {
+          "type": "string",
+          "format": "uuid"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "request_id",
+        "idempotency_key",
+        "bot_id"
+      ]
+    },
+    "CreateDirectChatResponse": {
+      "type": "object",
+      "properties": {
+        "chat": {
+          "$ref": "#/$defs/ChatSummary"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "chat"
+      ]
+    },
     "ErrorCode": {
       "type": "string",
       "enum": [
@@ -586,6 +833,204 @@
         "sha256"
       ]
     },
+    "MessageAuthor": {
+      "type": "string",
+      "enum": [
+        "user",
+        "bot",
+        "system"
+      ]
+    },
+    "MessageMutationRequest": {
+      "type": "object",
+      "properties": {
+        "idempotency_key": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "request_id": {
+          "type": "string",
+          "format": "uuid"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "request_id",
+        "idempotency_key"
+      ]
+    },
+    "MessagePart": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "kind": {
+              "type": "string",
+              "const": "text"
+            },
+            "ordinal": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "text": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "id",
+            "ordinal",
+            "text"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "attachment": {
+              "$ref": "#/$defs/Attachment"
+            },
+            "id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "kind": {
+              "type": "string",
+              "const": "attachment"
+            },
+            "ordinal": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            }
+          },
+          "required": [
+            "kind",
+            "id",
+            "ordinal",
+            "attachment"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "kind": {
+              "type": "string",
+              "const": "notice"
+            },
+            "ordinal": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "text": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "id",
+            "ordinal",
+            "text"
+          ]
+        }
+      ]
+    },
+    "MessageStatus": {
+      "type": "string",
+      "enum": [
+        "queued",
+        "streaming",
+        "completed",
+        "failed",
+        "cancelled"
+      ]
+    },
+    "MessageSummary": {
+      "type": "object",
+      "properties": {
+        "author": {
+          "$ref": "#/$defs/MessageAuthor"
+        },
+        "author_bot_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid"
+        },
+        "chat_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "completed_at_ms": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int64"
+        },
+        "created_at_ms": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "error": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ErrorEnvelope"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "mentioned_bot_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        "parts": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/MessagePart"
+          }
+        },
+        "reply_to_message_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid"
+        },
+        "status": {
+          "$ref": "#/$defs/MessageStatus"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "chat_id",
+        "author",
+        "status",
+        "parts",
+        "mentioned_bot_ids",
+        "created_at_ms"
+      ]
+    },
     "ProtocolRange": {
       "type": "object",
       "properties": {
@@ -608,11 +1053,133 @@
         "maximum"
       ]
     },
+    "QueuedPromptSummary": {
+      "type": "object",
+      "properties": {
+        "attachment_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        "chat_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "content": {
+          "type": "string"
+        },
+        "created_at_ms": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "position": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "chat_id",
+        "content",
+        "attachment_ids",
+        "position",
+        "created_at_ms"
+      ]
+    },
     "ResumeDisposition": {
       "type": "string",
       "enum": [
         "replayed",
         "snapshot_required"
+      ]
+    },
+    "SendMessageRequest": {
+      "type": "object",
+      "properties": {
+        "attachment_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        "content": {
+          "type": "string"
+        },
+        "idempotency_key": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "mentioned_bot_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        "reply_to_message_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid"
+        },
+        "request_id": {
+          "type": "string",
+          "format": "uuid"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "request_id",
+        "idempotency_key",
+        "content",
+        "attachment_ids",
+        "mentioned_bot_ids"
+      ]
+    },
+    "SendMessageResponse": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "sent"
+            },
+            "message": {
+              "$ref": "#/$defs/MessageSummary"
+            }
+          },
+          "required": [
+            "kind",
+            "message"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "queued"
+            },
+            "prompt": {
+              "$ref": "#/$defs/QueuedPromptSummary"
+            }
+          },
+          "required": [
+            "kind",
+            "prompt"
+          ]
+        }
       ]
     },
     "ServerEvent": {
@@ -712,6 +1279,38 @@
         {
           "type": "object",
           "properties": {
+            "chat": {
+              "$ref": "#/$defs/ChatSummary"
+            },
+            "kind": {
+              "type": "string",
+              "const": "chat_changed"
+            }
+          },
+          "required": [
+            "kind",
+            "chat"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "message_changed"
+            },
+            "message": {
+              "$ref": "#/$defs/MessageSummary"
+            }
+          },
+          "required": [
+            "kind",
+            "message"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
             "chat_id": {
               "type": "string",
               "format": "uuid"
@@ -733,6 +1332,54 @@
             "chat_id",
             "message_id",
             "delta"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "activity": {
+              "$ref": "#/$defs/ActivitySummary"
+            },
+            "kind": {
+              "type": "string",
+              "const": "activity_changed"
+            }
+          },
+          "required": [
+            "kind",
+            "activity"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "approval": {
+              "$ref": "#/$defs/ApprovalSummary"
+            },
+            "kind": {
+              "type": "string",
+              "const": "approval_changed"
+            }
+          },
+          "required": [
+            "kind",
+            "approval"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "queued_prompt_changed"
+            },
+            "prompt": {
+              "$ref": "#/$defs/QueuedPromptSummary"
+            }
+          },
+          "required": [
+            "kind",
+            "prompt"
           ]
         },
         {

@@ -42,7 +42,7 @@ Current blockers:
 - M1 is complete. 6C7-72 and epic 6C7-34 are Done after GitHub Actions run 32361115615 passed all six jobs.
 - 6C7-42 is Done. GitHub Actions run 32363729132 passed all nine quality, dependency, platform-build and cross-platform visual-golden jobs after the bounded executable-busy retry fix.
 - 6C7-43 is Done. GitHub Actions run 32366996632 passed all nine jobs with the native eframe executable and cross-platform visual goldens.
-- 6C7-44 is In Progress. The exact next action is to define durable chat/message/message-part/activity/approval state and protocol projections, then implement server-authoritative direct-chat mutations and an event-reconciling desktop timeline/composer model before extending the native UI.
+- 6C7-44 is In Progress. Durable direct chats/messages/rich parts/queued prompts, authenticated create/timeline/send/steer/stop operations, normalized event contracts and a reconnect-safe native timeline/composer model are implemented locally. The exact next action is to wire provider execution into the direct-chat turn lifecycle, persist activity/approval updates, add approval/retry endpoints, and verify streaming plus cancellation end to end.
 - egui 0.32.3 transitively uses unmaintained `ttf-parser` 0.25.1. RUSTSEC-2026-0192 reports no known vulnerability and no safe upgrade; the exact advisory is documented and temporarily ignored, with mandatory review in 6C7-69.
 
 ## Completed work
@@ -68,9 +68,9 @@ Current blockers:
 
 ## Immediate next work
 
-1. Define provider-neutral direct-chat, message-part, activity, approval, queue and streaming reconciliation state.
-2. Add migration-backed chat/message persistence plus atomic outbox mutations, idempotency and restart/reconnect tests.
-3. Add the desktop timeline/composer interactions for streaming, attachments, activity, approvals, retry, steering, stop/cancel, queued prompts, scroll anchoring and unread state.
+1. Wire provider execution into the direct-chat turn lifecycle and persist normalized streaming messages and activities.
+2. Add server approval/retry endpoints and durable approval/activity projections with end-to-end cancellation tests.
+3. Complete native timeline visual fixtures and verify attachment, queue, steering, retry, scroll-anchor and reconnect postconditions.
 
 ## Verification state
 

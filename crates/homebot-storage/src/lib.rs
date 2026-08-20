@@ -1,6 +1,9 @@
 //! Durable `SQLite` persistence and resumable event outbox.
 
-use homebot_domain::{Bot, BotAttention, BotId, DomainError};
+use homebot_domain::{
+    Bot, BotAttention, BotId, DomainError,
+    chat::{ChatDomainError, ChatMessage, DirectChat, MessagePart, QueuedPrompt},
+};
 use serde_json::Value;
 use sqlx::{
     Row, SqlitePool,
@@ -10,7 +13,7 @@ use sqlx::{
 use std::{path::Path, str::FromStr, time::Duration};
 use uuid::Uuid;
 
-pub const SCHEMA_VERSION: u32 = 4;
+pub const SCHEMA_VERSION: u32 = 5;
 static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
 
 #[derive(Debug, thiserror::Error)]
@@ -31,6 +34,16 @@ pub enum StorageError {
     BotNotFound,
     #[error("A Bot with that name already exists")]
     DuplicateBotName,
+    #[error("chat validation failed: {0}")]
+    ChatDomain(#[from] ChatDomainError),
+    #[error("Chat was not found")]
+    ChatNotFound,
+    #[error("Message was not found")]
+    MessageNotFound,
+    #[error("An attachment is unavailable")]
+    AttachmentUnavailable,
+    #[error("database JSON is invalid: {0}")]
+    Serialization(String),
 }
 
 #[derive(Clone, Debug)]
@@ -323,6 +336,317 @@ impl Storage {
             return Err(StorageError::BotNotFound);
         }
         self.get_bot(owner_id, bot_id).await
+    }
+
+    /// Creates or returns the owner's one direct chat for a Bot.
+    ///
+    /// # Errors
+    ///
+    /// Returns not-found when the Bot is not owned, or a database/integrity error.
+    pub async fn create_direct_chat(
+        &self,
+        owner_id: Uuid,
+        bot_id: Uuid,
+        proposed_chat_id: Uuid,
+        now_ms: i64,
+    ) -> Result<DirectChat, StorageError> {
+        let bot = self.get_bot(owner_id, bot_id).await?;
+        if bot.archived_at_ms.is_some() {
+            return Err(StorageError::BotNotFound);
+        }
+        sqlx::query(
+            "INSERT INTO chats (
+                id, owner_id, kind, title, direct_bot_id, created_at_ms, updated_at_ms
+             ) VALUES (?, ?, 'direct', ?, ?, ?, ?)
+             ON CONFLICT(owner_id, direct_bot_id) WHERE kind = 'direct' AND direct_bot_id IS NOT NULL
+             DO NOTHING",
+        )
+        .bind(proposed_chat_id.to_string())
+        .bind(owner_id.to_string())
+        .bind(&bot.name)
+        .bind(bot_id.to_string())
+        .bind(now_ms)
+        .bind(now_ms)
+        .execute(&self.pool)
+        .await?;
+        self.get_direct_chat_for_bot(owner_id, bot_id).await
+    }
+
+    /// Loads the owner's direct chat for one Bot.
+    ///
+    /// # Errors
+    ///
+    /// Returns not-found or database/integrity errors.
+    pub async fn get_direct_chat_for_bot(
+        &self,
+        owner_id: Uuid,
+        bot_id: Uuid,
+    ) -> Result<DirectChat, StorageError> {
+        let row = sqlx::query(
+            "SELECT * FROM chats
+             WHERE owner_id = ? AND kind = 'direct' AND direct_bot_id = ?",
+        )
+        .bind(owner_id.to_string())
+        .bind(bot_id.to_string())
+        .fetch_optional(&self.pool)
+        .await?
+        .ok_or(StorageError::ChatNotFound)?;
+        direct_chat_from_row(&row)
+    }
+
+    /// Loads an owner-scoped direct chat.
+    ///
+    /// # Errors
+    ///
+    /// Returns not-found or database/integrity errors.
+    pub async fn get_direct_chat(
+        &self,
+        owner_id: Uuid,
+        chat_id: Uuid,
+    ) -> Result<DirectChat, StorageError> {
+        let row =
+            sqlx::query("SELECT * FROM chats WHERE owner_id = ? AND id = ? AND kind = 'direct'")
+                .bind(owner_id.to_string())
+                .bind(chat_id.to_string())
+                .fetch_optional(&self.pool)
+                .await?
+                .ok_or(StorageError::ChatNotFound)?;
+        direct_chat_from_row(&row)
+    }
+
+    /// Lists all direct chats for an owner.
+    ///
+    /// # Errors
+    ///
+    /// Returns database or integrity errors.
+    pub async fn list_direct_chats(&self, owner_id: Uuid) -> Result<Vec<DirectChat>, StorageError> {
+        let rows = sqlx::query(
+            "SELECT * FROM chats WHERE owner_id = ? AND kind = 'direct'
+             ORDER BY updated_at_ms DESC, id",
+        )
+        .bind(owner_id.to_string())
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter().map(direct_chat_from_row).collect()
+    }
+
+    /// Appends a validated user message and rich parts atomically.
+    ///
+    /// # Errors
+    ///
+    /// Returns validation, ownership, attachment, or database errors.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn append_user_message(
+        &self,
+        owner_id: Uuid,
+        chat_id: Uuid,
+        message_id: Uuid,
+        content: &str,
+        attachment_ids: &[Uuid],
+        reply_to_message_id: Option<Uuid>,
+        mentioned_bot_ids: Vec<Uuid>,
+        now_ms: i64,
+    ) -> Result<ChatMessage, StorageError> {
+        let _ = self.get_direct_chat(owner_id, chat_id).await?;
+        let mut message = ChatMessage::user(
+            chat_id,
+            content,
+            attachment_ids,
+            reply_to_message_id,
+            mentioned_bot_ids,
+            now_ms,
+        )?;
+        message.id = message_id;
+        let mut transaction = self.pool.begin().await?;
+        validate_message_references(&mut transaction, owner_id, &message).await?;
+        sqlx::query(
+            "INSERT INTO messages (
+                id, chat_id, author_kind, status, reply_to_message_id,
+                mentioned_bot_ids_json, created_at_ms, completed_at_ms
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(message.id.to_string())
+        .bind(chat_id.to_string())
+        .bind(message.author.as_str())
+        .bind(message.status.as_str())
+        .bind(message.reply_to_message_id.map(|id| id.to_string()))
+        .bind(serde_json::to_value(&message.mentioned_bot_ids).map_err(|error| json_error(&error))?)
+        .bind(now_ms)
+        .bind(message.completed_at_ms)
+        .execute(&mut *transaction)
+        .await?;
+        for part in &message.parts {
+            let (part_id, ordinal) = message_part_identity(part);
+            sqlx::query(
+                "INSERT INTO message_parts (id, message_id, ordinal, kind, content_json)
+                 VALUES (?, ?, ?, ?, ?)",
+            )
+            .bind(part_id.to_string())
+            .bind(message.id.to_string())
+            .bind(i64::from(ordinal))
+            .bind(message_part_kind(part))
+            .bind(serde_json::to_value(part).map_err(|error| json_error(&error))?)
+            .execute(&mut *transaction)
+            .await?;
+        }
+        sqlx::query("UPDATE chats SET updated_at_ms = ? WHERE id = ? AND owner_id = ?")
+            .bind(now_ms)
+            .bind(chat_id.to_string())
+            .bind(owner_id.to_string())
+            .execute(&mut *transaction)
+            .await?;
+        transaction.commit().await?;
+        Ok(message)
+    }
+
+    /// Loads all durable messages and rich parts for a direct chat.
+    ///
+    /// # Errors
+    ///
+    /// Returns ownership, database, or integrity errors.
+    pub async fn chat_messages(
+        &self,
+        owner_id: Uuid,
+        chat_id: Uuid,
+    ) -> Result<Vec<ChatMessage>, StorageError> {
+        let _ = self.get_direct_chat(owner_id, chat_id).await?;
+        let rows =
+            sqlx::query("SELECT * FROM messages WHERE chat_id = ? ORDER BY created_at_ms, id")
+                .bind(chat_id.to_string())
+                .fetch_all(&self.pool)
+                .await?;
+        let mut messages = Vec::with_capacity(rows.len());
+        for row in rows {
+            let mut message = chat_message_from_row(&row)?;
+            let parts: Vec<Value> = sqlx::query_scalar(
+                "SELECT content_json FROM message_parts
+                 WHERE message_id = ? ORDER BY ordinal",
+            )
+            .bind(message.id.to_string())
+            .fetch_all(&self.pool)
+            .await?;
+            message.parts = parts
+                .into_iter()
+                .map(|value| serde_json::from_value(value).map_err(|error| json_error(&error)))
+                .collect::<Result<_, _>>()?;
+            messages.push(message);
+        }
+        Ok(messages)
+    }
+
+    /// Queues a follow-up while a direct chat is running.
+    ///
+    /// # Errors
+    ///
+    /// Returns validation, ownership, attachment, or database errors.
+    pub async fn enqueue_prompt(
+        &self,
+        owner_id: Uuid,
+        chat_id: Uuid,
+        prompt_id: Uuid,
+        content: &str,
+        attachment_ids: &[Uuid],
+        now_ms: i64,
+    ) -> Result<QueuedPrompt, StorageError> {
+        let chat = self.get_direct_chat(owner_id, chat_id).await?;
+        if !chat.running {
+            return Err(StorageError::Integrity(
+                "cannot queue a prompt while the chat is idle".to_owned(),
+            ));
+        }
+        let validation =
+            ChatMessage::user(chat_id, content, attachment_ids, None, Vec::new(), now_ms)?;
+        let mut transaction = self.pool.begin().await?;
+        validate_message_references(&mut transaction, owner_id, &validation).await?;
+        let next_position: i64 = sqlx::query_scalar(
+            "SELECT COALESCE(max(position) + 1, 0) FROM queued_prompts WHERE chat_id = ?",
+        )
+        .bind(chat_id.to_string())
+        .fetch_one(&mut *transaction)
+        .await?;
+        sqlx::query(
+            "INSERT INTO queued_prompts (
+                id, owner_id, chat_id, content, attachment_ids_json, position, created_at_ms
+             ) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(prompt_id.to_string())
+        .bind(owner_id.to_string())
+        .bind(chat_id.to_string())
+        .bind(content.trim())
+        .bind(serde_json::to_value(attachment_ids).map_err(|error| json_error(&error))?)
+        .bind(next_position)
+        .bind(now_ms)
+        .execute(&mut *transaction)
+        .await?;
+        sqlx::query(
+            "UPDATE chats SET queued_count = queued_count + 1, updated_at_ms = ?
+             WHERE id = ? AND owner_id = ?",
+        )
+        .bind(now_ms)
+        .bind(chat_id.to_string())
+        .bind(owner_id.to_string())
+        .execute(&mut *transaction)
+        .await?;
+        transaction.commit().await?;
+        Ok(QueuedPrompt {
+            id: prompt_id,
+            owner_id,
+            chat_id,
+            content: content.trim().to_owned(),
+            attachment_ids: attachment_ids.to_vec(),
+            position: u32::try_from(next_position)
+                .map_err(|_| StorageError::Integrity("invalid queue position".to_owned()))?,
+            created_at_ms: now_ms,
+        })
+    }
+
+    /// Loads queued prompts in stable execution order.
+    ///
+    /// # Errors
+    ///
+    /// Returns ownership, database, or integrity errors.
+    pub async fn queued_prompts(
+        &self,
+        owner_id: Uuid,
+        chat_id: Uuid,
+    ) -> Result<Vec<QueuedPrompt>, StorageError> {
+        let _ = self.get_direct_chat(owner_id, chat_id).await?;
+        let rows = sqlx::query(
+            "SELECT * FROM queued_prompts
+             WHERE owner_id = ? AND chat_id = ? ORDER BY position",
+        )
+        .bind(owner_id.to_string())
+        .bind(chat_id.to_string())
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter().map(queued_prompt_from_row).collect()
+    }
+
+    /// Updates the authoritative running state of a direct chat.
+    ///
+    /// # Errors
+    ///
+    /// Returns not-found or database errors.
+    pub async fn set_chat_running(
+        &self,
+        owner_id: Uuid,
+        chat_id: Uuid,
+        running: bool,
+        now_ms: i64,
+    ) -> Result<DirectChat, StorageError> {
+        let result = sqlx::query(
+            "UPDATE chats SET running = ?, updated_at_ms = ? WHERE id = ? AND owner_id = ?",
+        )
+        .bind(running)
+        .bind(now_ms)
+        .bind(chat_id.to_string())
+        .bind(owner_id.to_string())
+        .execute(&self.pool)
+        .await?;
+        if result.rows_affected() == 0 {
+            return Err(StorageError::ChatNotFound);
+        }
+        self.get_direct_chat(owner_id, chat_id).await
     }
 
     /// Runs `SQLite` structural and foreign-key checks without attempting repair.
@@ -717,6 +1041,138 @@ fn bot_from_row(row: &sqlx::sqlite::SqliteRow) -> Result<Bot, StorageError> {
     })
 }
 
+fn direct_chat_from_row(row: &sqlx::sqlite::SqliteRow) -> Result<DirectChat, StorageError> {
+    let id: String = row.try_get("id")?;
+    let owner_id: String = row.try_get("owner_id")?;
+    let bot_id: String = row.try_get("direct_bot_id")?;
+    let unread_count: i64 = row.try_get("unread_count")?;
+    let queued_count: i64 = row.try_get("queued_count")?;
+    let last_sequence: i64 = row.try_get("last_sequence")?;
+    Ok(DirectChat {
+        id: parse_uuid(&id)?,
+        owner_id: parse_uuid(&owner_id)?,
+        bot_id: parse_uuid(&bot_id)?,
+        title: row.try_get("title")?,
+        unread_count: u32::try_from(unread_count)
+            .map_err(|_| StorageError::Integrity("invalid chat unread count".to_owned()))?,
+        running: row.try_get("running")?,
+        queued_count: u32::try_from(queued_count)
+            .map_err(|_| StorageError::Integrity("invalid queued count".to_owned()))?,
+        last_sequence: u64::try_from(last_sequence)
+            .map_err(|_| StorageError::Integrity("invalid chat sequence".to_owned()))?,
+        created_at_ms: row.try_get("created_at_ms")?,
+        updated_at_ms: row.try_get("updated_at_ms")?,
+    })
+}
+
+fn chat_message_from_row(row: &sqlx::sqlite::SqliteRow) -> Result<ChatMessage, StorageError> {
+    let id: String = row.try_get("id")?;
+    let chat_id: String = row.try_get("chat_id")?;
+    let author: String = row.try_get("author_kind")?;
+    let author_bot_id: Option<String> = row.try_get("author_bot_id")?;
+    let status: String = row.try_get("status")?;
+    let reply_to: Option<String> = row.try_get("reply_to_message_id")?;
+    let mentioned: Value = row.try_get("mentioned_bot_ids_json")?;
+    let error_json: Option<Value> = row.try_get("error_json")?;
+    Ok(ChatMessage {
+        id: parse_uuid(&id)?,
+        chat_id: parse_uuid(&chat_id)?,
+        author: author.parse()?,
+        author_bot_id: author_bot_id.as_deref().map(parse_uuid).transpose()?,
+        status: status.parse()?,
+        parts: Vec::new(),
+        reply_to_message_id: reply_to.as_deref().map(parse_uuid).transpose()?,
+        mentioned_bot_ids: serde_json::from_value(mentioned).map_err(|error| json_error(&error))?,
+        created_at_ms: row.try_get("created_at_ms")?,
+        completed_at_ms: row.try_get("completed_at_ms")?,
+        error_json,
+    })
+}
+
+fn queued_prompt_from_row(row: &sqlx::sqlite::SqliteRow) -> Result<QueuedPrompt, StorageError> {
+    let id: String = row.try_get("id")?;
+    let owner_id: String = row.try_get("owner_id")?;
+    let chat_id: String = row.try_get("chat_id")?;
+    let attachment_ids: Value = row.try_get("attachment_ids_json")?;
+    let position: i64 = row.try_get("position")?;
+    Ok(QueuedPrompt {
+        id: parse_uuid(&id)?,
+        owner_id: parse_uuid(&owner_id)?,
+        chat_id: parse_uuid(&chat_id)?,
+        content: row.try_get("content")?,
+        attachment_ids: serde_json::from_value(attachment_ids)
+            .map_err(|error| json_error(&error))?,
+        position: u32::try_from(position)
+            .map_err(|_| StorageError::Integrity("invalid queue position".to_owned()))?,
+        created_at_ms: row.try_get("created_at_ms")?,
+    })
+}
+
+async fn validate_message_references(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    owner_id: Uuid,
+    message: &ChatMessage,
+) -> Result<(), StorageError> {
+    if let Some(reply_id) = message.reply_to_message_id {
+        let exists: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM messages WHERE id = ? AND chat_id = ?")
+                .bind(reply_id.to_string())
+                .bind(message.chat_id.to_string())
+                .fetch_one(&mut **transaction)
+                .await?;
+        if exists != 1 {
+            return Err(StorageError::MessageNotFound);
+        }
+    }
+    for bot_id in &message.mentioned_bot_ids {
+        let exists: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM bots WHERE id = ? AND owner_id = ?")
+                .bind(bot_id.to_string())
+                .bind(owner_id.to_string())
+                .fetch_one(&mut **transaction)
+                .await?;
+        if exists != 1 {
+            return Err(StorageError::BotNotFound);
+        }
+    }
+    for part in &message.parts {
+        if let MessagePart::Attachment { attachment_id, .. } = part {
+            let exists: i64 = sqlx::query_scalar(
+                "SELECT count(*) FROM attachments
+                 WHERE id = ? AND owner_id = ? AND status = 'ready'",
+            )
+            .bind(attachment_id.to_string())
+            .bind(owner_id.to_string())
+            .fetch_one(&mut **transaction)
+            .await?;
+            if exists != 1 {
+                return Err(StorageError::AttachmentUnavailable);
+            }
+        }
+    }
+    Ok(())
+}
+
+const fn message_part_kind(part: &MessagePart) -> &'static str {
+    match part {
+        MessagePart::Text { .. } => "text",
+        MessagePart::Attachment { .. } => "attachment",
+        MessagePart::Notice { .. } => "notice",
+    }
+}
+
+const fn message_part_identity(part: &MessagePart) -> (Uuid, u32) {
+    match part {
+        MessagePart::Text { id, ordinal, .. }
+        | MessagePart::Attachment { id, ordinal, .. }
+        | MessagePart::Notice { id, ordinal, .. } => (*id, *ordinal),
+    }
+}
+
+fn json_error(error: &serde_json::Error) -> StorageError {
+    StorageError::Serialization(error.to_string())
+}
+
 async fn fetch_attachment<'e, E>(
     executor: E,
     attachment_id: &str,
@@ -817,6 +1273,79 @@ mod tests {
                 .unread_count,
             0
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn direct_chat_messages_are_unique_owner_scoped_and_restart_durable()
+    -> Result<(), StorageError> {
+        let directory = tempfile::tempdir()?;
+        let database = directory.path().join("homebot.db");
+        let owner = Uuid::now_v7();
+        let other_owner = Uuid::now_v7();
+        let storage = Storage::open(&database).await?;
+        let bot = storage
+            .create_bot(owner, Bot::create("Nova", "Research")?, 1)
+            .await?;
+        let chat_id = Uuid::now_v7();
+        let chat = storage
+            .create_direct_chat(owner, bot.id.0, chat_id, 2)
+            .await?;
+        assert_eq!(chat.id, chat_id);
+        assert_eq!(
+            storage
+                .create_direct_chat(owner, bot.id.0, Uuid::now_v7(), 3)
+                .await?
+                .id,
+            chat_id
+        );
+        let first_id = Uuid::now_v7();
+        let first = storage
+            .append_user_message(
+                owner,
+                chat_id,
+                first_id,
+                " Hello ",
+                &[],
+                None,
+                vec![bot.id.0],
+                4,
+            )
+            .await?;
+        assert_eq!(first.id, first_id);
+        let second = storage
+            .append_user_message(
+                owner,
+                chat_id,
+                Uuid::now_v7(),
+                "Reply",
+                &[],
+                Some(first_id),
+                Vec::new(),
+                5,
+            )
+            .await?;
+        assert_eq!(second.reply_to_message_id, Some(first_id));
+        storage.set_chat_running(owner, chat_id, true, 6).await?;
+        let queued = storage
+            .enqueue_prompt(owner, chat_id, Uuid::now_v7(), "Next", &[], 7)
+            .await?;
+        assert_eq!(queued.position, 0);
+        assert_eq!(storage.queued_prompts(owner, chat_id).await?.len(), 1);
+        assert!(matches!(
+            storage.get_direct_chat(other_owner, chat_id).await,
+            Err(StorageError::ChatNotFound)
+        ));
+        storage.pool.close().await;
+
+        let reopened = Storage::open(&database).await?;
+        let messages = reopened.chat_messages(owner, chat_id).await?;
+        assert_eq!(messages.len(), 2);
+        assert_eq!(reopened.queued_prompts(owner, chat_id).await?.len(), 1);
+        assert!(matches!(
+            &messages[0].parts[0],
+            MessagePart::Text { text, .. } if text == "Hello"
+        ));
         Ok(())
     }
 

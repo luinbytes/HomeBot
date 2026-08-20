@@ -71,10 +71,25 @@ pub enum ServerEventBody {
     BotChanged {
         bot: BotSummary,
     },
+    ChatChanged {
+        chat: ChatSummary,
+    },
+    MessageChanged {
+        message: MessageSummary,
+    },
     MessageDelta {
         chat_id: Uuid,
         message_id: Uuid,
         delta: String,
+    },
+    ActivityChanged {
+        activity: ActivitySummary,
+    },
+    ApprovalChanged {
+        approval: ApprovalSummary,
+    },
+    QueuedPromptChanged {
+        prompt: QueuedPromptSummary,
     },
     CommandAccepted {
         request_id: Uuid,
@@ -228,10 +243,175 @@ pub struct BotResponse {
 pub struct ChatSummary {
     pub id: Uuid,
     pub title: String,
+    pub bot_id: Uuid,
+    pub unread_count: u32,
+    pub running: bool,
+    pub queued_count: u32,
     pub last_sequence: u64,
 }
 
-#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MessageAuthor {
+    User,
+    Bot,
+    System,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MessageStatus {
+    Queued,
+    Streaming,
+    Completed,
+    Failed,
+    Cancelled,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum MessagePart {
+    Text {
+        id: Uuid,
+        ordinal: u32,
+        text: String,
+    },
+    Attachment {
+        id: Uuid,
+        ordinal: u32,
+        attachment: Attachment,
+    },
+    Notice {
+        id: Uuid,
+        ordinal: u32,
+        text: String,
+    },
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct MessageSummary {
+    pub id: Uuid,
+    pub chat_id: Uuid,
+    pub author: MessageAuthor,
+    pub author_bot_id: Option<Uuid>,
+    pub status: MessageStatus,
+    pub parts: Vec<MessagePart>,
+    pub reply_to_message_id: Option<Uuid>,
+    pub mentioned_bot_ids: Vec<Uuid>,
+    pub created_at_ms: i64,
+    pub completed_at_ms: Option<i64>,
+    pub error: Option<ErrorEnvelope>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ActivityStatus {
+    Pending,
+    Running,
+    Succeeded,
+    Failed,
+    Cancelled,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ActivitySummary {
+    pub id: Uuid,
+    pub chat_id: Uuid,
+    pub message_id: Option<Uuid>,
+    pub title: String,
+    pub detail: String,
+    pub status: ActivityStatus,
+    pub requires_attention: bool,
+    pub started_at_ms: i64,
+    pub finished_at_ms: Option<i64>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ApprovalStatus {
+    Pending,
+    Allowed,
+    Denied,
+    Expired,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ApprovalSummary {
+    pub id: Uuid,
+    pub chat_id: Uuid,
+    pub message_id: Option<Uuid>,
+    pub title: String,
+    pub detail: String,
+    pub status: ApprovalStatus,
+    pub created_at_ms: i64,
+    pub decided_at_ms: Option<i64>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct QueuedPromptSummary {
+    pub id: Uuid,
+    pub chat_id: Uuid,
+    pub content: String,
+    pub attachment_ids: Vec<Uuid>,
+    pub position: u32,
+    pub created_at_ms: i64,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ChatTimelineResponse {
+    pub chat: ChatSummary,
+    pub messages: Vec<MessageSummary>,
+    pub activities: Vec<ActivitySummary>,
+    pub approvals: Vec<ApprovalSummary>,
+    pub queued_prompts: Vec<QueuedPromptSummary>,
+    pub boundary_sequence: u64,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CreateDirectChatRequest {
+    pub request_id: Uuid,
+    pub idempotency_key: Uuid,
+    pub bot_id: Uuid,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CreateDirectChatResponse {
+    pub chat: ChatSummary,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SendMessageRequest {
+    pub request_id: Uuid,
+    pub idempotency_key: Uuid,
+    pub content: String,
+    pub attachment_ids: Vec<Uuid>,
+    pub reply_to_message_id: Option<Uuid>,
+    pub mentioned_bot_ids: Vec<Uuid>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum SendMessageResponse {
+    Sent { message: MessageSummary },
+    Queued { prompt: QueuedPromptSummary },
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct MessageMutationRequest {
+    pub request_id: Uuid,
+    pub idempotency_key: Uuid,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ErrorEnvelope {
     pub code: ErrorCode,
@@ -312,6 +492,12 @@ pub struct ProtocolV1Schema {
     pub update_bot_request: UpdateBotRequest,
     pub bot_mutation_request: BotMutationRequest,
     pub bot_response: BotResponse,
+    pub create_direct_chat_request: CreateDirectChatRequest,
+    pub create_direct_chat_response: CreateDirectChatResponse,
+    pub send_message_request: SendMessageRequest,
+    pub send_message_response: SendMessageResponse,
+    pub message_mutation_request: MessageMutationRequest,
+    pub chat_timeline_response: ChatTimelineResponse,
 }
 
 /// Checks whether a client protocol is in the supported inclusive range.

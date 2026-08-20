@@ -104,6 +104,71 @@ data class BotMutationRequest(val request_id: String, val idempotency_key: Strin
 data class BotResponse(val bot: BotSummary)
 
 @Serializable
+data class ChatSummary(
+    val id: String,
+    val title: String,
+    val bot_id: String,
+    val unread_count: Int,
+    val running: Boolean,
+    val queued_count: Int,
+    val last_sequence: Long,
+)
+
+@Serializable
+sealed interface MessagePart {
+    @Serializable @SerialName("text")
+    data class Text(val id: String, val ordinal: Int, val text: String) : MessagePart
+    @Serializable @SerialName("attachment")
+    data class AttachmentPart(val id: String, val ordinal: Int, val attachment: Attachment) : MessagePart
+    @Serializable @SerialName("notice")
+    data class Notice(val id: String, val ordinal: Int, val text: String) : MessagePart
+}
+
+@Serializable
+data class MessageSummary(
+    val id: String,
+    val chat_id: String,
+    val author: String,
+    val author_bot_id: String? = null,
+    val status: String,
+    val parts: List<MessagePart>,
+    val reply_to_message_id: String? = null,
+    val mentioned_bot_ids: List<String>,
+    val created_at_ms: Long,
+    val completed_at_ms: Long? = null,
+    val error: ErrorEnvelope? = null,
+)
+
+@Serializable
+data class ActivitySummary(val id: String, val chat_id: String, val message_id: String? = null, val title: String, val detail: String, val status: String, val requires_attention: Boolean, val started_at_ms: Long, val finished_at_ms: Long? = null)
+
+@Serializable
+data class ApprovalSummary(val id: String, val chat_id: String, val message_id: String? = null, val title: String, val detail: String, val status: String, val created_at_ms: Long, val decided_at_ms: Long? = null)
+
+@Serializable
+data class QueuedPromptSummary(val id: String, val chat_id: String, val content: String, val attachment_ids: List<String>, val position: Int, val created_at_ms: Long)
+
+@Serializable
+data class CreateDirectChatRequest(val request_id: String, val idempotency_key: String, val bot_id: String)
+
+@Serializable
+data class CreateDirectChatResponse(val chat: ChatSummary)
+
+@Serializable
+data class SendMessageRequest(val request_id: String, val idempotency_key: String, val content: String, val attachment_ids: List<String>, val reply_to_message_id: String? = null, val mentioned_bot_ids: List<String>)
+
+@Serializable
+sealed interface SendMessageResponse {
+    @Serializable @SerialName("sent")
+    data class Sent(val message: MessageSummary) : SendMessageResponse
+    @Serializable @SerialName("queued")
+    data class Queued(val prompt: QueuedPromptSummary) : SendMessageResponse
+}
+
+@Serializable
+data class ChatTimelineResponse(val chat: ChatSummary, val messages: List<MessageSummary>, val activities: List<ActivitySummary>, val approvals: List<ApprovalSummary>, val queued_prompts: List<QueuedPromptSummary>, val boundary_sequence: Long)
+
+@Serializable
 data class CreateAttachmentRequest(val request_id: String, val idempotency_key: String, val filename: String, val media_type: String, val size_bytes: Long, val sha256: String)
 
 @Serializable

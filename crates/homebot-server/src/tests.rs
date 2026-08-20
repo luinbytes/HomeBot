@@ -8,8 +8,9 @@ use axum::{
 use futures_util::{SinkExt, StreamExt};
 use homebot_protocol::{
     Attachment, BotColor, BotMutationRequest, BotPermissionProfile, BotProviderStatus, BotResponse,
-    BotShape, CreateAttachmentRequest, CreateAttachmentResponse, CreateBotRequest,
-    FinalizeAttachmentRequest, UpdateBotRequest,
+    BotShape, ChatTimelineResponse, CreateAttachmentRequest, CreateAttachmentResponse,
+    CreateBotRequest, CreateDirectChatRequest, CreateDirectChatResponse, FinalizeAttachmentRequest,
+    SendMessageRequest, SendMessageResponse, UpdateBotRequest,
 };
 use tokio::task::JoinHandle;
 use tokio_tungstenite::{connect_async, tungstenite::client::IntoClientRequest};
@@ -234,6 +235,162 @@ async fn bot_lifecycle_validates_persists_streams_and_reports_provider_health()
     storage.pool().close().await;
     let reopened = Storage::open(&database).await?;
     assert_eq!(reopened.list_bots(Uuid::nil(), true).await?.len(), 1);
+    Ok(())
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn direct_chat_send_queue_replay_and_timeline_are_server_authoritative()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let storage = Storage::open(&directory.path().join("homebot.db")).await?;
+    let app = router(AppState::new(storage.clone(), "correct-token"));
+    let bot_id = Uuid::now_v7();
+    let create_bot = CreateBotRequest {
+        request_id: Uuid::now_v7(),
+        idempotency_key: bot_id,
+        name: "Nova".to_owned(),
+        title: "Research".to_owned(),
+        description: String::new(),
+        shape: BotShape::RoundedSquare,
+        color: BotColor::Violet,
+        provider_profile_id: None,
+        permission_profile: BotPermissionProfile::AskBeforeChanges,
+    };
+    let response = app
+        .clone()
+        .oneshot(json_request("POST", "/api/v1/bots", &create_bot))
+        .await?;
+    assert_eq!(response.status(), StatusCode::CREATED);
+
+    let chat_key = Uuid::now_v7();
+    let create_chat = CreateDirectChatRequest {
+        request_id: Uuid::now_v7(),
+        idempotency_key: chat_key,
+        bot_id,
+    };
+    let response = app
+        .clone()
+        .oneshot(json_request("POST", "/api/v1/chats/direct", &create_chat))
+        .await?;
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let chat = response_json::<CreateDirectChatResponse>(response)
+        .await?
+        .chat;
+    assert_eq!(chat.id, chat_key);
+    let replay = app
+        .clone()
+        .oneshot(json_request("POST", "/api/v1/chats/direct", &create_chat))
+        .await?;
+    assert_eq!(replay.status(), StatusCode::OK);
+
+    let message_key = Uuid::now_v7();
+    let send = SendMessageRequest {
+        request_id: Uuid::now_v7(),
+        idempotency_key: message_key,
+        content: "Hello".to_owned(),
+        attachment_ids: Vec::new(),
+        reply_to_message_id: None,
+        mentioned_bot_ids: vec![bot_id],
+    };
+    let response = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            &format!("/api/v1/chats/{chat_key}/messages"),
+            &send,
+        ))
+        .await?;
+    assert!(matches!(
+        response_json::<SendMessageResponse>(response).await?,
+        SendMessageResponse::Sent { message } if message.id == message_key
+    ));
+    let replay = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            &format!("/api/v1/chats/{chat_key}/messages"),
+            &send,
+        ))
+        .await?;
+    assert!(matches!(
+        response_json::<SendMessageResponse>(replay).await?,
+        SendMessageResponse::Sent { message } if message.id == message_key
+    ));
+
+    storage
+        .set_chat_running(Uuid::nil(), chat_key, true, 100)
+        .await?;
+    let steer = SendMessageRequest {
+        request_id: Uuid::now_v7(),
+        idempotency_key: Uuid::now_v7(),
+        content: "Use the other source".to_owned(),
+        attachment_ids: Vec::new(),
+        reply_to_message_id: Some(message_key),
+        mentioned_bot_ids: Vec::new(),
+    };
+    let response = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            &format!("/api/v1/chats/{chat_key}/steer"),
+            &steer,
+        ))
+        .await?;
+    assert!(matches!(
+        response_json::<SendMessageResponse>(response).await?,
+        SendMessageResponse::Sent { .. }
+    ));
+    let queued_key = Uuid::now_v7();
+    let queued = SendMessageRequest {
+        request_id: Uuid::now_v7(),
+        idempotency_key: queued_key,
+        content: "Follow up".to_owned(),
+        attachment_ids: Vec::new(),
+        reply_to_message_id: None,
+        mentioned_bot_ids: Vec::new(),
+    };
+    let response = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            &format!("/api/v1/chats/{chat_key}/messages"),
+            &queued,
+        ))
+        .await?;
+    assert!(matches!(
+        response_json::<SendMessageResponse>(response).await?,
+        SendMessageResponse::Queued { prompt } if prompt.id == queued_key
+    ));
+
+    let timeline = app
+        .clone()
+        .oneshot(
+            Request::get(format!("/api/v1/chats/{chat_key}/timeline"))
+                .header("authorization", "Bearer correct-token")
+                .body(Body::empty())?,
+        )
+        .await?;
+    let timeline = response_json::<ChatTimelineResponse>(timeline).await?;
+    assert_eq!(timeline.messages.len(), 2);
+    assert_eq!(timeline.queued_prompts.len(), 1);
+    assert!(timeline.chat.running);
+    assert!(timeline.boundary_sequence >= 4);
+    let stopped = app
+        .oneshot(json_request(
+            "POST",
+            &format!("/api/v1/chats/{chat_key}/stop"),
+            &BotMutationRequest {
+                request_id: Uuid::now_v7(),
+                idempotency_key: Uuid::now_v7(),
+            },
+        ))
+        .await?;
+    assert!(
+        !response_json::<homebot_protocol::ChatSummary>(stopped)
+            .await?
+            .running
+    );
     Ok(())
 }
 

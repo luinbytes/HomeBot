@@ -4,14 +4,17 @@ use homebot_protocol::{BotColor, BotProviderStatus, BotShape, BotSummary};
 
 use crate::{
     bot_roster::{BotEditorDraft, BotRosterModel, ConnectionState, EditorError},
-    components::{AvatarShape, BotIdentity, roster_row, section_label},
+    components::{AvatarShape, BotIdentity, activity_card, message, roster_row, section_label},
+    timeline::{ComposerError, TimelineModel},
     tokens::HomeBotTheme,
 };
 
 pub struct HomeBotApp {
     pub roster: BotRosterModel,
     pub theme: HomeBotTheme,
+    pub timeline: TimelineModel,
     editor_error: Option<EditorError>,
+    composer_error: Option<ComposerError>,
 }
 
 impl Default for HomeBotApp {
@@ -19,7 +22,9 @@ impl Default for HomeBotApp {
         Self {
             roster: BotRosterModel::default(),
             theme: HomeBotTheme::light(),
+            timeline: TimelineModel::default(),
             editor_error: None,
+            composer_error: None,
         }
     }
 }
@@ -129,19 +134,106 @@ impl HomeBotApp {
                         .roster
                         .selected
                         .and_then(|id| self.roster.bots.iter().find(|bot| bot.id == id))
+                        .cloned()
                     {
-                        ui.heading(&bot.name);
-                        ui.label(&bot.title);
-                        if bot.provider == BotProviderStatus::Unavailable {
-                            ui.colored_label(
-                                self.theme.palette.warning,
-                                "This Bot's provider is unavailable. Open Advanced settings to choose another.",
-                            );
-                        }
+                        self.timeline_content(ui, &bot);
                     } else {
                         ui.heading("Choose a Bot");
                     }
                 }
+            }
+        });
+    }
+
+    fn timeline_content(&mut self, ui: &mut egui::Ui, bot: &BotSummary) {
+        ui.set_max_width(self.theme.layout.content_max_width);
+        ui.heading(&bot.name);
+        if bot.provider == BotProviderStatus::Unavailable {
+            ui.colored_label(
+                self.theme.palette.warning,
+                "This Bot's provider is unavailable. Open Advanced settings to choose another.",
+            );
+        }
+        egui::ScrollArea::vertical()
+            .stick_to_bottom(self.timeline.scroll.at_bottom)
+            .show(ui, |ui| {
+                for item in &self.timeline.messages {
+                    let text = item
+                        .parts
+                        .iter()
+                        .filter_map(|part| match part {
+                            homebot_protocol::MessagePart::Text { text, .. }
+                            | homebot_protocol::MessagePart::Notice { text, .. } => {
+                                Some(text.as_str())
+                            }
+                            homebot_protocol::MessagePart::Attachment { .. } => None,
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    let identity = (item.author == homebot_protocol::MessageAuthor::Bot)
+                        .then(|| identity(self.theme, bot));
+                    message(ui, self.theme, identity, &text);
+                    ui.add_space(self.theme.spacing.md);
+                }
+                for item in &self.timeline.activities {
+                    activity_card(
+                        ui,
+                        self.theme,
+                        &item.title,
+                        &item.detail,
+                        item.requires_attention,
+                    );
+                }
+                let pending: Vec<_> = self
+                    .timeline
+                    .approvals
+                    .iter()
+                    .filter(|approval| approval.status == homebot_protocol::ApprovalStatus::Pending)
+                    .cloned()
+                    .collect();
+                for approval in pending {
+                    ui.group(|ui| {
+                        ui.strong(&approval.title);
+                        ui.label(&approval.detail);
+                        ui.horizontal(|ui| {
+                            if ui.button("Allow once").clicked() {
+                                self.timeline.decide_approval(approval.id, true);
+                            }
+                            if ui.button("Deny").clicked() {
+                                self.timeline.decide_approval(approval.id, false);
+                            }
+                        });
+                    });
+                }
+                for prompt in &self.timeline.queued_prompts {
+                    ui.label(format!(
+                        "Queued {} · {}",
+                        prompt.position + 1,
+                        prompt.content
+                    ));
+                }
+            });
+        ui.separator();
+        ui.text_edit_multiline(&mut self.timeline.composer.content);
+        if self.composer_error == Some(ComposerError::EmptyComposer) {
+            ui.colored_label(
+                self.theme.palette.danger,
+                "Write a message or attach a file first.",
+            );
+        }
+        ui.horizontal(|ui| {
+            let running = self.timeline.chat.as_ref().is_some_and(|chat| chat.running);
+            if ui.button(if running { "Queue" } else { "Send" }).clicked() {
+                self.composer_error = self.timeline.submit(false).err();
+            }
+            if running && ui.button("Steer").clicked() {
+                self.composer_error = self.timeline.submit(true).err();
+            }
+            if running && ui.button("Stop").clicked() {
+                self.timeline.stop();
+            }
+            if self.timeline.scroll.unseen_updates > 0 && ui.button("Jump to latest").clicked() {
+                self.timeline.set_at_bottom(true);
             }
         });
     }

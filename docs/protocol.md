@@ -42,6 +42,12 @@ The authenticated Bot collection exposes list, create, update, archive, restore 
 
 Bot mutation idempotency hashes include the operation and target Bot as well as the request body. This prevents a key reused across different routes from being mistaken for a replay.
 
+## Direct chat timeline
+
+Direct-chat HTTP operations create or recover the one chat for a Bot, load a complete timeline, submit or queue a message, steer active work and stop active work. Rich message parts cover text, attachments and notices with stable IDs and ordinals. Reply and mention IDs are first-class metadata.
+
+Timeline snapshots contain canonical messages, normalized execution activities, approvals and queued prompts at a durable outbox boundary. Incremental Chat-changed, Message-changed, Message-delta, Activity-changed, Approval-changed and Queued-prompt-changed events reconcile that state. Clients deduplicate event IDs and sequences and replace the timeline when a gap is detected.
+
 ## Heartbeats and backpressure
 
 The server sends nonce-bearing pings. A client responds with pong before the advertised timeout. Slow clients have a bounded queue; the server closes them with a resumable cursor instead of allowing unbounded memory growth. Streamed content can be coalesced only when doing so preserves the final canonical message parts.

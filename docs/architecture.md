@@ -43,6 +43,8 @@ Group coordination is an explicit server state machine with a bounded hop count,
 
 Bot lifecycle is owner-scoped and server-authoritative. The domain validates identity fields and explicit archive/restore transitions. SQLite persists visual identity, advanced provider/permission references, unread count and normalized attention. Desktop keeps only a replaceable roster projection. See [bots.md](bots.md).
 
+Direct chats persist rich message parts, reply/mention metadata and queued prompts independently of provider conversations. The desktop timeline is a replaceable projection built from an HTTP boundary snapshot plus strictly sequenced provider-neutral events. See [chats.md](chats.md).
+
 ## Persistence
 
 SQLite runs in WAL mode and is the source of truth for structured product state. Each schema change is an ordered, transactional migration with an upgrade fixture. Event-producing mutations update domain rows and the outbox in one transaction. Monotonic outbox sequences support WebSocket resume and client reconciliation.

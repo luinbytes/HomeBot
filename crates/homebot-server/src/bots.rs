@@ -190,7 +190,7 @@ pub(super) async fn mark_read(
     Ok(Json(BotResponse { bot }))
 }
 
-async fn claim<T: Serialize>(
+pub(super) async fn claim<T: Serialize>(
     state: &AppState,
     key: Uuid,
     operation: &str,
@@ -310,11 +310,11 @@ pub(super) struct ApiError {
 }
 
 impl ApiError {
-    fn conflict(message: &str) -> Self {
+    pub(super) fn conflict(message: &str) -> Self {
         Self::new(StatusCode::CONFLICT, ErrorCode::Conflict, message)
     }
 
-    fn internal() -> Self {
+    pub(super) fn internal() -> Self {
         Self::new(
             StatusCode::INTERNAL_SERVER_ERROR,
             ErrorCode::Internal,
@@ -356,6 +356,26 @@ impl From<StorageError> for ApiError {
                 "Bot was not found",
             ),
             StorageError::DuplicateBotName => Self::conflict("A Bot with that name already exists"),
+            StorageError::ChatNotFound => Self::new(
+                StatusCode::NOT_FOUND,
+                ErrorCode::NotFound,
+                "Chat was not found",
+            ),
+            StorageError::MessageNotFound => Self::new(
+                StatusCode::NOT_FOUND,
+                ErrorCode::NotFound,
+                "Message was not found",
+            ),
+            StorageError::AttachmentUnavailable => Self::new(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                ErrorCode::ValidationFailed,
+                "An attachment is unavailable",
+            ),
+            StorageError::ChatDomain(error) => Self::new(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                ErrorCode::ValidationFailed,
+                &error.to_string(),
+            ),
             StorageError::Domain(error) => error.into(),
             _ => Self::internal(),
         }

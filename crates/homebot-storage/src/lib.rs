@@ -17,7 +17,7 @@ use sqlx::{
 use std::{collections::HashSet, path::Path, str::FromStr, time::Duration};
 use uuid::Uuid;
 
-pub const SCHEMA_VERSION: u32 = 8;
+pub const SCHEMA_VERSION: u32 = 9;
 static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
 
 #[derive(Debug, thiserror::Error)]
@@ -58,6 +58,10 @@ pub enum StorageError {
     SecretNotFound,
     #[error("A secret with that label already exists")]
     DuplicateSecretLabel,
+    #[error("Plugin was not found")]
+    PluginNotFound,
+    #[error("A plugin with that name already exists")]
+    DuplicatePluginName,
     #[error("database JSON is invalid: {0}")]
     Serialization(String),
 }
@@ -139,6 +143,40 @@ pub struct SecretReferenceRecord {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PluginRecord {
+    pub id: Uuid,
+    pub owner_id: Uuid,
+    pub name: String,
+    pub description: String,
+    pub kind: String,
+    pub configuration: Value,
+    pub enabled: bool,
+    pub connection_id: Uuid,
+    pub transport: String,
+    pub status: String,
+    pub auth_status: String,
+    pub error_message: Option<String>,
+    pub updated_at_ms: i64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PluginToolRecord {
+    pub name: String,
+    pub title: Option<String>,
+    pub description: Option<String>,
+    pub input_schema: Value,
+}
+
+pub struct PluginConnectionUpdate<'a> {
+    pub enabled: bool,
+    pub status: &'a str,
+    pub auth_status: &'a str,
+    pub error_message: Option<&'a str>,
+    pub tools: &'a [PluginToolRecord],
+    pub updated_at_ms: i64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum AttachmentClaim {
     Claimed(AttachmentRecord),
     Replayed(AttachmentRecord),
@@ -146,6 +184,183 @@ pub enum AttachmentClaim {
 }
 
 impl Storage {
+    /// Lists owner-scoped plugin registry records.
+    ///
+    /// # Errors
+    /// Returns a database or integrity error.
+    pub async fn list_plugins(&self, owner_id: Uuid) -> Result<Vec<PluginRecord>, StorageError> {
+        let rows = sqlx::query(
+            "SELECT p.id, p.owner_id, p.name, p.description, p.kind, p.configuration_json,
+                    p.enabled, c.id AS connection_id, c.transport, c.status, c.auth_status,
+                    c.error_message, c.updated_at_ms
+             FROM plugins p JOIN mcp_connections c ON c.plugin_id = p.id
+             WHERE p.owner_id = ? ORDER BY p.name COLLATE NOCASE, p.id",
+        )
+        .bind(owner_id.to_string())
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter().map(plugin_from_row).collect()
+    }
+
+    /// Loads an owner-scoped plugin registry record.
+    ///
+    /// # Errors
+    /// Returns not-found, database, or integrity errors.
+    pub async fn plugin(&self, owner_id: Uuid, id: Uuid) -> Result<PluginRecord, StorageError> {
+        let row = sqlx::query(
+            "SELECT p.id, p.owner_id, p.name, p.description, p.kind, p.configuration_json,
+                    p.enabled, c.id AS connection_id, c.transport, c.status, c.auth_status,
+                    c.error_message, c.updated_at_ms
+             FROM plugins p JOIN mcp_connections c ON c.plugin_id = p.id
+             WHERE p.owner_id = ? AND p.id = ?",
+        )
+        .bind(owner_id.to_string())
+        .bind(id.to_string())
+        .fetch_optional(&self.pool)
+        .await?
+        .ok_or(StorageError::PluginNotFound)?;
+        plugin_from_row(&row)
+    }
+
+    /// Atomically creates a local MCP plugin and its connection metadata.
+    ///
+    /// # Errors
+    /// Returns duplicate-name, database, or integrity errors.
+    pub async fn create_plugin(&self, record: &PluginRecord) -> Result<(), StorageError> {
+        let mut transaction = self.pool.begin().await?;
+        let result = sqlx::query(
+            "INSERT INTO plugins (id, owner_id, name, description, kind, configuration_json, enabled, created_at_ms, updated_at_ms)
+             SELECT ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE NOT EXISTS (
+               SELECT 1 FROM plugins WHERE owner_id = ? AND lower(trim(name)) = lower(trim(?))
+             )",
+        )
+        .bind(record.id.to_string()).bind(record.owner_id.to_string()).bind(&record.name)
+        .bind(&record.description).bind(&record.kind).bind(record.configuration.to_string())
+        .bind(record.enabled).bind(record.updated_at_ms).bind(record.updated_at_ms)
+        .bind(record.owner_id.to_string()).bind(&record.name)
+        .execute(&mut *transaction).await?;
+        if result.rows_affected() == 0 {
+            return Err(StorageError::DuplicatePluginName);
+        }
+        sqlx::query(
+            "INSERT INTO mcp_connections (id, plugin_id, transport, configuration_json, status, auth_status, error_message, updated_at_ms)
+             VALUES (?, ?, ?, '{}', ?, ?, ?, ?)",
+        )
+        .bind(record.connection_id.to_string()).bind(record.id.to_string()).bind(&record.transport)
+        .bind(&record.status).bind(&record.auth_status).bind(&record.error_message).bind(record.updated_at_ms)
+        .execute(&mut *transaction).await?;
+        transaction.commit().await?;
+        Ok(())
+    }
+
+    /// Updates server-owned connection state and replaces discovered tool metadata.
+    ///
+    /// # Errors
+    /// Returns not-found, database, or integrity errors.
+    pub async fn update_plugin_connection(
+        &self,
+        owner_id: Uuid,
+        plugin_id: Uuid,
+        update: PluginConnectionUpdate<'_>,
+    ) -> Result<PluginRecord, StorageError> {
+        let mut transaction = self.pool.begin().await?;
+        let update_result = sqlx::query(
+            "UPDATE plugins SET enabled = ?, updated_at_ms = ? WHERE owner_id = ? AND id = ?",
+        )
+        .bind(update.enabled)
+        .bind(update.updated_at_ms)
+        .bind(owner_id.to_string())
+        .bind(plugin_id.to_string())
+        .execute(&mut *transaction)
+        .await?;
+        if update_result.rows_affected() == 0 {
+            return Err(StorageError::PluginNotFound);
+        }
+        sqlx::query("UPDATE mcp_connections SET status = ?, auth_status = ?, error_message = ?, updated_at_ms = ? WHERE plugin_id = ?")
+            .bind(update.status).bind(update.auth_status).bind(update.error_message).bind(update.updated_at_ms).bind(plugin_id.to_string())
+            .execute(&mut *transaction).await?;
+        sqlx::query("DELETE FROM mcp_tools WHERE plugin_id = ?")
+            .bind(plugin_id.to_string())
+            .execute(&mut *transaction)
+            .await?;
+        for tool in update.tools {
+            sqlx::query("INSERT INTO mcp_tools (plugin_id, name, title, description, input_schema_json) VALUES (?, ?, ?, ?, ?)")
+                .bind(plugin_id.to_string()).bind(&tool.name).bind(&tool.title).bind(&tool.description)
+                .bind(tool.input_schema.to_string()).execute(&mut *transaction).await?;
+        }
+        transaction.commit().await?;
+        self.plugin(owner_id, plugin_id).await
+    }
+
+    /// Lists safe discovery metadata for one owner-scoped plugin.
+    ///
+    /// # Errors
+    /// Returns not-found, database, or integrity errors.
+    pub async fn plugin_tools(
+        &self,
+        owner_id: Uuid,
+        plugin_id: Uuid,
+    ) -> Result<Vec<PluginToolRecord>, StorageError> {
+        let _ = self.plugin(owner_id, plugin_id).await?;
+        let rows = sqlx::query("SELECT name, title, description, input_schema_json FROM mcp_tools WHERE plugin_id = ? ORDER BY name")
+            .bind(plugin_id.to_string()).fetch_all(&self.pool).await?;
+        rows.iter().map(plugin_tool_from_row).collect()
+    }
+
+    /// Sets one Bot's availability without changing capability policy.
+    ///
+    /// # Errors
+    /// Returns not-found, database, or integrity errors.
+    pub async fn set_plugin_assignment(
+        &self,
+        owner_id: Uuid,
+        plugin_id: Uuid,
+        bot_id: Uuid,
+        enabled: bool,
+    ) -> Result<(), StorageError> {
+        let _ = self.plugin(owner_id, plugin_id).await?;
+        let exists: i64 = sqlx::query_scalar("SELECT count(*) FROM bots WHERE id = ?")
+            .bind(bot_id.to_string())
+            .fetch_one(&self.pool)
+            .await?;
+        if exists == 0 {
+            return Err(StorageError::BotNotFound);
+        }
+        sqlx::query("INSERT INTO plugin_bot_assignments (plugin_id, bot_id, owner_id, enabled) VALUES (?, ?, ?, ?) ON CONFLICT(plugin_id, bot_id) DO UPDATE SET enabled = excluded.enabled")
+            .bind(plugin_id.to_string()).bind(bot_id.to_string()).bind(owner_id.to_string()).bind(enabled).execute(&self.pool).await?;
+        Ok(())
+    }
+
+    /// Lists Bots to which an owner-scoped plugin is assigned.
+    ///
+    /// # Errors
+    /// Returns not-found, database, or integrity errors.
+    pub async fn plugin_bot_ids(
+        &self,
+        owner_id: Uuid,
+        plugin_id: Uuid,
+    ) -> Result<Vec<Uuid>, StorageError> {
+        let _ = self.plugin(owner_id, plugin_id).await?;
+        let rows: Vec<String> = sqlx::query_scalar("SELECT bot_id FROM plugin_bot_assignments WHERE owner_id = ? AND plugin_id = ? AND enabled = 1 ORDER BY bot_id")
+            .bind(owner_id.to_string()).bind(plugin_id.to_string()).fetch_all(&self.pool).await?;
+        rows.into_iter().map(|id| parse_uuid(&id)).collect()
+    }
+
+    /// Deletes a plugin and cascades its connection, tools, and assignments.
+    ///
+    /// # Errors
+    /// Returns not-found or database errors.
+    pub async fn delete_plugin(&self, owner_id: Uuid, plugin_id: Uuid) -> Result<(), StorageError> {
+        let result = sqlx::query("DELETE FROM plugins WHERE owner_id = ? AND id = ?")
+            .bind(owner_id.to_string())
+            .bind(plugin_id.to_string())
+            .execute(&self.pool)
+            .await?;
+        if result.rows_affected() == 0 {
+            return Err(StorageError::PluginNotFound);
+        }
+        Ok(())
+    }
     /// Opens or creates a database, applies migrations, and verifies integrity.
     ///
     /// # Errors
@@ -2710,6 +2925,37 @@ fn secret_reference_from_row(
     })
 }
 
+fn plugin_from_row(row: &sqlx::sqlite::SqliteRow) -> Result<PluginRecord, StorageError> {
+    let configuration_json: String = row.try_get("configuration_json")?;
+    Ok(PluginRecord {
+        id: parse_uuid(row.try_get("id")?)?,
+        owner_id: parse_uuid(row.try_get("owner_id")?)?,
+        name: row.try_get("name")?,
+        description: row.try_get("description")?,
+        kind: row.try_get("kind")?,
+        configuration: serde_json::from_str(&configuration_json)
+            .map_err(|error| StorageError::Serialization(error.to_string()))?,
+        enabled: row.try_get("enabled")?,
+        connection_id: parse_uuid(row.try_get("connection_id")?)?,
+        transport: row.try_get("transport")?,
+        status: row.try_get("status")?,
+        auth_status: row.try_get("auth_status")?,
+        error_message: row.try_get("error_message")?,
+        updated_at_ms: row.try_get("updated_at_ms")?,
+    })
+}
+
+fn plugin_tool_from_row(row: &sqlx::sqlite::SqliteRow) -> Result<PluginToolRecord, StorageError> {
+    let input_schema_json: String = row.try_get("input_schema_json")?;
+    Ok(PluginToolRecord {
+        name: row.try_get("name")?,
+        title: row.try_get("title")?,
+        description: row.try_get("description")?,
+        input_schema: serde_json::from_str(&input_schema_json)
+            .map_err(|error| StorageError::Serialization(error.to_string()))?,
+    })
+}
+
 fn parse_uuid(value: &str) -> Result<Uuid, StorageError> {
     Uuid::parse_str(value)
         .map_err(|_| StorageError::Integrity("database contains an invalid UUID".to_owned()))
@@ -2720,6 +2966,60 @@ mod tests {
     use super::*;
     use homebot_domain::chat::{ActivityStatus, ApprovalStatus};
     use serde_json::json;
+
+    #[tokio::test]
+    async fn plugins_are_owner_scoped_and_discovery_cascades() -> Result<(), StorageError> {
+        let directory = tempfile::tempdir()?;
+        let storage = Storage::open(&directory.path().join("homebot.db")).await?;
+        let owner = Uuid::now_v7();
+        let plugin_id = Uuid::now_v7();
+        let record = PluginRecord {
+            id: plugin_id,
+            owner_id: owner,
+            name: "Fixture MCP".to_owned(),
+            description: String::new(),
+            kind: "local_mcp".to_owned(),
+            configuration: json!({"program":"/fixture","arguments":[]}),
+            enabled: false,
+            connection_id: Uuid::now_v7(),
+            transport: "stdio".to_owned(),
+            status: "connect".to_owned(),
+            auth_status: "not_required".to_owned(),
+            error_message: None,
+            updated_at_ms: 1,
+        };
+        storage.create_plugin(&record).await?;
+        assert_eq!(storage.list_plugins(owner).await?, vec![record]);
+        assert!(storage.list_plugins(Uuid::now_v7()).await?.is_empty());
+        let tools = vec![PluginToolRecord {
+            name: "read".to_owned(),
+            title: None,
+            description: None,
+            input_schema: json!({"type":"object"}),
+        }];
+        let updated = storage
+            .update_plugin_connection(
+                owner,
+                plugin_id,
+                PluginConnectionUpdate {
+                    enabled: true,
+                    status: "connected",
+                    auth_status: "connected",
+                    error_message: None,
+                    tools: &tools,
+                    updated_at_ms: 2,
+                },
+            )
+            .await?;
+        assert!(updated.enabled);
+        assert_eq!(storage.plugin_tools(owner, plugin_id).await?, tools);
+        storage.delete_plugin(owner, plugin_id).await?;
+        assert!(matches!(
+            storage.plugin(owner, plugin_id).await,
+            Err(StorageError::PluginNotFound)
+        ));
+        Ok(())
+    }
 
     #[tokio::test]
     async fn secret_references_are_owner_scoped_and_never_store_values() -> Result<(), StorageError>

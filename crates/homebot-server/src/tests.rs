@@ -11,9 +11,10 @@ use homebot_protocol::{
     BotMutationRequest, BotPermissionProfile, BotProviderStatus, BotResponse, BotShape,
     ChatTimelineResponse, CreateAttachmentRequest, CreateAttachmentResponse, CreateBotRequest,
     CreateDirectChatRequest, CreateDirectChatResponse, CreateGroupChatRequest,
-    CreateGroupChatResponse, FinalizeAttachmentRequest, GroupBotStatus, GroupTimelineResponse,
-    HandoffGroupRequest, SecretSummary, SendGroupMessageRequest, SendMessageRequest,
-    SendMessageResponse, UpdateBotRequest, UpdateGroupParticipantRequest,
+    CreateGroupChatResponse, CreateLocalMcpPluginRequest, FinalizeAttachmentRequest,
+    GroupBotStatus, GroupTimelineResponse, HandoffGroupRequest, PluginConnectionState,
+    PluginMutationRequest, PluginSummary, SecretSummary, SendGroupMessageRequest,
+    SendMessageRequest, SendMessageResponse, UpdateBotRequest, UpdateGroupParticipantRequest,
 };
 use homebot_providers::{
     ActivityKind, ActivityStatus as ProviderActivityStatus, ApprovalDecision, CompactRequest,
@@ -22,6 +23,8 @@ use homebot_providers::{
     ProviderRuntime, ResumeRequest, StartRequest,
 };
 use homebot_secrets::{MemorySecretVault, SecretStatus, SecretVault, locator_for};
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::{collections::HashMap, sync::Arc, time::Duration};
 use tokio::sync::{Mutex, mpsc, watch};
 use tokio::task::JoinHandle;
@@ -188,6 +191,83 @@ async fn test_app() -> Result<Router, homebot_storage::StorageError> {
     let path = directory.path().join("homebot.db");
     let storage = Storage::open(&path).await?;
     Ok(router(AppState::new(storage, "correct-token")))
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn plugin_registry_connects_local_mcp_and_persists_error_recovery_states()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let server = directory.path().join("fixture-mcp");
+    let script = "#!/bin/sh\nwhile IFS= read -r line; do\ncase \"$line\" in\n*\\\"method\\\":\\\"initialize\\\"*) printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":\"2025-11-25\",\"capabilities\":{\"tools\":{}},\"serverInfo\":{\"name\":\"fixture\",\"version\":\"1\"}}}' ;;\n*\\\"method\\\":\\\"tools/list\\\"*) printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"tools\":[{\"name\":\"repo_status\",\"description\":\"Untrusted metadata\",\"inputSchema\":{\"type\":\"object\"}}]}}' ;;\nesac\ndone\n";
+    std::fs::write(&server, script)?;
+    let mut permissions = std::fs::metadata(&server)?.permissions();
+    permissions.set_mode(0o700);
+    std::fs::set_permissions(&server, permissions)?;
+    let app = test_app().await?;
+    let plugin_id = Uuid::now_v7();
+    let create = CreateLocalMcpPluginRequest {
+        request_id: Uuid::now_v7(),
+        idempotency_key: plugin_id,
+        name: "Repository tools".to_owned(),
+        description: "Local fixture".to_owned(),
+        program: server.display().to_string(),
+        arguments: Vec::new(),
+    };
+    let response = app
+        .clone()
+        .oneshot(
+            Request::post("/api/v1/plugins")
+                .header("authorization", "Bearer correct-token")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&create)?))?,
+        )
+        .await?;
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let created: PluginSummary =
+        serde_json::from_slice(&to_bytes(response.into_body(), 1024 * 1024).await?)?;
+    assert_eq!(created.connection_state, PluginConnectionState::Connect);
+    let mutation = PluginMutationRequest {
+        request_id: Uuid::now_v7(),
+        idempotency_key: Uuid::now_v7(),
+    };
+    let response = app
+        .clone()
+        .oneshot(
+            Request::post(format!("/api/v1/plugins/{plugin_id}/connect"))
+                .header("authorization", "Bearer correct-token")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&mutation)?))?,
+        )
+        .await?;
+    assert_eq!(response.status(), StatusCode::OK);
+    let connected: PluginSummary =
+        serde_json::from_slice(&to_bytes(response.into_body(), 1024 * 1024).await?)?;
+    assert_eq!(connected.connection_state, PluginConnectionState::Connected);
+    assert!(connected.enabled);
+    assert_eq!(
+        connected.tools.first().map(|tool| tool.name.as_str()),
+        Some("repo_status")
+    );
+    std::fs::write(&server, "#!/bin/sh\nprintf '%s\\n' 'not-json'\n")?;
+    let mutation = PluginMutationRequest {
+        request_id: Uuid::now_v7(),
+        idempotency_key: Uuid::now_v7(),
+    };
+    let response = app
+        .oneshot(
+            Request::post(format!("/api/v1/plugins/{plugin_id}/health"))
+                .header("authorization", "Bearer correct-token")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&mutation)?))?,
+        )
+        .await?;
+    let errored: PluginSummary =
+        serde_json::from_slice(&to_bytes(response.into_body(), 1024 * 1024).await?)?;
+    assert_eq!(errored.connection_state, PluginConnectionState::Error);
+    assert!(!errored.enabled);
+    assert!(errored.tools.is_empty());
+    Ok(())
 }
 
 async fn spawn_app(

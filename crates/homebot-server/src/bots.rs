@@ -403,6 +403,14 @@ impl From<StorageError> for ApiError {
             StorageError::DuplicateSecretLabel => {
                 Self::conflict("A secret with that label already exists")
             }
+            StorageError::PluginNotFound => Self::new(
+                StatusCode::NOT_FOUND,
+                ErrorCode::NotFound,
+                "Plugin was not found",
+            ),
+            StorageError::DuplicatePluginName => {
+                Self::conflict("A plugin with that name already exists")
+            }
             StorageError::ChatDomain(error) => Self::new(
                 StatusCode::UNPROCESSABLE_ENTITY,
                 ErrorCode::ValidationFailed,

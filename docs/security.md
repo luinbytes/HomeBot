@@ -40,6 +40,8 @@ The implemented `PolicyEngine` defaults unmatched requests to approval and evalu
 | Sensitive log leakage | Field-level redaction, bounded logs, secret scanning fixtures | Canary secrets absent from logs/crash reports/history |
 | Denial of service | Size/time/concurrency limits, backpressure, rate limits, child supervision | Oversized/slow input is bounded and server remains healthy |
 
+Local MCP executables are direct absolute-path child processes with no shell and a cleared environment. MCP stdout is bounded JSON-RPC data; stderr is bounded diagnostic data. Initialization, discovery, and shutdown have deadlines. Discovered annotations, descriptions, schemas, and results remain untrusted and cannot create approvals or alter permission policy. Per-Bot assignment narrows availability but never grants a capability.
+
 ## Networking
 
 Default bind is `127.0.0.1`. LAN and Tailscale require explicit configuration. Plain HTTP/WebSocket is allowed only on loopback by default. Private-network plaintext may be enabled only with a visible warning and threat acknowledgement; public endpoints require HTTPS/WSS through a supported TLS configuration or reverse proxy. Origin and CSRF checks protect browser-capable surfaces.

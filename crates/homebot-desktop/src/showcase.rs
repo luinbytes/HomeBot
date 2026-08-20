@@ -10,7 +10,10 @@ use crate::{
         AttentionIndicator, AvatarShape, BotIdentity, activity_card, approval_card, composer,
         message, roster_row, section_label,
     },
-    settings::{DesktopSettings, SettingsSection, ThemePreference, settings_view},
+    settings::{
+        DesktopSettings, PluginSettingsItem, PluginViewState, SettingsSection, ThemePreference,
+        settings_view,
+    },
     tokens::HomeBotTheme,
 };
 
@@ -27,6 +30,7 @@ pub enum FixtureState {
     ActivitySurfaces,
     Settings,
     SettingsAppearance,
+    SettingsPlugins,
 }
 
 fn nova(theme: HomeBotTheme) -> BotIdentity<'static> {
@@ -65,6 +69,7 @@ fn scout(theme: HomeBotTheme) -> BotIdentity<'static> {
     }
 }
 
+#[allow(clippy::too_many_lines)]
 pub fn render_fixture(context: &egui::Context, theme: HomeBotTheme, state: FixtureState) {
     theme.install(context);
     SidePanel::left("homebot_sidebar")
@@ -117,7 +122,9 @@ pub fn render_fixture(context: &egui::Context, theme: HomeBotTheme, state: Fixtu
                         FixtureState::Empty => "Bots",
                         FixtureState::BotEditor => "New Bot",
                         FixtureState::ActivitySurfaces => "Nova · activity",
-                        FixtureState::Settings | FixtureState::SettingsAppearance => "Settings",
+                        FixtureState::Settings
+                        | FixtureState::SettingsAppearance
+                        | FixtureState::SettingsPlugins => "Settings",
                         _ => "Nova",
                     })
                     .font(theme.typography.font(theme.typography.body_compact))
@@ -137,6 +144,7 @@ pub fn render_fixture(context: &egui::Context, theme: HomeBotTheme, state: Fixtu
             | FixtureState::ActivitySurfaces
             | FixtureState::Settings
             | FixtureState::SettingsAppearance
+            | FixtureState::SettingsPlugins
     ) {
         TopBottomPanel::bottom("homebot_composer")
             .exact_height(theme.layout.composer_min_height + theme.spacing.xl)
@@ -167,7 +175,33 @@ pub fn render_fixture(context: &egui::Context, theme: HomeBotTheme, state: Fixtu
             FixtureState::ActivitySurfaces => activity_surfaces_state(ui, theme),
             FixtureState::Settings => settings_state(ui, theme, false),
             FixtureState::SettingsAppearance => settings_state(ui, theme, true),
+            FixtureState::SettingsPlugins => plugin_settings_state(ui, theme),
         });
+}
+
+fn plugin_settings_state(ui: &mut egui::Ui, theme: HomeBotTheme) {
+    ui.add_space(theme.spacing.xl);
+    ui.horizontal_centered(|ui| {
+        let mut settings = DesktopSettings {
+            section: SettingsSection::Plugins,
+            plugins: vec![
+                PluginSettingsItem {
+                    name: "Repository tools".to_owned(),
+                    detail: String::new(),
+                    state: PluginViewState::Connected,
+                    enabled: true,
+                },
+                PluginSettingsItem {
+                    name: "Local notes".to_owned(),
+                    detail: "Connection error".to_owned(),
+                    state: PluginViewState::Error,
+                    enabled: false,
+                },
+            ],
+            ..DesktopSettings::default()
+        };
+        settings_view(ui, theme, &mut settings);
+    });
 }
 
 fn settings_state(ui: &mut egui::Ui, theme: HomeBotTheme, appearance: bool) {

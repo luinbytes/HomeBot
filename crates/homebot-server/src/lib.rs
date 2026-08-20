@@ -5,6 +5,7 @@ mod attachments;
 mod bots;
 mod chats;
 mod groups;
+mod plugins;
 mod provider_turn;
 mod secrets;
 
@@ -210,6 +211,26 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/v1/secrets/{secret_id}",
             put(secrets::update).delete(secrets::delete),
+        )
+        .route("/api/v1/plugins", get(plugins::list).post(plugins::create))
+        .route(
+            "/api/v1/plugins/{plugin_id}",
+            axum::routing::delete(plugins::delete),
+        )
+        .route(
+            "/api/v1/plugins/{plugin_id}/connect",
+            post(plugins::connect),
+        )
+        .route("/api/v1/plugins/{plugin_id}/reopen", post(plugins::connect))
+        .route("/api/v1/plugins/{plugin_id}/enable", post(plugins::enable))
+        .route(
+            "/api/v1/plugins/{plugin_id}/disable",
+            post(plugins::disable),
+        )
+        .route("/api/v1/plugins/{plugin_id}/health", post(plugins::connect))
+        .route(
+            "/api/v1/plugins/{plugin_id}/assignment",
+            put(plugins::assign),
         )
         .route_layer(middleware::from_fn_with_state(state.clone(), authenticate));
     Router::new()

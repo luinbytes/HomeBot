@@ -30,13 +30,17 @@ Every mutation has a client-generated request ID and idempotency key. Repeating 
 
 Errors contain a stable machine code, safe user-facing message, retryable flag, and request ID where relevant. Debug details remain in redacted local diagnostics and never expose provider secrets, pairing tokens, raw environment variables, or filesystem data outside the requesting capability scope.
 
-Required common codes include `unauthenticated`, `forbidden`, `approval_required`, `not_found`, `conflict`, `validation_failed`, `rate_limited`, `provider_unavailable`, `secret_store_locked`, `secret_store_unavailable`, `operation_cancelled`, `resume_unavailable`, `protocol_version_unsupported`, and `internal`.
+Required common codes include `unauthenticated`, `forbidden`, `approval_required`, `not_found`, `conflict`, `validation_failed`, `rate_limited`, `provider_unavailable`, `plugin_unavailable`, `secret_store_locked`, `secret_store_unavailable`, `operation_cancelled`, `resume_unavailable`, `protocol_version_unsupported`, and `internal`.
 
 ## Secret metadata
 
 Authenticated `/api/v1/secrets` endpoints list, create, update, and delete owner-scoped secret references. Responses contain only UUID, label, availability state, and timestamps. Secret-bearing create/update request types deliberately omit Rust `Debug`/`Serialize`; generated Android request classes redact values from `toString`. Mutations emit sequenced `secret_changed` or `secret_removed` events containing no value or credential-store locator.
 
 `ready`, `locked`, `unavailable`, and `missing` are distinct states so clients can offer the correct recovery action without receiving platform error details. See [secrets.md](secrets.md).
+
+## Plugin registry
+
+Authenticated `/api/v1/plugins` operations expose provider-neutral summaries and exact `connect`, `waiting`, `reopen`, `connected`, and `error` states. Summaries include authentication state, bounded discovered-tool metadata, enablement and Bot assignments, but never raw MCP frames or secret values. Mutations emit monotonic `plugin_changed` and `plugin_removed` events so desktop and Android render server state rather than inferring transport health.
 
 ## Attachments
 

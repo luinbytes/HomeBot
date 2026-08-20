@@ -77,4 +77,9 @@ fn desktop_shell_visual_goldens() {
         HomeBotTheme::dark(),
         FixtureState::SettingsAppearance,
     );
+    snapshot(
+        "desktop_settings_plugins_light",
+        HomeBotTheme::light(),
+        FixtureState::SettingsPlugins,
+    );
 }

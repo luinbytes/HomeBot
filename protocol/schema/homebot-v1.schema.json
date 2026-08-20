@@ -40,6 +40,9 @@
     "create_direct_chat_response": {
       "$ref": "#/$defs/CreateDirectChatResponse"
     },
+    "create_local_mcp_plugin_request": {
+      "$ref": "#/$defs/CreateLocalMcpPluginRequest"
+    },
     "create_secret_request": {
       "$ref": "#/$defs/CreateSecretRequest"
     },
@@ -51,6 +54,15 @@
     },
     "message_mutation_request": {
       "$ref": "#/$defs/MessageMutationRequest"
+    },
+    "plugin": {
+      "$ref": "#/$defs/PluginSummary"
+    },
+    "plugin_assignment_request": {
+      "$ref": "#/$defs/PluginAssignmentRequest"
+    },
+    "plugin_mutation_request": {
+      "$ref": "#/$defs/PluginMutationRequest"
     },
     "secret": {
       "$ref": "#/$defs/SecretSummary"
@@ -78,6 +90,10 @@
     "create_secret_request",
     "update_secret_request",
     "secret",
+    "create_local_mcp_plugin_request",
+    "plugin_mutation_request",
+    "plugin_assignment_request",
+    "plugin",
     "create_attachment_request",
     "create_attachment_response",
     "finalize_attachment_request",
@@ -1061,6 +1077,43 @@
         "chat"
       ]
     },
+    "CreateLocalMcpPluginRequest": {
+      "type": "object",
+      "properties": {
+        "arguments": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "description": {
+          "type": "string",
+          "default": ""
+        },
+        "idempotency_key": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "name": {
+          "type": "string"
+        },
+        "program": {
+          "type": "string"
+        },
+        "request_id": {
+          "type": "string",
+          "format": "uuid"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "request_id",
+        "idempotency_key",
+        "name",
+        "program"
+      ]
+    },
     "CreateSecretRequest": {
       "description": "Secret-bearing request. Deliberately does not implement `Debug` or `Serialize`.",
       "type": "object",
@@ -1099,6 +1152,7 @@
         "validation_failed",
         "rate_limited",
         "provider_unavailable",
+        "plugin_unavailable",
         "secret_store_locked",
         "secret_store_unavailable",
         "operation_cancelled",
@@ -1513,6 +1567,161 @@
         "to_bot_id",
         "reason",
         "created_at_ms"
+      ]
+    },
+    "PluginAssignmentRequest": {
+      "type": "object",
+      "properties": {
+        "bot_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "idempotency_key": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "request_id": {
+          "type": "string",
+          "format": "uuid"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "request_id",
+        "idempotency_key",
+        "bot_id",
+        "enabled"
+      ]
+    },
+    "PluginAuthState": {
+      "type": "string",
+      "enum": [
+        "not_required",
+        "required",
+        "waiting",
+        "connected",
+        "error"
+      ]
+    },
+    "PluginConnectionState": {
+      "type": "string",
+      "enum": [
+        "connect",
+        "waiting",
+        "reopen",
+        "connected",
+        "error"
+      ]
+    },
+    "PluginMutationRequest": {
+      "type": "object",
+      "properties": {
+        "idempotency_key": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "request_id": {
+          "type": "string",
+          "format": "uuid"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "request_id",
+        "idempotency_key"
+      ]
+    },
+    "PluginSummary": {
+      "type": "object",
+      "properties": {
+        "auth_state": {
+          "$ref": "#/$defs/PluginAuthState"
+        },
+        "bot_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        "connection_state": {
+          "$ref": "#/$defs/PluginConnectionState"
+        },
+        "description": {
+          "type": "string"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "error_message": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "kind": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "tools": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/PluginToolSummary"
+          }
+        },
+        "updated_at_unix_ms": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "name",
+        "description",
+        "kind",
+        "enabled",
+        "connection_state",
+        "auth_state",
+        "tools",
+        "bot_ids",
+        "updated_at_unix_ms"
+      ]
+    },
+    "PluginToolSummary": {
+      "type": "object",
+      "properties": {
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "input_schema": true,
+        "name": {
+          "type": "string"
+        },
+        "title": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "input_schema"
       ]
     },
     "ProtocolRange": {
@@ -2017,6 +2226,39 @@
           "required": [
             "kind",
             "secret_id"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "plugin_changed"
+            },
+            "plugin": {
+              "$ref": "#/$defs/PluginSummary"
+            }
+          },
+          "required": [
+            "kind",
+            "plugin"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "plugin_removed"
+            },
+            "plugin_id": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          "required": [
+            "kind",
+            "plugin_id"
           ]
         },
         {

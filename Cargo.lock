@@ -1865,6 +1865,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "homebot-plugins"
+version = "0.0.1"
+dependencies = [
+ "async-trait",
+ "homebot-providers",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.20",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
 name = "homebot-protocol"
 version = "0.0.1"
 dependencies = [
@@ -1914,6 +1928,7 @@ dependencies = [
  "axum",
  "futures-util",
  "homebot-domain",
+ "homebot-plugins",
  "homebot-protocol",
  "homebot-providers",
  "homebot-secrets",

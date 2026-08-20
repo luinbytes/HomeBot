@@ -110,6 +110,12 @@ pub enum ServerEventBody {
     SecretRemoved {
         secret_id: Uuid,
     },
+    PluginChanged {
+        plugin: PluginSummary,
+    },
+    PluginRemoved {
+        plugin_id: Uuid,
+    },
     CommandAccepted {
         request_id: Uuid,
         operation_id: Uuid,
@@ -691,6 +697,7 @@ pub enum ErrorCode {
     ValidationFailed,
     RateLimited,
     ProviderUnavailable,
+    PluginUnavailable,
     SecretStoreLocked,
     SecretStoreUnavailable,
     OperationCancelled,
@@ -735,6 +742,80 @@ pub struct UpdateSecretRequest {
     pub request_id: Uuid,
     pub label: Option<String>,
     pub value: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PluginConnectionState {
+    Connect,
+    Waiting,
+    Reopen,
+    Connected,
+    Error,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PluginAuthState {
+    NotRequired,
+    Required,
+    Waiting,
+    Connected,
+    Error,
+}
+
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PluginToolSummary {
+    pub name: String,
+    pub title: Option<String>,
+    pub description: Option<String>,
+    pub input_schema: Value,
+}
+
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PluginSummary {
+    pub id: Uuid,
+    pub name: String,
+    pub description: String,
+    pub kind: String,
+    pub enabled: bool,
+    pub connection_state: PluginConnectionState,
+    pub auth_state: PluginAuthState,
+    pub error_message: Option<String>,
+    pub tools: Vec<PluginToolSummary>,
+    pub bot_ids: Vec<Uuid>,
+    pub updated_at_unix_ms: u64,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CreateLocalMcpPluginRequest {
+    pub request_id: Uuid,
+    pub idempotency_key: Uuid,
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    pub program: String,
+    #[serde(default)]
+    pub arguments: Vec<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PluginMutationRequest {
+    pub request_id: Uuid,
+    pub idempotency_key: Uuid,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PluginAssignmentRequest {
+    pub request_id: Uuid,
+    pub idempotency_key: Uuid,
+    pub bot_id: Uuid,
+    pub enabled: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
@@ -783,6 +864,10 @@ pub struct ProtocolV1Schema {
     pub create_secret_request: CreateSecretRequest,
     pub update_secret_request: UpdateSecretRequest,
     pub secret: SecretSummary,
+    pub create_local_mcp_plugin_request: CreateLocalMcpPluginRequest,
+    pub plugin_mutation_request: PluginMutationRequest,
+    pub plugin_assignment_request: PluginAssignmentRequest,
+    pub plugin: PluginSummary,
     pub create_attachment_request: CreateAttachmentRequest,
     pub create_attachment_response: CreateAttachmentResponse,
     pub finalize_attachment_request: FinalizeAttachmentRequest,

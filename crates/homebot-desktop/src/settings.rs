@@ -54,6 +54,23 @@ pub enum UpdateState {
     Failed,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub enum PluginViewState {
+    Connect,
+    Waiting,
+    Reopen,
+    Connected,
+    Error,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct PluginSettingsItem {
+    pub name: String,
+    pub detail: String,
+    pub state: PluginViewState,
+    pub enabled: bool,
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 pub enum NotificationTopic {
     Finished,
@@ -107,6 +124,7 @@ pub struct DesktopSettings {
     pub provider_status: String,
     pub paired_devices: u32,
     pub update_state: UpdateState,
+    pub plugins: Vec<PluginSettingsItem>,
 }
 
 impl Default for DesktopSettings {
@@ -120,6 +138,7 @@ impl Default for DesktopSettings {
             provider_status: "Codex · Ready".to_owned(),
             paired_devices: 0,
             update_state: UpdateState::Current,
+            plugins: Vec::new(),
         }
     }
 }
@@ -161,7 +180,7 @@ pub fn settings_view(ui: &mut Ui, theme: HomeBotTheme, settings: &mut DesktopSet
             ui.add_space(theme.spacing.lg);
             match settings.section {
                 SettingsSection::General => general(ui, settings),
-                SettingsSection::Plugins => plugins(ui, theme),
+                SettingsSection::Plugins => plugins(ui, theme, &settings.plugins),
                 SettingsSection::Appearance => appearance(ui, settings),
                 SettingsSection::Updates => updates(ui, theme, settings.update_state),
                 SettingsSection::Connection => connection(ui, theme, settings),
@@ -211,9 +230,29 @@ fn notification_checkbox(
     }
 }
 
-fn plugins(ui: &mut Ui, theme: HomeBotTheme) {
-    settings_row(ui, theme, "Plugins and MCP", "Manage connections", "Open");
-    settings_row(ui, theme, "Installed", "No plugins connected", "Browse");
+fn plugins(ui: &mut Ui, theme: HomeBotTheme, plugins: &[PluginSettingsItem]) {
+    ui.label("Connect local MCP tools and choose which Bots can use them.");
+    ui.add_space(theme.spacing.md);
+    if plugins.is_empty() {
+        settings_row(ui, theme, "Local MCP", "No plugins connected", "Connect");
+        return;
+    }
+    for plugin in plugins {
+        let (state, action) = match plugin.state {
+            PluginViewState::Connect => ("Ready to connect", "Connect"),
+            PluginViewState::Waiting => ("Waiting for connection…", "Waiting"),
+            PluginViewState::Reopen => ("Connection closed", "Reopen"),
+            PluginViewState::Connected if plugin.enabled => ("Connected · Enabled", "Disable"),
+            PluginViewState::Connected => ("Connected · Disabled", "Enable"),
+            PluginViewState::Error => ("Connection error", "Reopen"),
+        };
+        let detail = if plugin.detail.is_empty() {
+            state
+        } else {
+            &plugin.detail
+        };
+        settings_row(ui, theme, &plugin.name, detail, action);
+    }
 }
 
 fn appearance(ui: &mut Ui, settings: &mut DesktopSettings) {

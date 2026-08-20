@@ -192,6 +192,21 @@ data class QueuedPromptSummary(val id: String, val chat_id: String, val content:
 data class SecretSummary(val id: String, val label: String, val status: String, val created_at_unix_ms: Long, val updated_at_unix_ms: Long)
 
 @Serializable
+data class PluginToolSummary(val name: String, val title: String? = null, val description: String? = null, val input_schema: JsonElement)
+
+@Serializable
+data class PluginSummary(val id: String, val name: String, val description: String, val kind: String, val enabled: Boolean, val connection_state: String, val auth_state: String, val error_message: String? = null, val tools: List<PluginToolSummary>, val bot_ids: List<String>, val updated_at_unix_ms: Long)
+
+@Serializable
+data class CreateLocalMcpPluginRequest(val request_id: String, val idempotency_key: String, val name: String, val description: String = "", val program: String, val arguments: List<String> = emptyList())
+
+@Serializable
+data class PluginMutationRequest(val request_id: String, val idempotency_key: String)
+
+@Serializable
+data class PluginAssignmentRequest(val request_id: String, val idempotency_key: String, val bot_id: String, val enabled: Boolean)
+
+@Serializable
 class CreateSecretRequest(val request_id: String, val idempotency_key: String, val label: String, val value: String) {
     override fun toString(): String = "CreateSecretRequest(request_id=$request_id, idempotency_key=$idempotency_key, label=$label, value=[REDACTED])"
 }

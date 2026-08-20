@@ -24,13 +24,13 @@ pub(super) async fn start_if_configured(
     chat: &DirectChat,
     prompt: &str,
     attachment_ids: &[Uuid],
-) -> Result<(), ApiError> {
+) -> Result<bool, ApiError> {
     let Some(route) = state
         .storage
         .provider_route_for_bot(state.owner_id, chat.bot_id)
         .await?
     else {
-        return Ok(());
+        return Ok(false);
     };
     let adapter_id =
         ProviderAdapterId::new(route.adapter_kind).map_err(|_| ApiError::internal())?;
@@ -94,8 +94,20 @@ pub(super) async fn start_if_configured(
     let run = match result {
         Ok(run) => run,
         Err(error) => {
-            finish_failed_start(state, chat.id, message_id, provider_error(&error)).await?;
-            return Ok(());
+            finish_failed_start(
+                state,
+                chat.id,
+                ChatOperation {
+                    operation: operation_id,
+                    adapter: adapter_id,
+                    profile: route.profile_id,
+                    bot: chat.bot_id,
+                    message: message_id,
+                },
+                provider_error(&error),
+            )
+            .await?;
+            return Ok(true);
         }
     };
     state.chat_operations.lock().await.insert(
@@ -133,7 +145,7 @@ pub(super) async fn start_if_configured(
             }
         }
     });
-    Ok(())
+    Ok(true)
 }
 
 pub(super) async fn cancel(state: &AppState, chat_id: Uuid) -> Result<(), ApiError> {
@@ -327,6 +339,12 @@ async fn finish(
             unix_time_ms(),
         )
         .await?;
+    if matches!(status, MessageStatus::Completed | MessageStatus::Failed) {
+        let _ = state
+            .storage
+            .increment_chat_unread(state.owner_id, chat_id, unix_time_ms())
+            .await?;
+    }
     let chat = state
         .storage
         .set_chat_running(state.owner_id, chat_id, false, unix_time_ms())
@@ -347,6 +365,17 @@ async fn finish(
         },
     )
     .await?;
+    if matches!(status, MessageStatus::Completed | MessageStatus::Failed) {
+        let bot = state.storage.get_bot(state.owner_id, operation.bot).await?;
+        publish(
+            state,
+            "bot_changed",
+            ServerEventBody::BotChanged {
+                bot: crate::bots::summary(state, bot).await,
+            },
+        )
+        .await?;
+    }
     state.provider_runtime.finish(operation.operation).await;
     state.chat_operations.lock().await.remove(&chat_id);
     Ok(())
@@ -355,16 +384,9 @@ async fn finish(
 async fn finish_failed_start(
     state: &AppState,
     chat_id: Uuid,
-    message_id: Uuid,
+    operation: ChatOperation,
     error: ErrorEnvelope,
 ) -> Result<(), ApiError> {
-    let operation = ChatOperation {
-        operation: Uuid::nil(),
-        adapter: ProviderAdapterId::new("unavailable").map_err(|_| ApiError::internal())?,
-        profile: Uuid::nil(),
-        bot: Uuid::nil(),
-        message: message_id,
-    };
     finish(
         state,
         chat_id,

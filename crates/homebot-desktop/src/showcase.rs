@@ -13,6 +13,7 @@ pub enum FixtureState {
     Empty,
     DirectChat,
     Approval,
+    QueueError,
     BotEditor,
     Disconnected,
     ProviderUnavailable,
@@ -136,6 +137,7 @@ pub fn render_fixture(context: &egui::Context, theme: HomeBotTheme, state: Fixtu
             FixtureState::Empty => empty_state(ui, theme),
             FixtureState::DirectChat => chat_state(ui, theme, false),
             FixtureState::Approval => chat_state(ui, theme, true),
+            FixtureState::QueueError => queue_error_state(ui, theme),
             FixtureState::BotEditor => bot_editor(ui, theme),
             FixtureState::Disconnected => disconnected_state(ui, theme),
             FixtureState::ProviderUnavailable => provider_unavailable(ui, theme),
@@ -193,6 +195,59 @@ fn chat_state(ui: &mut egui::Ui, theme: HomeBotTheme, approval: bool) {
         } else {
             activity_card(ui, theme, "Running test suite", "42 checks passed", false);
         }
+    });
+}
+
+fn queue_error_state(ui: &mut egui::Ui, theme: HomeBotTheme) {
+    ui.vertical_centered(|ui| {
+        ui.set_max_width(theme.layout.content_max_width);
+        ui.add_space(theme.spacing.xl);
+        message(
+            ui,
+            theme,
+            None,
+            "Run the release checks and summarize any failures.",
+        );
+        ui.add_space(theme.spacing.xl);
+        message(
+            ui,
+            theme,
+            Some(nova(theme)),
+            "I couldn't finish because the provider connection closed.",
+        );
+        ui.add_space(theme.spacing.sm);
+        Frame::NONE
+            .fill(theme.palette.surface)
+            .stroke(Stroke::new(theme.layout.hairline, theme.palette.danger))
+            .corner_radius(egui::CornerRadius::same(theme.radii.sm))
+            .inner_margin(egui::Margin::same(theme.insets.md))
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(
+                        RichText::new("Response failed")
+                            .color(theme.palette.danger)
+                            .strong(),
+                    );
+                    ui.label(
+                        RichText::new("The provider can be retried safely.")
+                            .color(theme.palette.text_secondary),
+                    );
+                    let _ = ui.button("Retry");
+                });
+            });
+        ui.add_space(theme.spacing.lg);
+        Frame::NONE
+            .fill(theme.palette.surface_hover)
+            .corner_radius(egui::CornerRadius::same(theme.radii.sm))
+            .inner_margin(egui::Margin::same(theme.insets.md))
+            .show(ui, |ui| {
+                ui.label(
+                    RichText::new("Queued next")
+                        .color(theme.palette.text_secondary)
+                        .strong(),
+                );
+                ui.label("Open the failing test output and propose a fix.");
+            });
     });
 }
 
@@ -313,6 +368,7 @@ mod tests {
                 FixtureState::Empty,
                 FixtureState::DirectChat,
                 FixtureState::Approval,
+                FixtureState::QueueError,
                 FixtureState::BotEditor,
                 FixtureState::Disconnected,
                 FixtureState::ProviderUnavailable,

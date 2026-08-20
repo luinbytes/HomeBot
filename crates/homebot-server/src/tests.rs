@@ -716,6 +716,24 @@ async fn provider_turn_streams_persists_approves_resumes_and_cancels()
         timeline.approvals[0].status,
         homebot_protocol::ApprovalStatus::Allowed
     );
+    assert_eq!(timeline.chat.unread_count, 1);
+    let response = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            &format!("/api/v1/chats/{chat_id}/read"),
+            &BotMutationRequest {
+                request_id: Uuid::now_v7(),
+                idempotency_key: Uuid::now_v7(),
+            },
+        ))
+        .await?;
+    assert_eq!(
+        response_json::<homebot_protocol::ChatSummary>(response)
+            .await?
+            .unread_count,
+        0
+    );
     let expected_conversation = format!("chat-{chat_id}");
     assert_eq!(
         storage
@@ -765,6 +783,82 @@ async fn provider_turn_streams_persists_approves_resumes_and_cancels()
     })
     .await?;
     assert!(!timeline.chat.running);
+    Ok(())
+}
+
+#[tokio::test]
+async fn failed_provider_message_can_be_retried_idempotently()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let storage = Storage::open(&directory.path().join("homebot.db")).await?;
+    let profile_id = Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO provider_profiles (
+            id, adapter_kind, display_name, configuration_json, created_at_ms, updated_at_ms
+         ) VALUES (?, 'missing-adapter', 'Missing', '{}', 1, 1)",
+    )
+    .bind(profile_id.to_string())
+    .execute(storage.pool())
+    .await?;
+    let mut bot = homebot_domain::Bot::create("Retry Bot", "Testing")?;
+    bot.provider_profile_id = Some(profile_id);
+    let bot = storage.create_bot(Uuid::nil(), bot, 1).await?;
+    let chat = storage
+        .create_direct_chat(Uuid::nil(), bot.id.0, Uuid::now_v7(), 2)
+        .await?;
+    let app = router(AppState::new(storage, "correct-token"));
+    let response = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            &format!("/api/v1/chats/{}/messages", chat.id),
+            &SendMessageRequest {
+                request_id: Uuid::now_v7(),
+                idempotency_key: Uuid::now_v7(),
+                content: "Try this".to_owned(),
+                attachment_ids: Vec::new(),
+                reply_to_message_id: None,
+                mentioned_bot_ids: Vec::new(),
+            },
+        ))
+        .await?;
+    assert_eq!(response.status(), StatusCode::OK);
+    let timeline = wait_for_timeline(&app, chat.id, |timeline| {
+        timeline
+            .messages
+            .last()
+            .is_some_and(|message| message.status == homebot_protocol::MessageStatus::Failed)
+    })
+    .await?;
+    let failed_id = timeline.messages.last().ok_or("missing failure")?.id;
+    let retry = BotMutationRequest {
+        request_id: Uuid::now_v7(),
+        idempotency_key: Uuid::now_v7(),
+    };
+    let uri = format!("/api/v1/chats/{}/messages/{failed_id}/retry", chat.id);
+    let response = app
+        .clone()
+        .oneshot(json_request("POST", &uri, &retry))
+        .await?;
+    assert_eq!(response.status(), StatusCode::OK);
+    let timeline = wait_for_timeline(&app, chat.id, |timeline| {
+        timeline
+            .messages
+            .iter()
+            .filter(|message| message.status == homebot_protocol::MessageStatus::Failed)
+            .count()
+            == 2
+    })
+    .await?;
+    let response = app
+        .clone()
+        .oneshot(json_request("POST", &uri, &retry))
+        .await?;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        fetch_timeline(&app, chat.id).await?.messages.len(),
+        timeline.messages.len()
+    );
     Ok(())
 }
 

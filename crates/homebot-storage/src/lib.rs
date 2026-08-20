@@ -928,6 +928,81 @@ impl Storage {
         self.get_direct_chat(owner_id, chat_id).await
     }
 
+    /// Increments direct-chat and Bot unread state after a terminal Bot response.
+    ///
+    /// # Errors
+    ///
+    /// Returns not-found or database errors.
+    pub async fn increment_chat_unread(
+        &self,
+        owner_id: Uuid,
+        chat_id: Uuid,
+        now_ms: i64,
+    ) -> Result<DirectChat, StorageError> {
+        let mut transaction = self.pool.begin().await?;
+        let bot_id: Option<String> = sqlx::query_scalar(
+            "UPDATE chats SET unread_count = unread_count + 1, updated_at_ms = ?
+             WHERE id = ? AND owner_id = ? RETURNING direct_bot_id",
+        )
+        .bind(now_ms)
+        .bind(chat_id.to_string())
+        .bind(owner_id.to_string())
+        .fetch_optional(&mut *transaction)
+        .await?
+        .flatten();
+        let Some(bot_id) = bot_id else {
+            return Err(StorageError::ChatNotFound);
+        };
+        sqlx::query(
+            "UPDATE bots SET unread_count = unread_count + 1, updated_at_ms = ?
+             WHERE id = ? AND owner_id = ?",
+        )
+        .bind(now_ms)
+        .bind(bot_id)
+        .bind(owner_id.to_string())
+        .execute(&mut *transaction)
+        .await?;
+        transaction.commit().await?;
+        self.get_direct_chat(owner_id, chat_id).await
+    }
+
+    /// Clears direct-chat and corresponding Bot unread state.
+    ///
+    /// # Errors
+    ///
+    /// Returns not-found or database errors.
+    pub async fn mark_chat_read(
+        &self,
+        owner_id: Uuid,
+        chat_id: Uuid,
+        now_ms: i64,
+    ) -> Result<DirectChat, StorageError> {
+        let mut transaction = self.pool.begin().await?;
+        let bot_id: Option<String> = sqlx::query_scalar(
+            "UPDATE chats SET unread_count = 0, updated_at_ms = ?
+             WHERE id = ? AND owner_id = ? RETURNING direct_bot_id",
+        )
+        .bind(now_ms)
+        .bind(chat_id.to_string())
+        .bind(owner_id.to_string())
+        .fetch_optional(&mut *transaction)
+        .await?
+        .flatten();
+        let Some(bot_id) = bot_id else {
+            return Err(StorageError::ChatNotFound);
+        };
+        sqlx::query(
+            "UPDATE bots SET unread_count = 0, updated_at_ms = ? WHERE id = ? AND owner_id = ?",
+        )
+        .bind(now_ms)
+        .bind(bot_id)
+        .bind(owner_id.to_string())
+        .execute(&mut *transaction)
+        .await?;
+        transaction.commit().await?;
+        self.get_direct_chat(owner_id, chat_id).await
+    }
+
     /// Inserts or updates a normalized execution activity.
     ///
     /// # Errors

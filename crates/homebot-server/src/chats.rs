@@ -198,7 +198,7 @@ pub(super) async fn send_message(
         .await?;
     }
     if !replayed {
-        crate::provider_turn::start_if_configured(
+        let _ = crate::provider_turn::start_if_configured(
             &state,
             &chat,
             &provider_prompt,
@@ -309,6 +309,110 @@ pub(super) async fn stop(
         .await?;
     }
     Ok(Json(chat))
+}
+
+pub(super) async fn mark_read(
+    State(state): State<AppState>,
+    Path(chat_id): Path<Uuid>,
+    Json(request): Json<BotMutationRequest>,
+) -> Result<Json<ChatSummary>, ApiError> {
+    let replayed = matches!(
+        claim(
+            &state,
+            request.idempotency_key,
+            &format!("mark_chat_read:{chat_id}"),
+            &request,
+        )
+        .await?,
+        IdempotencyClaim::Replayed { .. }
+    );
+    let chat = if replayed {
+        state
+            .storage
+            .get_direct_chat(state.owner_id, chat_id)
+            .await?
+    } else {
+        state
+            .storage
+            .mark_chat_read(state.owner_id, chat_id, unix_time_ms())
+            .await?
+    };
+    let chat = chat_summary(chat);
+    if !replayed {
+        publish(
+            &state,
+            "chat_changed",
+            ServerEventBody::ChatChanged { chat: chat.clone() },
+        )
+        .await?;
+        let bot = state.storage.get_bot(state.owner_id, chat.bot_id).await?;
+        publish(
+            &state,
+            "bot_changed",
+            ServerEventBody::BotChanged {
+                bot: crate::bots::summary(&state, bot).await,
+            },
+        )
+        .await?;
+    }
+    Ok(Json(chat))
+}
+
+pub(super) async fn retry(
+    State(state): State<AppState>,
+    Path((chat_id, message_id)): Path<(Uuid, Uuid)>,
+    Json(request): Json<BotMutationRequest>,
+) -> Result<Json<ChatSummary>, ApiError> {
+    let replayed = matches!(
+        claim(
+            &state,
+            request.idempotency_key,
+            &format!("retry_message:{message_id}"),
+            &request,
+        )
+        .await?,
+        IdempotencyClaim::Replayed { .. }
+    );
+    let chat = state
+        .storage
+        .get_direct_chat(state.owner_id, chat_id)
+        .await?;
+    if replayed {
+        return Ok(Json(chat_summary(chat)));
+    }
+    if chat.running {
+        return Err(ApiError::conflict("This Bot is already working"));
+    }
+    let messages = state.storage.chat_messages(state.owner_id, chat_id).await?;
+    let failed_index = messages
+        .iter()
+        .position(|message| message.id == message_id && message.status == DomainStatus::Failed)
+        .ok_or_else(|| ApiError::conflict("Only failed Bot messages can be retried"))?;
+    let source = messages[..failed_index]
+        .iter()
+        .rev()
+        .find(|message| message.author == DomainAuthor::User)
+        .ok_or_else(ApiError::internal)?;
+    let mut prompt = String::new();
+    let mut attachments = Vec::new();
+    for part in &source.parts {
+        match part {
+            DomainPart::Text { text, .. } => prompt.push_str(text),
+            DomainPart::Attachment { attachment_id, .. } => attachments.push(*attachment_id),
+            DomainPart::Notice { .. } => {}
+        }
+    }
+    if !crate::provider_turn::start_if_configured(&state, &chat, &prompt, &attachments).await? {
+        return Err(ApiError::conflict(
+            "Configure an available provider before retrying",
+        ));
+    }
+    Ok(Json(chat_summary(
+        state
+            .storage
+            .get_direct_chat(state.owner_id, chat_id)
+            .await?,
+    )))
 }
 
 pub(super) async fn decide_approval(

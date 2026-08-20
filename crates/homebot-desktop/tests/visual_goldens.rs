@@ -38,6 +38,11 @@ fn desktop_shell_visual_goldens() {
         FixtureState::Approval,
     );
     snapshot(
+        "desktop_queue_error_dark",
+        HomeBotTheme::dark(),
+        FixtureState::QueueError,
+    );
+    snapshot(
         "desktop_bot_editor_light",
         HomeBotTheme::light(),
         FixtureState::BotEditor,

@@ -22,14 +22,19 @@ The native executable uses eframe 0.32.3 with accessibility, OpenGL, Wayland and
 
 ## Deterministic goldens
 
-The visual harness renders six reference states at 1120 × 760 logical points and one pixel per point:
+The visual harness renders eleven reference states at 1120 × 760 logical points and one pixel per point:
 
 - `desktop_empty_light`
 - `desktop_chat_light`
 - `desktop_approval_dark`
+- `desktop_queue_error_dark`
+- `desktop_group_chat_light`
 - `desktop_bot_editor_light`
 - `desktop_disconnected_dark`
 - `desktop_provider_unavailable_light`
+- `desktop_activity_surfaces_dark`
+- `desktop_settings_general_light`
+- `desktop_settings_appearance_dark`
 
 Goldens are stored under `crates/homebot-desktop/tests/snapshots`. The harness uses egui's normal tessellation with a HomeBot-owned CPU triangle renderer. Fixed nearest-neighbor texture sampling and premultiplied-alpha blending remove GPU, driver, Metal, Vulkan, Wayland and X11 variance. The exact same checked-in image is therefore compared on Linux and macOS.
 

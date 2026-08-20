@@ -54,6 +54,7 @@ Read the deeper contracts:
 
 - [Architecture](docs/architecture.md)
 - [Desktop visual system](docs/desktop-visual-system.md)
+- [Desktop settings and notifications](docs/desktop-settings.md)
 - [Protocol](docs/protocol.md)
 - [Group chats and coordination](docs/group-chats.md)
 - [Activity and artifact surfaces](docs/activity-surfaces.md)

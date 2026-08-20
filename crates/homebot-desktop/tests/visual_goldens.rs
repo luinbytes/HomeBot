@@ -67,4 +67,14 @@ fn desktop_shell_visual_goldens() {
         HomeBotTheme::dark(),
         FixtureState::ActivitySurfaces,
     );
+    snapshot(
+        "desktop_settings_general_light",
+        HomeBotTheme::light(),
+        FixtureState::Settings,
+    );
+    snapshot(
+        "desktop_settings_appearance_dark",
+        HomeBotTheme::dark(),
+        FixtureState::SettingsAppearance,
+    );
 }

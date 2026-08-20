@@ -1,28 +1,51 @@
 use eframe::egui;
 use egui::{Align, CentralPanel, Layout, RichText, SidePanel, TopBottomPanel};
-use homebot_protocol::{BotColor, BotProviderStatus, BotShape, BotSummary};
+use homebot_protocol::{
+    BotAttention, BotColor, BotProviderStatus, BotShape, BotSummary, ServerEvent,
+};
+use std::sync::mpsc::{Receiver, channel};
 
 use crate::{
     bot_roster::{BotEditorDraft, BotRosterModel, ConnectionState, EditorError},
-    components::{AvatarShape, BotIdentity, activity_card, message, roster_row, section_label},
+    components::{
+        AttentionIndicator, AvatarShape, BotIdentity, activity_card, message, roster_row,
+        section_label,
+    },
+    notifications::{DeepLink, NotificationCenter, NotificationSink, SystemNotificationSink},
+    settings::{DesktopSettings, settings_view},
     timeline::{ComposerError, TimelineModel},
     tokens::HomeBotTheme,
 };
+
+const SETTINGS_STORAGE_KEY: &str = "homebot.desktop.settings.v1";
 
 pub struct HomeBotApp {
     pub roster: BotRosterModel,
     pub theme: HomeBotTheme,
     pub timeline: TimelineModel,
+    pub settings: DesktopSettings,
+    pub active_deep_link: Option<DeepLink>,
+    notification_center: NotificationCenter,
+    notification_sink: SystemNotificationSink,
+    deep_link_receiver: Receiver<DeepLink>,
+    settings_open: bool,
     editor_error: Option<EditorError>,
     composer_error: Option<ComposerError>,
 }
 
 impl Default for HomeBotApp {
     fn default() -> Self {
+        let (deep_link_sender, deep_link_receiver) = channel();
         Self {
             roster: BotRosterModel::default(),
             theme: HomeBotTheme::light(),
             timeline: TimelineModel::default(),
+            settings: DesktopSettings::default(),
+            active_deep_link: None,
+            notification_center: NotificationCenter::default(),
+            notification_sink: SystemNotificationSink::new(deep_link_sender),
+            deep_link_receiver,
+            settings_open: false,
             editor_error: None,
             composer_error: None,
         }
@@ -33,15 +56,91 @@ impl eframe::App for HomeBotApp {
     fn update(&mut self, context: &egui::Context, _frame: &mut eframe::Frame) {
         self.render(context);
     }
+
+    fn save(&mut self, storage: &mut dyn eframe::Storage) {
+        if let Ok(encoded) = serde_json::to_string(&self.settings) {
+            storage.set_string(SETTINGS_STORAGE_KEY, encoded);
+        }
+    }
 }
 
 impl HomeBotApp {
+    #[must_use]
+    pub fn from_creation_context(context: &eframe::CreationContext<'_>) -> Self {
+        let mut app = Self::default();
+        if let Some(settings) = context
+            .storage
+            .and_then(|storage| storage.get_string(SETTINGS_STORAGE_KEY))
+            .and_then(|encoded| serde_json::from_str(&encoded).ok())
+        {
+            app.settings = settings;
+        }
+        app
+    }
+
     pub fn render(&mut self, context: &egui::Context) {
+        let activated: Vec<_> = self.deep_link_receiver.try_iter().collect();
+        for deep_link in activated {
+            self.open_deep_link(deep_link);
+        }
+        let system_dark = context.system_theme() == Some(egui::Theme::Dark);
+        self.theme = match self.settings.resolved_theme(system_dark) {
+            crate::tokens::ThemeMode::Light => HomeBotTheme::light(),
+            crate::tokens::ThemeMode::Dark => HomeBotTheme::dark(),
+        };
         self.theme.install(context);
         self.sidebar(context);
         self.titlebar(context);
-        CentralPanel::default().show(context, |ui| self.content(ui));
+        CentralPanel::default().show(context, |ui| {
+            if self.settings_open {
+                settings_view(ui, self.theme, &mut self.settings);
+            } else {
+                self.content(ui);
+            }
+        });
         self.editor(context);
+    }
+
+    /// Emits a native notification for a newly observed server event when policy permits.
+    ///
+    /// # Errors
+    ///
+    /// Returns a safe platform error when the host notification service is unavailable.
+    pub fn apply_notification_event(
+        &mut self,
+        context: &egui::Context,
+        event: &ServerEvent,
+        bot_id: Option<uuid::Uuid>,
+    ) -> Result<(), String> {
+        let focused = context.input(|input| input.viewport().focused.unwrap_or(false));
+        let Some(intent) = self
+            .notification_center
+            .observe(event, bot_id, focused, &self.settings)
+        else {
+            return Ok(());
+        };
+        if !focused {
+            context.send_viewport_cmd(egui::ViewportCommand::RequestUserAttention(
+                match intent.kind {
+                    crate::notifications::NotificationKind::Finished => {
+                        egui::UserAttentionType::Informational
+                    }
+                    crate::notifications::NotificationKind::NeedsApproval
+                    | crate::notifications::NotificationKind::Error => {
+                        egui::UserAttentionType::Critical
+                    }
+                },
+            ));
+        }
+        self.notification_sink.show(intent)
+    }
+
+    pub fn open_deep_link(&mut self, deep_link: DeepLink) {
+        if let Some(bot_id) = deep_link.bot_id {
+            self.roster.selected = Some(bot_id);
+        }
+        self.settings_open = false;
+        self.active_deep_link = Some(deep_link);
     }
 
     fn sidebar(&mut self, context: &egui::Context) {
@@ -81,6 +180,9 @@ impl HomeBotApp {
                 }
                 ui.with_layout(Layout::bottom_up(Align::LEFT), |ui| {
                     let _ = ui.checkbox(&mut self.roster.show_archived, "Show archived Bots");
+                    if ui.button("Settings").clicked() {
+                        self.settings_open = true;
+                    }
                 });
             });
     }
@@ -94,7 +196,19 @@ impl HomeBotApp {
                         .roster
                         .selected
                         .and_then(|id| self.roster.bots.iter().find(|bot| bot.id == id));
-                    ui.label(selected.map_or("Bots", |bot| bot.name.as_str()));
+                    ui.label(if self.settings_open {
+                        "Settings"
+                    } else {
+                        selected.map_or("Bots", |bot| bot.name.as_str())
+                    });
+                    if self.settings_open {
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            if ui.button("Done").clicked() {
+                                self.settings_open = false;
+                            }
+                        });
+                        return;
+                    }
                     if let Some(bot) = selected.cloned() {
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                             if ui.button("Edit").clicked() {
@@ -334,6 +448,12 @@ fn identity(theme: HomeBotTheme, bot: &BotSummary) -> BotIdentity<'_> {
             BotShape::Hexagon => AvatarShape::Hexagon,
         },
         unread: bot.unread_count > 0,
+        attention: match bot.attention {
+            BotAttention::None => None,
+            BotAttention::Working => Some(AttentionIndicator::Working),
+            BotAttention::NeedsApproval => Some(AttentionIndicator::NeedsApproval),
+            BotAttention::Failed => Some(AttentionIndicator::Failed),
+        },
     }
 }
 
@@ -358,5 +478,19 @@ mod tests {
         app.roster.begin_create();
         let _ = context.run(egui::RawInput::default(), |context| app.render(context));
         assert!(app.roster.editor.is_some());
+    }
+
+    #[test]
+    fn notification_deep_link_selects_exact_bot_chat_and_activity() {
+        let mut app = HomeBotApp::default();
+        let link = DeepLink {
+            bot_id: Some(uuid::Uuid::from_u128(1)),
+            chat_id: uuid::Uuid::from_u128(2),
+            message_id: Some(uuid::Uuid::from_u128(3)),
+            activity_id: Some(uuid::Uuid::from_u128(4)),
+        };
+        app.open_deep_link(link.clone());
+        assert_eq!(app.roster.selected, link.bot_id);
+        assert_eq!(app.active_deep_link, Some(link));
     }
 }

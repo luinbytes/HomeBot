@@ -11,6 +11,13 @@ pub enum AvatarShape {
     Hexagon,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AttentionIndicator {
+    Working,
+    NeedsApproval,
+    Failed,
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct BotIdentity<'a> {
     pub name: &'a str,
@@ -19,6 +26,7 @@ pub struct BotIdentity<'a> {
     pub color: Color32,
     pub shape: AvatarShape,
     pub unread: bool,
+    pub attention: Option<AttentionIndicator>,
 }
 
 pub fn avatar(ui: &mut Ui, theme: HomeBotTheme, bot: BotIdentity<'_>, small: bool) {
@@ -91,16 +99,22 @@ pub fn roster_row(
                             .color(theme.palette.text_tertiary),
                     );
                 });
-                if bot.unread {
+                if bot.unread || bot.attention.is_some() {
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         let (rect, _) = ui.allocate_exact_size(
                             Vec2::splat(theme.layout.unread_dot),
                             Sense::hover(),
                         );
+                        let color = match bot.attention {
+                            Some(AttentionIndicator::Working) => theme.palette.success,
+                            Some(AttentionIndicator::NeedsApproval) => theme.palette.warning,
+                            Some(AttentionIndicator::Failed) => theme.palette.danger,
+                            None => theme.palette.accent,
+                        };
                         ui.painter().circle_filled(
                             rect.center(),
                             theme.layout.unread_dot / 2.0,
-                            theme.palette.accent,
+                            color,
                         );
                     });
                 }

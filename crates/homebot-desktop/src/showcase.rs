@@ -7,9 +7,10 @@ use uuid::Uuid;
 use crate::{
     activity_surfaces::{ActivityCardModel, activity_surface},
     components::{
-        AvatarShape, BotIdentity, activity_card, approval_card, composer, message, roster_row,
-        section_label,
+        AttentionIndicator, AvatarShape, BotIdentity, activity_card, approval_card, composer,
+        message, roster_row, section_label,
     },
+    settings::{DesktopSettings, SettingsSection, ThemePreference, settings_view},
     tokens::HomeBotTheme,
 };
 
@@ -24,6 +25,8 @@ pub enum FixtureState {
     Disconnected,
     ProviderUnavailable,
     ActivitySurfaces,
+    Settings,
+    SettingsAppearance,
 }
 
 fn nova(theme: HomeBotTheme) -> BotIdentity<'static> {
@@ -34,6 +37,7 @@ fn nova(theme: HomeBotTheme) -> BotIdentity<'static> {
         color: theme.palette.bot_nova,
         shape: AvatarShape::RoundedSquare,
         unread: false,
+        attention: None,
     }
 }
 
@@ -45,6 +49,7 @@ fn patch(theme: HomeBotTheme) -> BotIdentity<'static> {
         color: theme.palette.bot_patch,
         shape: AvatarShape::Hexagon,
         unread: true,
+        attention: Some(AttentionIndicator::NeedsApproval),
     }
 }
 
@@ -56,6 +61,7 @@ fn scout(theme: HomeBotTheme) -> BotIdentity<'static> {
         color: theme.palette.bot_scout,
         shape: AvatarShape::Circle,
         unread: false,
+        attention: None,
     }
 }
 
@@ -111,6 +117,7 @@ pub fn render_fixture(context: &egui::Context, theme: HomeBotTheme, state: Fixtu
                         FixtureState::Empty => "Bots",
                         FixtureState::BotEditor => "New Bot",
                         FixtureState::ActivitySurfaces => "Nova · activity",
+                        FixtureState::Settings | FixtureState::SettingsAppearance => "Settings",
                         _ => "Nova",
                     })
                     .font(theme.typography.font(theme.typography.body_compact))
@@ -125,7 +132,11 @@ pub fn render_fixture(context: &egui::Context, theme: HomeBotTheme, state: Fixtu
 
     if !matches!(
         state,
-        FixtureState::Empty | FixtureState::BotEditor | FixtureState::ActivitySurfaces
+        FixtureState::Empty
+            | FixtureState::BotEditor
+            | FixtureState::ActivitySurfaces
+            | FixtureState::Settings
+            | FixtureState::SettingsAppearance
     ) {
         TopBottomPanel::bottom("homebot_composer")
             .exact_height(theme.layout.composer_min_height + theme.spacing.xl)
@@ -154,7 +165,24 @@ pub fn render_fixture(context: &egui::Context, theme: HomeBotTheme, state: Fixtu
             FixtureState::Disconnected => disconnected_state(ui, theme),
             FixtureState::ProviderUnavailable => provider_unavailable(ui, theme),
             FixtureState::ActivitySurfaces => activity_surfaces_state(ui, theme),
+            FixtureState::Settings => settings_state(ui, theme, false),
+            FixtureState::SettingsAppearance => settings_state(ui, theme, true),
         });
+}
+
+fn settings_state(ui: &mut egui::Ui, theme: HomeBotTheme, appearance: bool) {
+    ui.add_space(theme.spacing.xl);
+    ui.horizontal_centered(|ui| {
+        let mut settings = DesktopSettings {
+            paired_devices: 2,
+            ..DesktopSettings::default()
+        };
+        if appearance {
+            settings.section = SettingsSection::Appearance;
+            settings.theme = ThemePreference::Dark;
+        }
+        settings_view(ui, theme, &mut settings);
+    });
 }
 
 fn fixture_activity(
@@ -553,6 +581,8 @@ mod tests {
                 FixtureState::Disconnected,
                 FixtureState::ProviderUnavailable,
                 FixtureState::ActivitySurfaces,
+                FixtureState::Settings,
+                FixtureState::SettingsAppearance,
             ] {
                 let context = egui::Context::default();
                 let _ = context.run(egui::RawInput::default(), |context| {

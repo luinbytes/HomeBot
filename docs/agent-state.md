@@ -7,9 +7,9 @@ This file is operational state for coding agents. It is not user-facing product 
 ## Current state
 
 - Current milestone: M1, Local Runtime Foundation
-- Current Linear issue: 6C7-37 authenticated HTTP/WebSocket server and reconnect semantics
+- Current Linear issue: 6C7-38 ProviderAdapter runtime and process supervision
 - Current Git branch: `feat/m0-contracts`
-- Latest verified remote commit: `85e28049df9cabce99c6968fe55e9ba1ea56e58a`
+- Latest verified remote commit: `2abd07b3b9869438179d8a3d3bd29a4fc1509eb2`
 - Public repository: `https://github.com/luinbytes/HomeBot`
 - Repository owner and commit identity: `luinbytes <42706009+luinbytes@users.noreply.github.com>`
 
@@ -29,7 +29,8 @@ Current blockers:
 
 - Rust is installed in isolated task paths under `/tmp/homebot-rustup` and `/tmp/homebot-cargo`.
 - Exact current-app pixel captures remain deliberately gated to 6C7-42.
-- 6C7-37 is In Progress pending final CI evidence. Cooperative cancellation now produces exactly one durable terminal event. Live events fan out through a bounded broadcast/outbound pipeline; slow clients receive a close frame with their last delivered cursor and replay every later durable event after reconnect.
+- 6C7-37 is Done. GitHub Actions run 32352700967 passed all six Linux, macOS Intel, macOS arm64, quality, dependency-policy, and audit jobs.
+- 6C7-38 is In Progress. The existing provider crate is only a health-check stub; the next implementation must cover the complete normalized adapter lifecycle and supervised child-process failure model.
 
 ## Completed work
 
@@ -43,12 +44,13 @@ Current blockers:
 - M0 epic 6C7-30 is Done.
 - Rust workspace and CI quality gates completed; Linear 6C7-35 is Done.
 - SQLite migrations, WAL persistence, event outbox, backup/restore, and recovery tests completed; Linear 6C7-36 is Done.
+- Authenticated HTTP/WebSocket transport, verified attachments, reconnect/replay, cancellation, heartbeat, idempotency, and bounded slow-client handling completed; Linear 6C7-37 is Done.
 
 ## Immediate next work
 
-1. Commit and push cancellation, live fan-out, and bounded backpressure for 6C7-37.
-2. Verify the resulting GitHub Actions matrix and reconcile every 6C7-37 acceptance criterion against evidence.
-3. Mark 6C7-37 Done only after remote CI passes, refresh the dependency graph, and immediately begin the next unblocked M1 issue.
+1. Define provider-neutral discovery, health/auth, capabilities, model, conversation, stream, activity, approval, usage, cancellation, compaction, and failure contracts in `homebot-providers`.
+2. Implement bounded child-process supervision with clean shutdown, cancellation, redacted diagnostics, crash reporting, and deterministic fixture tests.
+3. Add a fake adapter acceptance suite proving start/resume/stream/cancel/recovery semantics without leaking provider-native payloads.
 
 ## Verification state
 
@@ -75,7 +77,7 @@ Not yet verified:
 
 ## Known failures and incomplete implementation
 
-- `homebot-server` now covers every stated 6C7-37 transport behaviour locally; remote CI is the remaining completion gate.
+- `homebot-server` covers every stated 6C7-37 transport behaviour locally and in the passing remote matrix.
 - Providers, desktop egui, Android, routines, plugins, tools, VCS, pairing, and packaging are not implemented.
 - The protocol defines product-level v1 envelopes and lifecycle contracts; server persistence and transport behaviour remain implementation work in later issues.
 - No release artifact exists. Do not describe the project as installable or v1-ready.

@@ -9,7 +9,7 @@ This file is operational state for coding agents. It is not user-facing product 
 - Current milestone: M1, Local Runtime Foundation
 - Current Linear issue: 6C7-37 authenticated HTTP/WebSocket server and reconnect semantics
 - Current Git branch: `feat/m0-contracts`
-- Latest verified remote commit: `bf02b9913eaf0a1a46d2a329e80352659fbf033b`
+- Latest verified remote commit: `601bcc93f5d59bd97f1694b846f20819781b9687`
 - Public repository: `https://github.com/luinbytes/HomeBot`
 - Repository owner and commit identity: `luinbytes <42706009+luinbytes@users.noreply.github.com>`
 
@@ -29,7 +29,7 @@ Current blockers:
 
 - Rust is installed in isolated task paths under `/tmp/homebot-rustup` and `/tmp/homebot-cargo`.
 - Exact current-app pixel captures remain deliberately gated to 6C7-42.
-- 6C7-37 is In Progress. The working tree has a server library/router, SHA-256 and constant-time bearer validation, public secret-free health, authenticated version negotiation, stale-version rejection, and server-side denial tests. WebSocket, replay, mutation, attachment, cancellation, and backpressure work remains.
+- 6C7-37 is In Progress. Authenticated WebSocket hello, initial snapshot, owner-scoped cursor replay, stale-version rejection, and real socket integration tests now work in the working tree. Mutation lifecycle, attachment upload, cancellation, heartbeat timeout, replay retention fallback, and backpressure work remains.
 
 ## Completed work
 

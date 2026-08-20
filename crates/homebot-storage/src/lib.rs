@@ -143,6 +143,21 @@ impl Storage {
         rows.iter().map(row_to_event).collect()
     }
 
+    /// Returns the latest global outbox sequence visible to an owner.
+    ///
+    /// # Errors
+    ///
+    /// Returns a storage error if the cursor cannot be read or represented.
+    pub async fn latest_sequence(&self, owner_id: Uuid) -> Result<u64, StorageError> {
+        let value: Option<i64> =
+            sqlx::query_scalar("SELECT max(sequence) FROM event_outbox WHERE owner_id = ?")
+                .bind(owner_id.to_string())
+                .fetch_one(&self.pool)
+                .await?;
+        u64::try_from(value.unwrap_or(0))
+            .map_err(|_| StorageError::Integrity("negative outbox sequence".to_owned()))
+    }
+
     /// Creates a consistent backup without overwriting an existing destination.
     ///
     /// # Errors

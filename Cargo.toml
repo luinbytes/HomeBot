@@ -22,6 +22,7 @@ rust-version = "1.85"
 anyhow = "1.0"
 async-trait = "0.1"
 axum = { version = "0.8", features = ["json", "ws"] }
+futures-util = "0.3"
 homebot-domain = { version = "=0.0.1", path = "crates/homebot-domain" }
 homebot-protocol = { version = "=0.0.1", path = "crates/homebot-protocol" }
 schemars = { version = "1.0", features = ["uuid1"] }

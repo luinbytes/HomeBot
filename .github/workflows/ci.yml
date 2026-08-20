@@ -21,6 +21,8 @@ jobs:
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
       - run: cargo test --workspace --all-features
+      - run: cargo run -p homebot-protocol --example export_schema -- --check
+      - run: cargo run -p homebot-protocol --example export_android -- --check
 
   rust-build:
     name: Rust build (${{ matrix.target }})

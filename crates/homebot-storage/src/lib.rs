@@ -1,6 +1,3 @@
-Warning: truncated output (original token count: 58840)
-Total output lines: 5937
-
 //! Durable `SQLite` persistence and resumable event outbox.
 
 use homebot_domain::{
@@ -2408,7 +2405,982 @@ impl Storage {
         operation_id: Option<Uuid>,
         now_ms: i64,
     ) -> Result<GroupParticipant, StorageError> {
-        let group …8840 tokens truncated…ted an invalid reference".to_owned(),
+        let group = self.get_group_chat(owner_id, chat_id).await?;
+        if status == GroupBotStatus::Running {
+            let running: i64 = sqlx::query_scalar(
+                "SELECT count(*) FROM group_bot_states WHERE chat_id = ? AND status = 'running'
+                   AND bot_id <> ?",
+            )
+            .bind(chat_id.to_string())
+            .bind(bot_id.to_string())
+            .fetch_one(&self.pool)
+            .await?;
+            if u32::try_from(running).unwrap_or(u32::MAX) >= group.max_parallel_bots {
+                return Err(StorageError::CoordinationLimitReached);
+            }
+        }
+        let result = sqlx::query(
+            "UPDATE group_bot_states SET status = ?, active_operation_id = ?, updated_at_ms = ?
+             WHERE chat_id = ? AND bot_id = ?",
+        )
+        .bind(status.as_str())
+        .bind(operation_id.map(|id| id.to_string()))
+        .bind(now_ms)
+        .bind(chat_id.to_string())
+        .bind(bot_id.to_string())
+        .execute(&self.pool)
+        .await?;
+        if result.rows_affected() == 0 {
+            return Err(StorageError::InvalidGroupParticipants);
+        }
+        self.group_participants(owner_id, chat_id)
+            .await?
+            .into_iter()
+            .find(|participant| participant.bot_id == bot_id)
+            .ok_or(StorageError::InvalidGroupParticipants)
+    }
+
+    /// Transfers explicit group ownership between participants and records the handoff.
+    ///
+    /// # Errors
+    ///
+    /// Rejects stale owners, nonparticipants, self-handoffs, or database failures.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn handoff_group_ownership(
+        &self,
+        owner_id: Uuid,
+        chat_id: Uuid,
+        handoff_id: Uuid,
+        from_bot_id: Uuid,
+        to_bot_id: Uuid,
+        message_id: Option<Uuid>,
+        reason: &str,
+        now_ms: i64,
+    ) -> Result<OwnershipHandoff, StorageError> {
+        let group = self.get_group_chat(owner_id, chat_id).await?;
+        let participants = self.group_participants(owner_id, chat_id).await?;
+        if from_bot_id == to_bot_id
+            || group.ownership_bot_id != from_bot_id
+            || !participants
+                .iter()
+                .any(|participant| participant.bot_id == to_bot_id)
+        {
+            return Err(StorageError::InvalidOwnershipHandoff);
+        }
+        if let Some(message_id) = message_id {
+            let message = self.message(owner_id, message_id).await?;
+            if message.chat_id != chat_id {
+                return Err(StorageError::InvalidOwnershipHandoff);
+            }
+        }
+        let reason = reason.trim();
+        if reason.is_empty() || reason.chars().count() > 2_000 {
+            return Err(StorageError::InvalidOwnershipHandoff);
+        }
+        let mut transaction = self.pool.begin().await?;
+        sqlx::query("UPDATE chats SET ownership_bot_id = ?, updated_at_ms = ? WHERE id = ?")
+            .bind(to_bot_id.to_string())
+            .bind(now_ms)
+            .bind(chat_id.to_string())
+            .execute(&mut *transaction)
+            .await?;
+        sqlx::query("UPDATE chat_participants SET role = 'member' WHERE chat_id = ?")
+            .bind(chat_id.to_string())
+            .execute(&mut *transaction)
+            .await?;
+        sqlx::query("UPDATE chat_participants SET role = 'owner' WHERE chat_id = ? AND bot_id = ?")
+            .bind(chat_id.to_string())
+            .bind(to_bot_id.to_string())
+            .execute(&mut *transaction)
+            .await?;
+        sqlx::query(
+            "INSERT INTO group_handoffs (
+                id, chat_id, from_bot_id, to_bot_id, message_id, reason, created_at_ms
+             ) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(handoff_id.to_string())
+        .bind(chat_id.to_string())
+        .bind(from_bot_id.to_string())
+        .bind(to_bot_id.to_string())
+        .bind(message_id.map(|id| id.to_string()))
+        .bind(reason)
+        .bind(now_ms)
+        .execute(&mut *transaction)
+        .await?;
+        transaction.commit().await?;
+        Ok(OwnershipHandoff {
+            id: handoff_id,
+            chat_id,
+            from_bot_id,
+            to_bot_id,
+            message_id,
+            reason: reason.to_owned(),
+            created_at_ms: now_ms,
+        })
+    }
+
+    /// Lists immutable ownership handoffs for a group.
+    ///
+    /// # Errors
+    ///
+    /// Returns ownership, database, or integrity errors.
+    pub async fn group_handoffs(
+        &self,
+        owner_id: Uuid,
+        chat_id: Uuid,
+    ) -> Result<Vec<OwnershipHandoff>, StorageError> {
+        let _ = self.get_group_chat(owner_id, chat_id).await?;
+        let rows = sqlx::query(
+            "SELECT * FROM group_handoffs WHERE chat_id = ? ORDER BY created_at_ms, id",
+        )
+        .bind(chat_id.to_string())
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter().map(group_handoff_from_row).collect()
+    }
+
+    /// Stops every active Bot state and prevents further coordination turns.
+    ///
+    /// # Errors
+    ///
+    /// Returns not-found or database errors.
+    pub async fn stop_group_chat(
+        &self,
+        owner_id: Uuid,
+        chat_id: Uuid,
+        now_ms: i64,
+    ) -> Result<GroupChat, StorageError> {
+        let mut transaction = self.pool.begin().await?;
+        let result = sqlx::query(
+            "UPDATE chats SET stop_requested = 1, running = 0, updated_at_ms = ?
+             WHERE id = ? AND owner_id = ? AND kind = 'group'",
+        )
+        .bind(now_ms)
+        .bind(chat_id.to_string())
+        .bind(owner_id.to_string())
+        .execute(&mut *transaction)
+        .await?;
+        if result.rows_affected() == 0 {
+            return Err(StorageError::ChatNotFound);
+        }
+        sqlx::query(
+            "UPDATE group_bot_states SET status = 'stopped', active_operation_id = NULL,
+                updated_at_ms = ? WHERE chat_id = ?",
+        )
+        .bind(now_ms)
+        .bind(chat_id.to_string())
+        .execute(&mut *transaction)
+        .await?;
+        transaction.commit().await?;
+        self.get_group_chat(owner_id, chat_id).await
+    }
+
+    /// Appends a validated user message and rich parts atomically.
+    ///
+    /// # Errors
+    ///
+    /// Returns validation, ownership, attachment, or database errors.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn append_user_message(
+        &self,
+        owner_id: Uuid,
+        chat_id: Uuid,
+        message_id: Uuid,
+        content: &str,
+        attachment_ids: &[Uuid],
+        reply_to_message_id: Option<Uuid>,
+        mentioned_bot_ids: Vec<Uuid>,
+        applied_skills: &[AppliedSkill],
+        now_ms: i64,
+    ) -> Result<ChatMessage, StorageError> {
+        let _ = self.get_direct_chat(owner_id, chat_id).await?;
+        let mut message = ChatMessage::user(
+            chat_id,
+            content,
+            attachment_ids,
+            reply_to_message_id,
+            mentioned_bot_ids,
+            now_ms,
+        )?;
+        message.id = message_id;
+        let mut transaction = self.pool.begin().await?;
+        validate_message_references(&mut transaction, owner_id, &message).await?;
+        sqlx::query(
+            "INSERT INTO messages (
+                id, chat_id, author_kind, status, reply_to_message_id,
+                mentioned_bot_ids_json, created_at_ms, completed_at_ms
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(message.id.to_string())
+        .bind(chat_id.to_string())
+        .bind(message.author.as_str())
+        .bind(message.status.as_str())
+        .bind(message.reply_to_message_id.map(|id| id.to_string()))
+        .bind(serde_json::to_value(&message.mentioned_bot_ids).map_err(|error| json_error(&error))?)
+        .bind(now_ms)
+        .bind(message.completed_at_ms)
+        .execute(&mut *transaction)
+        .await?;
+        for part in &message.parts {
+            let (part_id, ordinal) = message_part_identity(part);
+            sqlx::query(
+                "INSERT INTO message_parts (id, message_id, ordinal, kind, content_json)
+                 VALUES (?, ?, ?, ?, ?)",
+            )
+            .bind(part_id.to_string())
+            .bind(message.id.to_string())
+            .bind(i64::from(ordinal))
+            .bind(message_part_kind(part))
+            .bind(serde_json::to_value(part).map_err(|error| json_error(&error))?)
+            .execute(&mut *transaction)
+            .await?;
+        }
+        for (ordinal, skill) in applied_skills.iter().enumerate() {
+            let result = sqlx::query("INSERT INTO message_skill_versions (message_id, skill_id, skill_version_id, ordinal) SELECT ?, s.id, v.id, ? FROM skills s JOIN skill_versions v ON v.skill_id = s.id WHERE s.owner_id = ? AND s.id = ? AND v.id = ?")
+                .bind(message.id.to_string()).bind(i64::try_from(ordinal).unwrap_or(i64::MAX))
+                .bind(owner_id.to_string()).bind(skill.skill_id.to_string()).bind(skill.version_id.to_string())
+                .execute(&mut *transaction).await?;
+            if result.rows_affected() != 1 {
+                return Err(StorageError::SkillNotFound);
+            }
+        }
+        sqlx::query("UPDATE chats SET updated_at_ms = ? WHERE id = ? AND owner_id = ?")
+            .bind(now_ms)
+            .bind(chat_id.to_string())
+            .bind(owner_id.to_string())
+            .execute(&mut *transaction)
+            .await?;
+        transaction.commit().await?;
+        Ok(message)
+    }
+
+    /// Loads immutable Skill versions applied to a historical message in original order.
+    ///
+    /// # Errors
+    /// Returns database, serialization, or integrity errors.
+    pub async fn message_applied_skills(
+        &self,
+        owner_id: Uuid,
+        message_id: Uuid,
+    ) -> Result<Vec<AppliedSkill>, StorageError> {
+        let rows = sqlx::query("SELECT s.id AS skill_id, v.id AS version_id, v.name, v.version, v.definition_json FROM message_skill_versions msv JOIN messages m ON m.id = msv.message_id JOIN chats c ON c.id = m.chat_id JOIN skills s ON s.id = msv.skill_id JOIN skill_versions v ON v.id = msv.skill_version_id WHERE c.owner_id = ? AND m.id = ? ORDER BY msv.ordinal")
+            .bind(owner_id.to_string()).bind(message_id.to_string()).fetch_all(&self.pool).await?;
+        rows.iter()
+            .map(|row| {
+                let definition: String = row.try_get("definition_json")?;
+                Ok(AppliedSkill {
+                    skill_id: parse_uuid(row.try_get("skill_id")?)?,
+                    version_id: parse_uuid(row.try_get("version_id")?)?,
+                    name: row.try_get("name")?,
+                    version: u32::try_from(row.try_get::<i64, _>("version")?)
+                        .map_err(|_| StorageError::Integrity("invalid Skill version".to_owned()))?,
+                    definition: serde_json::from_str(&definition)
+                        .map_err(|error| StorageError::Serialization(error.to_string()))?,
+                })
+            })
+            .collect()
+    }
+
+    /// Creates the stable assistant message that receives provider deltas.
+    ///
+    /// # Errors
+    ///
+    /// Returns ownership, participant, or database errors.
+    pub async fn create_bot_message(
+        &self,
+        owner_id: Uuid,
+        chat_id: Uuid,
+        bot_id: Uuid,
+        message_id: Uuid,
+        now_ms: i64,
+    ) -> Result<ChatMessage, StorageError> {
+        let chat = self.get_direct_chat(owner_id, chat_id).await?;
+        if chat.bot_id != bot_id {
+            return Err(StorageError::BotNotFound);
+        }
+        let part = MessagePart::Text {
+            id: Uuid::now_v7(),
+            ordinal: 0,
+            text: String::new(),
+        };
+        let mut transaction = self.pool.begin().await?;
+        sqlx::query(
+            "INSERT INTO messages (
+                id, chat_id, author_bot_id, author_kind, status,
+                mentioned_bot_ids_json, created_at_ms
+             ) VALUES (?, ?, ?, 'bot', 'streaming', '[]', ?)",
+        )
+        .bind(message_id.to_string())
+        .bind(chat_id.to_string())
+        .bind(bot_id.to_string())
+        .bind(now_ms)
+        .execute(&mut *transaction)
+        .await?;
+        sqlx::query(
+            "INSERT INTO message_parts (id, message_id, ordinal, kind, content_json)
+             VALUES (?, ?, 0, 'text', ?)",
+        )
+        .bind(message_part_identity(&part).0.to_string())
+        .bind(message_id.to_string())
+        .bind(serde_json::to_value(&part).map_err(|error| json_error(&error))?)
+        .execute(&mut *transaction)
+        .await?;
+        sqlx::query(
+            "UPDATE chats SET running = 1, updated_at_ms = ? WHERE id = ? AND owner_id = ?",
+        )
+        .bind(now_ms)
+        .bind(chat_id.to_string())
+        .bind(owner_id.to_string())
+        .execute(&mut *transaction)
+        .await?;
+        transaction.commit().await?;
+        Ok(ChatMessage {
+            id: message_id,
+            chat_id,
+            author: MessageAuthor::Bot,
+            author_bot_id: Some(bot_id),
+            status: MessageStatus::Streaming,
+            parts: vec![part],
+            reply_to_message_id: None,
+            mentioned_bot_ids: Vec::new(),
+            shared_context_message_ids: Vec::new(),
+            created_at_ms: now_ms,
+            completed_at_ms: None,
+            error_json: None,
+        })
+    }
+
+    /// Appends a streamed text delta to the assistant message's stable text part.
+    ///
+    /// # Errors
+    ///
+    /// Returns not-found, invalid-state, ownership, or database errors.
+    pub async fn append_bot_message_delta(
+        &self,
+        owner_id: Uuid,
+        message_id: Uuid,
+        delta: &str,
+    ) -> Result<ChatMessage, StorageError> {
+        let mut transaction = self.pool.begin().await?;
+        let row = sqlx::query(
+            "SELECT p.id, p.content_json FROM message_parts p
+             JOIN messages m ON m.id = p.message_id
+             JOIN chats c ON c.id = m.chat_id
+             WHERE p.message_id = ? AND p.ordinal = 0 AND p.kind = 'text'
+               AND m.status = 'streaming' AND c.owner_id = ?",
+        )
+        .bind(message_id.to_string())
+        .bind(owner_id.to_string())
+        .fetch_optional(&mut *transaction)
+        .await?
+        .ok_or(StorageError::MessageNotFound)?;
+        let mut part: MessagePart = serde_json::from_value(row.try_get("content_json")?)
+            .map_err(|error| json_error(&error))?;
+        let MessagePart::Text { text, .. } = &mut part else {
+            return Err(StorageError::Integrity(
+                "streaming message has a non-text primary part".to_owned(),
+            ));
+        };
+        text.push_str(delta);
+        sqlx::query("UPDATE message_parts SET content_json = ? WHERE id = ?")
+            .bind(serde_json::to_value(part).map_err(|error| json_error(&error))?)
+            .bind(row.try_get::<String, _>("id")?)
+            .execute(&mut *transaction)
+            .await?;
+        transaction.commit().await?;
+        self.message(owner_id, message_id).await
+    }
+
+    /// Moves a streamed assistant message into one terminal state.
+    ///
+    /// # Errors
+    ///
+    /// Returns not-found, invalid-state, ownership, or database errors.
+    pub async fn finish_bot_message(
+        &self,
+        owner_id: Uuid,
+        message_id: Uuid,
+        status: MessageStatus,
+        error: Option<&Value>,
+        now_ms: i64,
+    ) -> Result<ChatMessage, StorageError> {
+        if !matches!(
+            status,
+            MessageStatus::Completed | MessageStatus::Failed | MessageStatus::Cancelled
+        ) {
+            return Err(StorageError::Integrity(
+                "assistant message terminal status is invalid".to_owned(),
+            ));
+        }
+        let result = sqlx::query(
+            "UPDATE messages SET status = ?, error_json = ?, completed_at_ms = ?
+             WHERE id = ? AND status = 'streaming' AND chat_id IN (
+                SELECT id FROM chats WHERE owner_id = ?
+             )",
+        )
+        .bind(status.as_str())
+        .bind(error)
+        .bind(now_ms)
+        .bind(message_id.to_string())
+        .bind(owner_id.to_string())
+        .execute(&self.pool)
+        .await?;
+        if result.rows_affected() == 0 {
+            return Err(StorageError::MessageNotFound);
+        }
+        self.message(owner_id, message_id).await
+    }
+
+    /// Loads one owner-scoped message with rich parts.
+    ///
+    /// # Errors
+    ///
+    /// Returns not-found, ownership, database, or integrity errors.
+    pub async fn message(
+        &self,
+        owner_id: Uuid,
+        message_id: Uuid,
+    ) -> Result<ChatMessage, StorageError> {
+        let row = sqlx::query(
+            "SELECT m.* FROM messages m JOIN chats c ON c.id = m.chat_id
+             WHERE m.id = ? AND c.owner_id = ?",
+        )
+        .bind(message_id.to_string())
+        .bind(owner_id.to_string())
+        .fetch_optional(&self.pool)
+        .await?
+        .ok_or(StorageError::MessageNotFound)?;
+        let mut message = chat_message_from_row(&row)?;
+        let parts: Vec<Value> = sqlx::query_scalar(
+            "SELECT content_json FROM message_parts WHERE message_id = ? ORDER BY ordinal",
+        )
+        .bind(message_id.to_string())
+        .fetch_all(&self.pool)
+        .await?;
+        message.parts = parts
+            .into_iter()
+            .map(|value| serde_json::from_value(value).map_err(|error| json_error(&error)))
+            .collect::<Result<_, _>>()?;
+        Ok(message)
+    }
+
+    /// Resolves the normalized adapter and optional model configured for a Bot.
+    ///
+    /// # Errors
+    ///
+    /// Returns database, ownership, or integrity errors.
+    pub async fn provider_route_for_bot(
+        &self,
+        owner_id: Uuid,
+        bot_id: Uuid,
+    ) -> Result<Option<ProviderRoute>, StorageError> {
+        let row = sqlx::query(
+            "SELECT p.id, p.adapter_kind, p.configuration_json
+             FROM bots b JOIN provider_profiles p ON p.id = b.provider_profile_id
+             WHERE b.id = ? AND b.owner_id = ? AND b.archived_at_ms IS NULL",
+        )
+        .bind(bot_id.to_string())
+        .bind(owner_id.to_string())
+        .fetch_optional(&self.pool)
+        .await?;
+        row.map(|row| {
+            let profile_id = parse_uuid(&row.try_get::<String, _>("id")?)?;
+            let configuration: Value = row.try_get("configuration_json")?;
+            let model = configuration
+                .get("model")
+                .and_then(Value::as_str)
+                .map(str::to_owned);
+            Ok(ProviderRoute {
+                profile_id,
+                adapter_kind: row.try_get("adapter_kind")?,
+                model,
+            })
+        })
+        .transpose()
+    }
+
+    /// Stores the provider conversation mapping independently of Bot identity.
+    ///
+    /// # Errors
+    ///
+    /// Returns database errors.
+    pub async fn set_provider_conversation(
+        &self,
+        bot_id: Uuid,
+        chat_id: Uuid,
+        profile_id: Uuid,
+        conversation_id: &str,
+    ) -> Result<(), StorageError> {
+        sqlx::query(
+            "INSERT INTO provider_conversations (
+                bot_id, chat_id, provider_profile_id, external_conversation_id
+             ) VALUES (?, ?, ?, ?)
+             ON CONFLICT(bot_id, chat_id, provider_profile_id)
+             DO UPDATE SET external_conversation_id = excluded.external_conversation_id",
+        )
+        .bind(bot_id.to_string())
+        .bind(chat_id.to_string())
+        .bind(profile_id.to_string())
+        .bind(conversation_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Loads a provider conversation mapping for one Bot, chat, and profile.
+    ///
+    /// # Errors
+    ///
+    /// Returns database errors.
+    pub async fn provider_conversation(
+        &self,
+        bot_id: Uuid,
+        chat_id: Uuid,
+        profile_id: Uuid,
+    ) -> Result<Option<String>, StorageError> {
+        Ok(sqlx::query_scalar(
+            "SELECT external_conversation_id FROM provider_conversations
+             WHERE bot_id = ? AND chat_id = ? AND provider_profile_id = ?",
+        )
+        .bind(bot_id.to_string())
+        .bind(chat_id.to_string())
+        .bind(profile_id.to_string())
+        .fetch_optional(&self.pool)
+        .await?)
+    }
+
+    /// Loads all durable messages and rich parts for a direct chat.
+    ///
+    /// # Errors
+    ///
+    /// Returns ownership, database, or integrity errors.
+    pub async fn chat_messages(
+        &self,
+        owner_id: Uuid,
+        chat_id: Uuid,
+    ) -> Result<Vec<ChatMessage>, StorageError> {
+        let exists: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM chats WHERE owner_id = ? AND id = ?")
+                .bind(owner_id.to_string())
+                .bind(chat_id.to_string())
+                .fetch_one(&self.pool)
+                .await?;
+        if exists != 1 {
+            return Err(StorageError::ChatNotFound);
+        }
+        let rows =
+            sqlx::query("SELECT * FROM messages WHERE chat_id = ? ORDER BY created_at_ms, id")
+                .bind(chat_id.to_string())
+                .fetch_all(&self.pool)
+                .await?;
+        let mut messages = Vec::with_capacity(rows.len());
+        for row in rows {
+            let mut message = chat_message_from_row(&row)?;
+            let parts: Vec<Value> = sqlx::query_scalar(
+                "SELECT content_json FROM message_parts
+                 WHERE message_id = ? ORDER BY ordinal",
+            )
+            .bind(message.id.to_string())
+            .fetch_all(&self.pool)
+            .await?;
+            message.parts = parts
+                .into_iter()
+                .map(|value| serde_json::from_value(value).map_err(|error| json_error(&error)))
+                .collect::<Result<_, _>>()?;
+            messages.push(message);
+        }
+        Ok(messages)
+    }
+
+    /// Queues a follow-up while a direct chat is running.
+    ///
+    /// # Errors
+    ///
+    /// Returns validation, ownership, attachment, or database errors.
+    pub async fn enqueue_prompt(
+        &self,
+        owner_id: Uuid,
+        chat_id: Uuid,
+        prompt_id: Uuid,
+        input: QueuedPromptInput<'_>,
+        now_ms: i64,
+    ) -> Result<QueuedPrompt, StorageError> {
+        let chat = self.get_direct_chat(owner_id, chat_id).await?;
+        if !chat.running {
+            return Err(StorageError::Integrity(
+                "cannot queue a prompt while the chat is idle".to_owned(),
+            ));
+        }
+        let validation = ChatMessage::user(
+            chat_id,
+            input.content,
+            input.attachment_ids,
+            None,
+            Vec::new(),
+            now_ms,
+        )?;
+        let mut transaction = self.pool.begin().await?;
+        validate_message_references(&mut transaction, owner_id, &validation).await?;
+        let next_position: i64 = sqlx::query_scalar(
+            "SELECT COALESCE(max(position) + 1, 0) FROM queued_prompts WHERE chat_id = ?",
+        )
+        .bind(chat_id.to_string())
+        .fetch_one(&mut *transaction)
+        .await?;
+        sqlx::query(
+            "INSERT INTO queued_prompts (
+                id, owner_id, chat_id, content, attachment_ids_json, skill_ids_json, skill_version_ids_json, position, created_at_ms
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(prompt_id.to_string())
+        .bind(owner_id.to_string())
+        .bind(chat_id.to_string())
+        .bind(input.content.trim())
+        .bind(serde_json::to_value(input.attachment_ids).map_err(|error| json_error(&error))?)
+        .bind(serde_json::to_value(input.applied_skills.iter().map(|skill| skill.skill_id).collect::<Vec<_>>()).map_err(|error| json_error(&error))?)
+        .bind(serde_json::to_value(input.applied_skills.iter().map(|skill| skill.version_id).collect::<Vec<_>>()).map_err(|error| json_error(&error))?)
+        .bind(next_position)
+        .bind(now_ms)
+        .execute(&mut *transaction)
+        .await?;
+        sqlx::query(
+            "UPDATE chats SET queued_count = queued_count + 1, updated_at_ms = ?
+             WHERE id = ? AND owner_id = ?",
+        )
+        .bind(now_ms)
+        .bind(chat_id.to_string())
+        .bind(owner_id.to_string())
+        .execute(&mut *transaction)
+        .await?;
+        transaction.commit().await?;
+        Ok(QueuedPrompt {
+            id: prompt_id,
+            owner_id,
+            chat_id,
+            content: input.content.trim().to_owned(),
+            attachment_ids: input.attachment_ids.to_vec(),
+            skill_ids: input
+                .applied_skills
+                .iter()
+                .map(|skill| skill.skill_id)
+                .collect(),
+            skill_version_ids: input
+                .applied_skills
+                .iter()
+                .map(|skill| skill.version_id)
+                .collect(),
+            position: u32::try_from(next_position)
+                .map_err(|_| StorageError::Integrity("invalid queue position".to_owned()))?,
+            created_at_ms: now_ms,
+        })
+    }
+
+    /// Loads queued prompts in stable execution order.
+    ///
+    /// # Errors
+    ///
+    /// Returns ownership, database, or integrity errors.
+    pub async fn queued_prompts(
+        &self,
+        owner_id: Uuid,
+        chat_id: Uuid,
+    ) -> Result<Vec<QueuedPrompt>, StorageError> {
+        let _ = self.get_direct_chat(owner_id, chat_id).await?;
+        let rows = sqlx::query(
+            "SELECT * FROM queued_prompts
+             WHERE owner_id = ? AND chat_id = ? ORDER BY position",
+        )
+        .bind(owner_id.to_string())
+        .bind(chat_id.to_string())
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter().map(queued_prompt_from_row).collect()
+    }
+
+    /// Updates the authoritative running state of a direct chat.
+    ///
+    /// # Errors
+    ///
+    /// Returns not-found or database errors.
+    pub async fn set_chat_running(
+        &self,
+        owner_id: Uuid,
+        chat_id: Uuid,
+        running: bool,
+        now_ms: i64,
+    ) -> Result<DirectChat, StorageError> {
+        let result = sqlx::query(
+            "UPDATE chats SET running = ?, updated_at_ms = ? WHERE id = ? AND owner_id = ?",
+        )
+        .bind(running)
+        .bind(now_ms)
+        .bind(chat_id.to_string())
+        .bind(owner_id.to_string())
+        .execute(&self.pool)
+        .await?;
+        if result.rows_affected() == 0 {
+            return Err(StorageError::ChatNotFound);
+        }
+        self.get_direct_chat(owner_id, chat_id).await
+    }
+
+    /// Increments direct-chat and Bot unread state after a terminal Bot response.
+    ///
+    /// # Errors
+    ///
+    /// Returns not-found or database errors.
+    pub async fn increment_chat_unread(
+        &self,
+        owner_id: Uuid,
+        chat_id: Uuid,
+        now_ms: i64,
+    ) -> Result<DirectChat, StorageError> {
+        let mut transaction = self.pool.begin().await?;
+        let bot_id: Option<String> = sqlx::query_scalar(
+            "UPDATE chats SET unread_count = unread_count + 1, updated_at_ms = ?
+             WHERE id = ? AND owner_id = ? RETURNING direct_bot_id",
+        )
+        .bind(now_ms)
+        .bind(chat_id.to_string())
+        .bind(owner_id.to_string())
+        .fetch_optional(&mut *transaction)
+        .await?
+        .flatten();
+        let Some(bot_id) = bot_id else {
+            return Err(StorageError::ChatNotFound);
+        };
+        sqlx::query(
+            "UPDATE bots SET unread_count = unread_count + 1, updated_at_ms = ?
+             WHERE id = ? AND owner_id = ?",
+        )
+        .bind(now_ms)
+        .bind(bot_id)
+        .bind(owner_id.to_string())
+        .execute(&mut *transaction)
+        .await?;
+        transaction.commit().await?;
+        self.get_direct_chat(owner_id, chat_id).await
+    }
+
+    /// Clears direct-chat and corresponding Bot unread state.
+    ///
+    /// # Errors
+    ///
+    /// Returns not-found or database errors.
+    pub async fn mark_chat_read(
+        &self,
+        owner_id: Uuid,
+        chat_id: Uuid,
+        now_ms: i64,
+    ) -> Result<DirectChat, StorageError> {
+        let mut transaction = self.pool.begin().await?;
+        let bot_id: Option<String> = sqlx::query_scalar(
+            "UPDATE chats SET unread_count = 0, updated_at_ms = ?
+             WHERE id = ? AND owner_id = ? RETURNING direct_bot_id",
+        )
+        .bind(now_ms)
+        .bind(chat_id.to_string())
+        .bind(owner_id.to_string())
+        .fetch_optional(&mut *transaction)
+        .await?
+        .flatten();
+        let Some(bot_id) = bot_id else {
+            return Err(StorageError::ChatNotFound);
+        };
+        sqlx::query(
+            "UPDATE bots SET unread_count = 0, updated_at_ms = ? WHERE id = ? AND owner_id = ?",
+        )
+        .bind(now_ms)
+        .bind(bot_id)
+        .bind(owner_id.to_string())
+        .execute(&mut *transaction)
+        .await?;
+        transaction.commit().await?;
+        self.get_direct_chat(owner_id, chat_id).await
+    }
+
+    /// Inserts or updates a normalized execution activity.
+    ///
+    /// # Errors
+    ///
+    /// Returns ownership, database, or integrity errors.
+    pub async fn upsert_activity(
+        &self,
+        owner_id: Uuid,
+        activity: &ExecutionActivity,
+    ) -> Result<(), StorageError> {
+        let _ = self.get_direct_chat(owner_id, activity.chat_id).await?;
+        sqlx::query(
+            "INSERT INTO execution_activities (
+                id, chat_id, message_id, kind, status, detail_json, title, detail,
+                requires_attention, started_at_ms, finished_at_ms
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             ON CONFLICT(id) DO UPDATE SET
+                status = excluded.status,
+                title = excluded.title,
+                detail = excluded.detail,
+                detail_json = excluded.detail_json,
+                requires_attention = excluded.requires_attention,
+                finished_at_ms = excluded.finished_at_ms
+             WHERE execution_activities.chat_id = excluded.chat_id",
+        )
+        .bind(activity.id.to_string())
+        .bind(activity.chat_id.to_string())
+        .bind(activity.message_id.map(|id| id.to_string()))
+        .bind(&activity.kind)
+        .bind(activity.status.as_str())
+        .bind(&activity.presentation_json)
+        .bind(&activity.title)
+        .bind(&activity.detail)
+        .bind(activity.requires_attention)
+        .bind(activity.started_at_ms)
+        .bind(activity.finished_at_ms)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Lists normalized activities for an owner-scoped chat.
+    ///
+    /// # Errors
+    ///
+    /// Returns ownership, database, or integrity errors.
+    pub async fn chat_activities(
+        &self,
+        owner_id: Uuid,
+        chat_id: Uuid,
+    ) -> Result<Vec<ExecutionActivity>, StorageError> {
+        let _ = self.get_direct_chat(owner_id, chat_id).await?;
+        let rows = sqlx::query(
+            "SELECT * FROM execution_activities
+             WHERE chat_id = ? ORDER BY started_at_ms, id",
+        )
+        .bind(chat_id.to_string())
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter().map(activity_from_row).collect()
+    }
+
+    /// Creates a pending approval for a chat operation.
+    ///
+    /// # Errors
+    ///
+    /// Returns ownership, database, or integrity errors.
+    pub async fn create_chat_approval(&self, approval: &ChatApproval) -> Result<(), StorageError> {
+        let _ = self
+            .get_direct_chat(approval.owner_id, approval.chat_id)
+            .await?;
+        sqlx::query(
+            "INSERT INTO approvals (
+                id, owner_id, chat_id, message_id, operation_id, capability, status,
+                request_json, title, detail, created_at_ms, decided_at_ms
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, '{}', ?, ?, ?, ?)",
+        )
+        .bind(approval.id.to_string())
+        .bind(approval.owner_id.to_string())
+        .bind(approval.chat_id.to_string())
+        .bind(approval.message_id.map(|id| id.to_string()))
+        .bind(approval.operation_id.to_string())
+        .bind(&approval.capability)
+        .bind(approval.status.as_str())
+        .bind(&approval.title)
+        .bind(&approval.detail)
+        .bind(approval.created_at_ms)
+        .bind(approval.decided_at_ms)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Resolves a pending approval exactly once.
+    ///
+    /// # Errors
+    ///
+    /// Returns not-found, invalid-transition, or database errors.
+    pub async fn decide_chat_approval(
+        &self,
+        owner_id: Uuid,
+        approval_id: Uuid,
+        allow: bool,
+        now_ms: i64,
+    ) -> Result<ChatApproval, StorageError> {
+        let status = if allow { "allowed" } else { "denied" };
+        let result = sqlx::query(
+            "UPDATE approvals SET status = ?, decided_at_ms = ?
+             WHERE id = ? AND owner_id = ? AND status = 'pending'",
+        )
+        .bind(status)
+        .bind(now_ms)
+        .bind(approval_id.to_string())
+        .bind(owner_id.to_string())
+        .execute(&self.pool)
+        .await?;
+        if result.rows_affected() == 0 {
+            return Err(StorageError::ApprovalNotFound);
+        }
+        self.chat_approval(owner_id, approval_id).await
+    }
+
+    /// Lists approvals for an owner-scoped chat.
+    ///
+    /// # Errors
+    ///
+    /// Returns ownership, database, or integrity errors.
+    pub async fn chat_approvals(
+        &self,
+        owner_id: Uuid,
+        chat_id: Uuid,
+    ) -> Result<Vec<ChatApproval>, StorageError> {
+        let _ = self.get_direct_chat(owner_id, chat_id).await?;
+        let rows = sqlx::query(
+            "SELECT * FROM approvals WHERE owner_id = ? AND chat_id = ?
+             ORDER BY created_at_ms, id",
+        )
+        .bind(owner_id.to_string())
+        .bind(chat_id.to_string())
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter().map(approval_from_row).collect()
+    }
+
+    /// Loads one owner-scoped approval.
+    ///
+    /// # Errors
+    ///
+    /// Returns not-found, database, or integrity errors.
+    pub async fn chat_approval(
+        &self,
+        owner_id: Uuid,
+        approval_id: Uuid,
+    ) -> Result<ChatApproval, StorageError> {
+        let row = sqlx::query("SELECT * FROM approvals WHERE owner_id = ? AND id = ?")
+            .bind(owner_id.to_string())
+            .bind(approval_id.to_string())
+            .fetch_optional(&self.pool)
+            .await?
+            .ok_or(StorageError::ApprovalNotFound)?;
+        approval_from_row(&row)
+    }
+
+    /// Runs `SQLite` structural and foreign-key checks without attempting repair.
+    ///
+    /// # Errors
+    ///
+    /// Returns an integrity error when corruption or broken references are reported.
+    pub async fn verify_integrity(&self) -> Result<(), StorageError> {
+        let result: String = sqlx::query_scalar("PRAGMA quick_check")
+            .fetch_one(&self.pool)
+            .await?;
+        if result != "ok" {
+            return Err(StorageError::Integrity(result));
+        }
+        if sqlx::query("PRAGMA foreign_key_check")
+            .fetch_optional(&self.pool)
+            .await?
+            .is_some()
+        {
+            return Err(StorageError::Integrity(
+                "foreign key check reported an invalid reference".to_owned(),
             ));
         }
         Ok(())

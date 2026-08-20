@@ -126,6 +126,10 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/api/v1/chats/{chat_id}/steer", post(chats::steer))
         .route("/api/v1/chats/{chat_id}/stop", post(chats::stop))
+        .route(
+            "/api/v1/approvals/{approval_id}/decision",
+            post(chats::decide_approval),
+        )
         .route("/api/v1/attachments", post(attachments::create_attachment))
         .route(
             "/api/v1/attachments/{attachment_id}/content",

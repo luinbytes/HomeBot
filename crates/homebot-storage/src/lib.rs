@@ -2,7 +2,10 @@
 
 use homebot_domain::{
     Bot, BotAttention, BotId, DomainError,
-    chat::{ChatDomainError, ChatMessage, DirectChat, MessagePart, QueuedPrompt},
+    chat::{
+        ChatApproval, ChatDomainError, ChatMessage, DirectChat, ExecutionActivity, MessagePart,
+        QueuedPrompt,
+    },
 };
 use serde_json::Value;
 use sqlx::{
@@ -40,6 +43,8 @@ pub enum StorageError {
     ChatNotFound,
     #[error("Message was not found")]
     MessageNotFound,
+    #[error("Approval was not found or is no longer pending")]
+    ApprovalNotFound,
     #[error("An attachment is unavailable")]
     AttachmentUnavailable,
     #[error("database JSON is invalid: {0}")]
@@ -649,6 +654,167 @@ impl Storage {
         self.get_direct_chat(owner_id, chat_id).await
     }
 
+    /// Inserts or updates a normalized execution activity.
+    ///
+    /// # Errors
+    ///
+    /// Returns ownership, database, or integrity errors.
+    pub async fn upsert_activity(
+        &self,
+        owner_id: Uuid,
+        activity: &ExecutionActivity,
+    ) -> Result<(), StorageError> {
+        let _ = self.get_direct_chat(owner_id, activity.chat_id).await?;
+        sqlx::query(
+            "INSERT INTO execution_activities (
+                id, chat_id, message_id, kind, status, detail_json, title, detail,
+                requires_attention, started_at_ms, finished_at_ms
+             ) VALUES (?, ?, ?, ?, ?, '{}', ?, ?, ?, ?, ?)
+             ON CONFLICT(id) DO UPDATE SET
+                status = excluded.status,
+                title = excluded.title,
+                detail = excluded.detail,
+                requires_attention = excluded.requires_attention,
+                finished_at_ms = excluded.finished_at_ms
+             WHERE execution_activities.chat_id = excluded.chat_id",
+        )
+        .bind(activity.id.to_string())
+        .bind(activity.chat_id.to_string())
+        .bind(activity.message_id.map(|id| id.to_string()))
+        .bind(&activity.kind)
+        .bind(activity.status.as_str())
+        .bind(&activity.title)
+        .bind(&activity.detail)
+        .bind(activity.requires_attention)
+        .bind(activity.started_at_ms)
+        .bind(activity.finished_at_ms)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Lists normalized activities for an owner-scoped chat.
+    ///
+    /// # Errors
+    ///
+    /// Returns ownership, database, or integrity errors.
+    pub async fn chat_activities(
+        &self,
+        owner_id: Uuid,
+        chat_id: Uuid,
+    ) -> Result<Vec<ExecutionActivity>, StorageError> {
+        let _ = self.get_direct_chat(owner_id, chat_id).await?;
+        let rows = sqlx::query(
+            "SELECT * FROM execution_activities
+             WHERE chat_id = ? ORDER BY started_at_ms, id",
+        )
+        .bind(chat_id.to_string())
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter().map(activity_from_row).collect()
+    }
+
+    /// Creates a pending approval for a chat operation.
+    ///
+    /// # Errors
+    ///
+    /// Returns ownership, database, or integrity errors.
+    pub async fn create_chat_approval(&self, approval: &ChatApproval) -> Result<(), StorageError> {
+        let _ = self
+            .get_direct_chat(approval.owner_id, approval.chat_id)
+            .await?;
+        sqlx::query(
+            "INSERT INTO approvals (
+                id, owner_id, chat_id, message_id, operation_id, capability, status,
+                request_json, title, detail, created_at_ms, decided_at_ms
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, '{}', ?, ?, ?, ?)",
+        )
+        .bind(approval.id.to_string())
+        .bind(approval.owner_id.to_string())
+        .bind(approval.chat_id.to_string())
+        .bind(approval.message_id.map(|id| id.to_string()))
+        .bind(approval.operation_id.to_string())
+        .bind(&approval.capability)
+        .bind(approval.status.as_str())
+        .bind(&approval.title)
+        .bind(&approval.detail)
+        .bind(approval.created_at_ms)
+        .bind(approval.decided_at_ms)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Resolves a pending approval exactly once.
+    ///
+    /// # Errors
+    ///
+    /// Returns not-found, invalid-transition, or database errors.
+    pub async fn decide_chat_approval(
+        &self,
+        owner_id: Uuid,
+        approval_id: Uuid,
+        allow: bool,
+        now_ms: i64,
+    ) -> Result<ChatApproval, StorageError> {
+        let status = if allow { "allowed" } else { "denied" };
+        let result = sqlx::query(
+            "UPDATE approvals SET status = ?, decided_at_ms = ?
+             WHERE id = ? AND owner_id = ? AND status = 'pending'",
+        )
+        .bind(status)
+        .bind(now_ms)
+        .bind(approval_id.to_string())
+        .bind(owner_id.to_string())
+        .execute(&self.pool)
+        .await?;
+        if result.rows_affected() == 0 {
+            return Err(StorageError::ApprovalNotFound);
+        }
+        self.chat_approval(owner_id, approval_id).await
+    }
+
+    /// Lists approvals for an owner-scoped chat.
+    ///
+    /// # Errors
+    ///
+    /// Returns ownership, database, or integrity errors.
+    pub async fn chat_approvals(
+        &self,
+        owner_id: Uuid,
+        chat_id: Uuid,
+    ) -> Result<Vec<ChatApproval>, StorageError> {
+        let _ = self.get_direct_chat(owner_id, chat_id).await?;
+        let rows = sqlx::query(
+            "SELECT * FROM approvals WHERE owner_id = ? AND chat_id = ?
+             ORDER BY created_at_ms, id",
+        )
+        .bind(owner_id.to_string())
+        .bind(chat_id.to_string())
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter().map(approval_from_row).collect()
+    }
+
+    /// Loads one owner-scoped approval.
+    ///
+    /// # Errors
+    ///
+    /// Returns not-found, database, or integrity errors.
+    pub async fn chat_approval(
+        &self,
+        owner_id: Uuid,
+        approval_id: Uuid,
+    ) -> Result<ChatApproval, StorageError> {
+        let row = sqlx::query("SELECT * FROM approvals WHERE owner_id = ? AND id = ?")
+            .bind(owner_id.to_string())
+            .bind(approval_id.to_string())
+            .fetch_optional(&self.pool)
+            .await?
+            .ok_or(StorageError::ApprovalNotFound)?;
+        approval_from_row(&row)
+    }
+
     /// Runs `SQLite` structural and foreign-key checks without attempting repair.
     ///
     /// # Errors
@@ -1108,6 +1274,47 @@ fn queued_prompt_from_row(row: &sqlx::sqlite::SqliteRow) -> Result<QueuedPrompt,
     })
 }
 
+fn activity_from_row(row: &sqlx::sqlite::SqliteRow) -> Result<ExecutionActivity, StorageError> {
+    let id: String = row.try_get("id")?;
+    let chat_id: String = row.try_get("chat_id")?;
+    let message_id: Option<String> = row.try_get("message_id")?;
+    let status: String = row.try_get("status")?;
+    Ok(ExecutionActivity {
+        id: parse_uuid(&id)?,
+        chat_id: parse_uuid(&chat_id)?,
+        message_id: message_id.as_deref().map(parse_uuid).transpose()?,
+        kind: row.try_get("kind")?,
+        title: row.try_get("title")?,
+        detail: row.try_get("detail")?,
+        status: status.parse()?,
+        requires_attention: row.try_get("requires_attention")?,
+        started_at_ms: row.try_get("started_at_ms")?,
+        finished_at_ms: row.try_get("finished_at_ms")?,
+    })
+}
+
+fn approval_from_row(row: &sqlx::sqlite::SqliteRow) -> Result<ChatApproval, StorageError> {
+    let id: String = row.try_get("id")?;
+    let owner_id: String = row.try_get("owner_id")?;
+    let chat_id: String = row.try_get("chat_id")?;
+    let message_id: Option<String> = row.try_get("message_id")?;
+    let operation_id: String = row.try_get("operation_id")?;
+    let status: String = row.try_get("status")?;
+    Ok(ChatApproval {
+        id: parse_uuid(&id)?,
+        owner_id: parse_uuid(&owner_id)?,
+        chat_id: parse_uuid(&chat_id)?,
+        message_id: message_id.as_deref().map(parse_uuid).transpose()?,
+        operation_id: parse_uuid(&operation_id)?,
+        capability: row.try_get("capability")?,
+        title: row.try_get("title")?,
+        detail: row.try_get("detail")?,
+        status: status.parse()?,
+        created_at_ms: row.try_get("created_at_ms")?,
+        decided_at_ms: row.try_get("decided_at_ms")?,
+    })
+}
+
 async fn validate_message_references(
     transaction: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     owner_id: Uuid,
@@ -1216,6 +1423,7 @@ fn parse_uuid(value: &str) -> Result<Uuid, StorageError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use homebot_domain::chat::{ActivityStatus, ApprovalStatus};
     use serde_json::json;
 
     #[tokio::test]
@@ -1276,6 +1484,7 @@ mod tests {
         Ok(())
     }
 
+    #[allow(clippy::too_many_lines)]
     #[tokio::test]
     async fn direct_chat_messages_are_unique_owner_scoped_and_restart_durable()
     -> Result<(), StorageError> {
@@ -1332,6 +1541,47 @@ mod tests {
             .await?;
         assert_eq!(queued.position, 0);
         assert_eq!(storage.queued_prompts(owner, chat_id).await?.len(), 1);
+        let activity = ExecutionActivity {
+            id: Uuid::now_v7(),
+            chat_id,
+            message_id: Some(first_id),
+            kind: "search".to_owned(),
+            title: "Searching sources".to_owned(),
+            detail: "Local index".to_owned(),
+            status: ActivityStatus::Running,
+            requires_attention: false,
+            started_at_ms: 8,
+            finished_at_ms: None,
+        };
+        storage.upsert_activity(owner, &activity).await?;
+        assert_eq!(
+            storage.chat_activities(owner, chat_id).await?,
+            vec![activity]
+        );
+        let approval = ChatApproval {
+            id: Uuid::now_v7(),
+            owner_id: owner,
+            chat_id,
+            message_id: Some(first_id),
+            operation_id: Uuid::now_v7(),
+            capability: "filesystem.write".to_owned(),
+            title: "Allow file change?".to_owned(),
+            detail: "Nova wants to update README.md".to_owned(),
+            status: ApprovalStatus::Pending,
+            created_at_ms: 9,
+            decided_at_ms: None,
+        };
+        storage.create_chat_approval(&approval).await?;
+        let decided = storage
+            .decide_chat_approval(owner, approval.id, false, 10)
+            .await?;
+        assert_eq!(decided.status, ApprovalStatus::Denied);
+        assert!(matches!(
+            storage
+                .decide_chat_approval(owner, approval.id, true, 11)
+                .await,
+            Err(StorageError::ApprovalNotFound)
+        ));
         assert!(matches!(
             storage.get_direct_chat(other_owner, chat_id).await,
             Err(StorageError::ChatNotFound)
@@ -1342,6 +1592,8 @@ mod tests {
         let messages = reopened.chat_messages(owner, chat_id).await?;
         assert_eq!(messages.len(), 2);
         assert_eq!(reopened.queued_prompts(owner, chat_id).await?.len(), 1);
+        assert_eq!(reopened.chat_activities(owner, chat_id).await?.len(), 1);
+        assert_eq!(reopened.chat_approvals(owner, chat_id).await?.len(), 1);
         assert!(matches!(
             &messages[0].parts[0],
             MessagePart::Text { text, .. } if text == "Hello"

@@ -4,6 +4,9 @@
   "description": "Root exported to the committed machine-readable JSON Schema.",
   "type": "object",
   "properties": {
+    "approval_decision_request": {
+      "$ref": "#/$defs/ApprovalDecisionRequest"
+    },
     "attachment": {
       "$ref": "#/$defs/Attachment"
     },
@@ -73,7 +76,8 @@
     "send_message_request",
     "send_message_response",
     "message_mutation_request",
-    "chat_timeline_response"
+    "chat_timeline_response",
+    "approval_decision_request"
   ],
   "$defs": {
     "ActivityStatus": {
@@ -137,6 +141,28 @@
         "status",
         "requires_attention",
         "started_at_ms"
+      ]
+    },
+    "ApprovalDecisionRequest": {
+      "type": "object",
+      "properties": {
+        "allow": {
+          "type": "boolean"
+        },
+        "idempotency_key": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "request_id": {
+          "type": "string",
+          "format": "uuid"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "request_id",
+        "idempotency_key",
+        "allow"
       ]
     },
     "ApprovalStatus": {

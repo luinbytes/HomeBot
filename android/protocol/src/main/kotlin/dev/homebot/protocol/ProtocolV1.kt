@@ -144,6 +144,9 @@ data class ActivitySummary(val id: String, val chat_id: String, val message_id: 
 data class ApprovalSummary(val id: String, val chat_id: String, val message_id: String? = null, val title: String, val detail: String, val status: String, val created_at_ms: Long, val decided_at_ms: Long? = null)
 
 @Serializable
+data class ApprovalDecisionRequest(val request_id: String, val idempotency_key: String, val allow: Boolean)
+
+@Serializable
 data class QueuedPromptSummary(val id: String, val chat_id: String, val content: String, val attachment_ids: List<String>, val position: Int, val created_at_ms: Long)
 
 @Serializable

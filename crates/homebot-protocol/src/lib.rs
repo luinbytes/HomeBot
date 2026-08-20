@@ -352,6 +352,14 @@ pub struct ApprovalSummary {
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
+pub struct ApprovalDecisionRequest {
+    pub request_id: Uuid,
+    pub idempotency_key: Uuid,
+    pub allow: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct QueuedPromptSummary {
     pub id: Uuid,
     pub chat_id: Uuid,
@@ -498,6 +506,7 @@ pub struct ProtocolV1Schema {
     pub send_message_response: SendMessageResponse,
     pub message_mutation_request: MessageMutationRequest,
     pub chat_timeline_response: ChatTimelineResponse,
+    pub approval_decision_request: ApprovalDecisionRequest,
 }
 
 /// Checks whether a client protocol is in the supported inclusive range.

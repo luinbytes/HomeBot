@@ -131,6 +131,108 @@ pub struct QueuedPrompt {
     pub created_at_ms: i64,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ActivityStatus {
+    Pending,
+    Running,
+    Succeeded,
+    Failed,
+    Cancelled,
+}
+
+impl ActivityStatus {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Running => "running",
+            Self::Succeeded => "succeeded",
+            Self::Failed => "failed",
+            Self::Cancelled => "cancelled",
+        }
+    }
+}
+
+impl std::str::FromStr for ActivityStatus {
+    type Err = ChatDomainError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "pending" => Ok(Self::Pending),
+            "running" => Ok(Self::Running),
+            "succeeded" => Ok(Self::Succeeded),
+            "failed" => Ok(Self::Failed),
+            "cancelled" => Ok(Self::Cancelled),
+            _ => Err(ChatDomainError::InvalidActivityStatus),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct ExecutionActivity {
+    pub id: Uuid,
+    pub chat_id: Uuid,
+    pub message_id: Option<Uuid>,
+    pub kind: String,
+    pub title: String,
+    pub detail: String,
+    pub status: ActivityStatus,
+    pub requires_attention: bool,
+    pub started_at_ms: i64,
+    pub finished_at_ms: Option<i64>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ApprovalStatus {
+    Pending,
+    Allowed,
+    Denied,
+    Expired,
+}
+
+impl ApprovalStatus {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Allowed => "allowed",
+            Self::Denied => "denied",
+            Self::Expired => "expired",
+        }
+    }
+}
+
+impl std::str::FromStr for ApprovalStatus {
+    type Err = ChatDomainError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "pending" => Ok(Self::Pending),
+            "allowed" => Ok(Self::Allowed),
+            "denied" => Ok(Self::Denied),
+            "expired" => Ok(Self::Expired),
+            _ => Err(ChatDomainError::InvalidApprovalStatus),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct ChatApproval {
+    pub id: Uuid,
+    pub owner_id: Uuid,
+    pub chat_id: Uuid,
+    pub message_id: Option<Uuid>,
+    pub operation_id: Uuid,
+    pub capability: String,
+    pub title: String,
+    pub detail: String,
+    pub status: ApprovalStatus,
+    pub created_at_ms: i64,
+    pub decided_at_ms: Option<i64>,
+}
+
 impl ChatMessage {
     /// Creates a validated user message.
     ///
@@ -193,6 +295,10 @@ pub enum ChatDomainError {
     InvalidAuthor,
     #[error("Message status is invalid")]
     InvalidStatus,
+    #[error("Activity status is invalid")]
+    InvalidActivityStatus,
+    #[error("Approval status is invalid")]
+    InvalidApprovalStatus,
 }
 
 #[cfg(test)]

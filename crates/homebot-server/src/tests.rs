@@ -7,10 +7,10 @@ use axum::{
 };
 use futures_util::{SinkExt, StreamExt};
 use homebot_protocol::{
-    Attachment, BotColor, BotMutationRequest, BotPermissionProfile, BotProviderStatus, BotResponse,
-    BotShape, ChatTimelineResponse, CreateAttachmentRequest, CreateAttachmentResponse,
-    CreateBotRequest, CreateDirectChatRequest, CreateDirectChatResponse, FinalizeAttachmentRequest,
-    SendMessageRequest, SendMessageResponse, UpdateBotRequest,
+    ApprovalDecisionRequest, Attachment, BotColor, BotMutationRequest, BotPermissionProfile,
+    BotProviderStatus, BotResponse, BotShape, ChatTimelineResponse, CreateAttachmentRequest,
+    CreateAttachmentResponse, CreateBotRequest, CreateDirectChatRequest, CreateDirectChatResponse,
+    FinalizeAttachmentRequest, SendMessageRequest, SendMessageResponse, UpdateBotRequest,
 };
 use tokio::task::JoinHandle;
 use tokio_tungstenite::{connect_async, tungstenite::client::IntoClientRequest};
@@ -363,6 +363,21 @@ async fn direct_chat_send_queue_replay_and_timeline_are_server_authoritative()
         SendMessageResponse::Queued { prompt } if prompt.id == queued_key
     ));
 
+    let approval = homebot_domain::chat::ChatApproval {
+        id: Uuid::now_v7(),
+        owner_id: Uuid::nil(),
+        chat_id: chat_key,
+        message_id: Some(message_key),
+        operation_id: Uuid::now_v7(),
+        capability: "shell_execute".to_owned(),
+        title: "Run command?".to_owned(),
+        detail: "cargo test".to_owned(),
+        status: homebot_domain::chat::ApprovalStatus::Pending,
+        created_at_ms: 101,
+        decided_at_ms: None,
+    };
+    storage.create_chat_approval(&approval).await?;
+
     let timeline = app
         .clone()
         .oneshot(
@@ -373,10 +388,12 @@ async fn direct_chat_send_queue_replay_and_timeline_are_server_authoritative()
         .await?;
     let timeline = response_json::<ChatTimelineResponse>(timeline).await?;
     assert_eq!(timeline.messages.len(), 2);
+    assert_eq!(timeline.approvals.len(), 1);
     assert_eq!(timeline.queued_prompts.len(), 1);
     assert!(timeline.chat.running);
     assert!(timeline.boundary_sequence >= 4);
     let stopped = app
+        .clone()
         .oneshot(json_request(
             "POST",
             &format!("/api/v1/chats/{chat_key}/stop"),
@@ -390,6 +407,24 @@ async fn direct_chat_send_queue_replay_and_timeline_are_server_authoritative()
         !response_json::<homebot_protocol::ChatSummary>(stopped)
             .await?
             .running
+    );
+    let decision = ApprovalDecisionRequest {
+        request_id: Uuid::now_v7(),
+        idempotency_key: Uuid::now_v7(),
+        allow: false,
+    };
+    let response = app
+        .oneshot(json_request(
+            "POST",
+            &format!("/api/v1/approvals/{}/decision", approval.id),
+            &decision,
+        ))
+        .await?;
+    assert_eq!(
+        response_json::<homebot_protocol::ApprovalSummary>(response)
+            .await?
+            .status,
+        homebot_protocol::ApprovalStatus::Denied
     );
     Ok(())
 }

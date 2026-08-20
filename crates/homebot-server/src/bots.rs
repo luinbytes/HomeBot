@@ -366,6 +366,11 @@ impl From<StorageError> for ApiError {
                 ErrorCode::NotFound,
                 "Message was not found",
             ),
+            StorageError::ApprovalNotFound => Self::new(
+                StatusCode::CONFLICT,
+                ErrorCode::Conflict,
+                "Approval was not found or is no longer pending",
+            ),
             StorageError::AttachmentUnavailable => Self::new(
                 StatusCode::UNPROCESSABLE_ENTITY,
                 ErrorCode::ValidationFailed,

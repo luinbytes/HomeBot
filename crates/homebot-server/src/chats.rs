@@ -4,10 +4,13 @@ use axum::{
     http::StatusCode,
 };
 use homebot_domain::chat::{
-    ChatMessage as DomainMessage, DirectChat as DomainChat, MessageAuthor as DomainAuthor,
-    MessagePart as DomainPart, MessageStatus as DomainStatus, QueuedPrompt as DomainPrompt,
+    ActivityStatus as DomainActivityStatus, ApprovalStatus as DomainApprovalStatus,
+    ChatApproval as DomainApproval, ChatMessage as DomainMessage, DirectChat as DomainChat,
+    ExecutionActivity as DomainActivity, MessageAuthor as DomainAuthor, MessagePart as DomainPart,
+    MessageStatus as DomainStatus, QueuedPrompt as DomainPrompt,
 };
 use homebot_protocol::{
+    ActivityStatus, ActivitySummary, ApprovalDecisionRequest, ApprovalStatus, ApprovalSummary,
     Attachment, BotMutationRequest, ChatSummary, ChatTimelineResponse, CreateDirectChatRequest,
     CreateDirectChatResponse, MessageAuthor, MessagePart, MessageStatus, MessageSummary,
     QueuedPromptSummary, SendMessageRequest, SendMessageResponse, ServerEventBody,
@@ -76,6 +79,14 @@ pub(super) async fn timeline(
         .storage
         .queued_prompts(state.owner_id, chat_id)
         .await?;
+    let activities = state
+        .storage
+        .chat_activities(state.owner_id, chat_id)
+        .await?;
+    let approvals = state
+        .storage
+        .chat_approvals(state.owner_id, chat_id)
+        .await?;
     let mut summaries = Vec::with_capacity(messages.len());
     for message in messages {
         summaries.push(message_summary(&state, message).await?);
@@ -83,8 +94,8 @@ pub(super) async fn timeline(
     Ok(Json(ChatTimelineResponse {
         chat: chat_summary(chat),
         messages: summaries,
-        activities: Vec::new(),
-        approvals: Vec::new(),
+        activities: activities.into_iter().map(activity_summary).collect(),
+        approvals: approvals.into_iter().map(approval_summary).collect(),
         queued_prompts: prompts.into_iter().map(prompt_summary).collect(),
         boundary_sequence: state
             .storage
@@ -285,6 +296,46 @@ pub(super) async fn stop(
     Ok(Json(chat))
 }
 
+pub(super) async fn decide_approval(
+    State(state): State<AppState>,
+    Path(approval_id): Path<Uuid>,
+    Json(request): Json<ApprovalDecisionRequest>,
+) -> Result<Json<ApprovalSummary>, ApiError> {
+    let replayed = matches!(
+        claim(
+            &state,
+            request.idempotency_key,
+            &format!("decide_approval:{approval_id}"),
+            &request,
+        )
+        .await?,
+        IdempotencyClaim::Replayed { .. }
+    );
+    let approval = if replayed {
+        state
+            .storage
+            .chat_approval(state.owner_id, approval_id)
+            .await?
+    } else {
+        state
+            .storage
+            .decide_chat_approval(state.owner_id, approval_id, request.allow, unix_time_ms())
+            .await?
+    };
+    let approval = approval_summary(approval);
+    if !replayed {
+        publish(
+            &state,
+            "approval_changed",
+            ServerEventBody::ApprovalChanged {
+                approval: approval.clone(),
+            },
+        )
+        .await?;
+    }
+    Ok(Json(approval))
+}
+
 async fn publish(state: &AppState, kind: &str, body: ServerEventBody) -> Result<(), ApiError> {
     persist_event(state, kind, body)
         .await
@@ -374,5 +425,43 @@ fn prompt_summary(prompt: DomainPrompt) -> QueuedPromptSummary {
         attachment_ids: prompt.attachment_ids,
         position: prompt.position,
         created_at_ms: prompt.created_at_ms,
+    }
+}
+
+fn activity_summary(activity: DomainActivity) -> ActivitySummary {
+    ActivitySummary {
+        id: activity.id,
+        chat_id: activity.chat_id,
+        message_id: activity.message_id,
+        title: activity.title,
+        detail: activity.detail,
+        status: match activity.status {
+            DomainActivityStatus::Pending => ActivityStatus::Pending,
+            DomainActivityStatus::Running => ActivityStatus::Running,
+            DomainActivityStatus::Succeeded => ActivityStatus::Succeeded,
+            DomainActivityStatus::Failed => ActivityStatus::Failed,
+            DomainActivityStatus::Cancelled => ActivityStatus::Cancelled,
+        },
+        requires_attention: activity.requires_attention,
+        started_at_ms: activity.started_at_ms,
+        finished_at_ms: activity.finished_at_ms,
+    }
+}
+
+fn approval_summary(approval: DomainApproval) -> ApprovalSummary {
+    ApprovalSummary {
+        id: approval.id,
+        chat_id: approval.chat_id,
+        message_id: approval.message_id,
+        title: approval.title,
+        detail: approval.detail,
+        status: match approval.status {
+            DomainApprovalStatus::Pending => ApprovalStatus::Pending,
+            DomainApprovalStatus::Allowed => ApprovalStatus::Allowed,
+            DomainApprovalStatus::Denied => ApprovalStatus::Denied,
+            DomainApprovalStatus::Expired => ApprovalStatus::Expired,
+        },
+        created_at_ms: approval.created_at_ms,
+        decided_at_ms: approval.decided_at_ms,
     }
 }

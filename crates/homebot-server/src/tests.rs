@@ -204,7 +204,8 @@ async fn plugin_registry_connects_local_mcp_and_persists_error_recovery_states()
     let mut permissions = std::fs::metadata(&server)?.permissions();
     permissions.set_mode(0o700);
     std::fs::set_permissions(&server, permissions)?;
-    let app = test_app().await?;
+    let storage = Storage::open(&directory.path().join("homebot.db")).await?;
+    let app = router(AppState::new(storage, "correct-token"));
     let plugin_id = Uuid::now_v7();
     let create = CreateLocalMcpPluginRequest {
         request_id: Uuid::now_v7(),

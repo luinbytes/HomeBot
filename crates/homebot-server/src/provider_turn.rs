@@ -3,7 +3,7 @@
 use homebot_domain::chat::{
     ActivityStatus, ApprovalStatus, ChatApproval, DirectChat, ExecutionActivity, MessageStatus,
 };
-use homebot_protocol::{ErrorCode, ErrorEnvelope, ServerEventBody};
+use homebot_protocol::{CheckpointPhase, ErrorCode, ErrorEnvelope, ServerEventBody};
 use homebot_providers::{
     ActivityStatus as ProviderActivityStatus, ApprovalDecision, ExecutionMode, ProviderAdapterId,
     ProviderAttachment, ProviderError, ProviderErrorCode, ProviderEvent, ProviderRun,
@@ -41,6 +41,51 @@ pub(super) async fn start_if_configured(
         .storage
         .provider_conversation(chat.bot_id, chat.id, route.profile_id)
         .await?;
+    let assistant = state
+        .storage
+        .create_bot_message(
+            state.owner_id,
+            chat.id,
+            chat.bot_id,
+            message_id,
+            unix_time_ms(),
+        )
+        .await?;
+    publish(
+        state,
+        "message_changed",
+        ServerEventBody::MessageChanged {
+            message: message_summary(state, assistant).await?,
+        },
+    )
+    .await?;
+    let operation = ChatOperation {
+        operation: operation_id,
+        adapter: adapter_id.clone(),
+        profile: route.profile_id,
+        bot: chat.bot_id,
+        message: message_id,
+    };
+    if crate::checkpoints::capture_for_turn(
+        state,
+        chat.id,
+        message_id,
+        route.profile_id,
+        conversation.clone(),
+        CheckpointPhase::BeforeTurn,
+    )
+    .await
+    .is_err()
+    {
+        finish_failed_start(
+            state,
+            chat.id,
+            operation,
+            checkpoint_error("The coding workspace could not be checkpointed before this turn"),
+        )
+        .await?;
+        return Ok(true);
+    }
     let result = if let Some(conversation_id) = conversation {
         state
             .provider_runtime
@@ -73,53 +118,18 @@ pub(super) async fn start_if_configured(
             )
             .await
     };
-    let assistant = state
-        .storage
-        .create_bot_message(
-            state.owner_id,
-            chat.id,
-            chat.bot_id,
-            message_id,
-            unix_time_ms(),
-        )
-        .await?;
-    publish(
-        state,
-        "message_changed",
-        ServerEventBody::MessageChanged {
-            message: message_summary(state, assistant).await?,
-        },
-    )
-    .await?;
     let run = match result {
         Ok(run) => run,
         Err(error) => {
-            finish_failed_start(
-                state,
-                chat.id,
-                ChatOperation {
-                    operation: operation_id,
-                    adapter: adapter_id,
-                    profile: route.profile_id,
-                    bot: chat.bot_id,
-                    message: message_id,
-                },
-                provider_error(&error),
-            )
-            .await?;
+            finish_failed_start(state, chat.id, operation, provider_error(&error)).await?;
             return Ok(true);
         }
     };
-    state.chat_operations.lock().await.insert(
-        chat.id,
-        ChatOperation {
-            operation: operation_id,
-            adapter: adapter_id.clone(),
-            profile: route.profile_id,
-            bot: chat.bot_id,
-            message: message_id,
-        },
-    );
+    state
+        .chat_operations
+        .lock()
+        .await
+        .insert(chat.id, operation);
     let state = state.clone();
     let chat_id = chat.id;
     tokio::spawn(async move {
@@ -330,9 +340,29 @@ async fn finish(
     state: &AppState,
     chat_id: Uuid,
     operation: ChatOperation,
-    status: MessageStatus,
-    error: Option<ErrorEnvelope>,
+    mut status: MessageStatus,
+    mut error: Option<ErrorEnvelope>,
 ) -> Result<(), ApiError> {
+    let conversation = state
+        .storage
+        .provider_conversation(operation.bot, chat_id, operation.profile)
+        .await?;
+    if crate::checkpoints::capture_for_turn(
+        state,
+        chat_id,
+        operation.message,
+        operation.profile,
+        conversation,
+        CheckpointPhase::AfterTurn,
+    )
+    .await
+    .is_err()
+    {
+        status = MessageStatus::Failed;
+        error = Some(checkpoint_error(
+            "The Bot finished, but HomeBot could not checkpoint the coding workspace",
+        ));
+    }
     let error_json = error
         .as_ref()
         .map(serde_json::to_value)
@@ -388,6 +418,17 @@ async fn finish(
     state.provider_runtime.finish(operation.operation).await;
     state.chat_operations.lock().await.remove(&chat_id);
     Ok(())
+}
+
+fn checkpoint_error(message: &str) -> ErrorEnvelope {
+    ErrorEnvelope {
+        code: ErrorCode::Internal,
+        message: message.to_owned(),
+        retryable: true,
+        request_id: None,
+        retry_after_ms: None,
+        details: None,
+    }
 }
 
 async fn finish_failed_start(

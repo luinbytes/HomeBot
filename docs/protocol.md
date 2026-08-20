@@ -62,6 +62,8 @@ Skills use authenticated CRUD, duplication, assignment, and versioned import/exp
 
 Authenticated workspace endpoints register canonical Git repositories, list local branches, attach a chat in primary or isolated mode, and detach it. Snapshot fields and sequenced `repository_workspace_changed`, `chat_workspace_changed`, and `chat_workspace_removed` events keep desktop and Android projections aligned with SQLite authority. Summaries report the effective path, selected branch/base ref and `clean`, `dirty`, `conflicted`, or `unavailable` condition. Clients never construct managed paths or perform worktree lifecycle locally.
 
+Coding-chat timelines include opaque turn-checkpoint summaries. Authenticated endpoints list checkpoints, return an explicit-pair or full-chat binary-capable diff, and restore a stopped chat to a checkpoint with an idempotency key. `turn_checkpoint_changed` and `checkpoint_restored` events are durable and sequenced. Restore responses state whether provider context was unchanged or forked; hidden refs, object IDs and provider conversation IDs never cross the client contract.
+
 ## Attachments
 
 Attachments are uploaded over authenticated HTTP with size/type limits, streaming digest verification, an idempotency key, and an explicit finalise step. WebSocket messages refer to completed attachment IDs. Partial uploads expire and cannot be consumed.

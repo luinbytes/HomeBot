@@ -10,22 +10,24 @@ use homebot_protocol::{
     AddGroupParticipantRequest, AppendRoutineRecordingRequest, ApprovalDecisionRequest,
     ArtifactSummary, AttachChatWorkspaceRequest, Attachment, BotColor, BotMutationRequest,
     BotPermissionProfile, BotProviderStatus, BotResponse, BotShape, ChatTimelineResponse,
-    ChatWorkspaceSummary, CreateAttachmentRequest, CreateAttachmentResponse, CreateBotRequest,
-    CreateDirectChatRequest, CreateDirectChatResponse, CreateGroupChatRequest,
+    ChatWorkspaceSummary, CheckpointDiffResponse, CheckpointPhase, CheckpointRestoreSummary,
+    ConversationReconciliation, CreateAttachmentRequest, CreateAttachmentResponse,
+    CreateBotRequest, CreateDirectChatRequest, CreateDirectChatResponse, CreateGroupChatRequest,
     CreateGroupChatResponse, CreateLocalMcpPluginRequest, CreateRepositoryWorkspaceRequest,
     CreateRoutineRequest, CreateRoutineTriggerRequest, CreateSkillRequest,
     DeliverRoutineTriggerRequest, DetachChatWorkspaceRequest, DuplicateRoutineRequest,
     DuplicateSkillRequest, FinalizeAttachmentRequest, GroupBotStatus, GroupTimelineResponse,
     HandoffGroupRequest, ImportSkillRequest, MissedRunPolicy, OverlapPolicy, PluginConnectionState,
     PluginMutationRequest, PluginSummary, RecordedAction, RecordedActor,
-    RepositoryWorkspaceSummary, RetryPolicy, RoutineDefinition, RoutineInput, RoutineInputKind,
-    RoutineJobSummary, RoutineRecordingSummary, RoutineRunSummary, RoutineSchedule, RoutineStep,
-    RoutineStepStatus, RoutineSummary, RoutineTriggerDefinition, RoutineTriggerSource,
-    RunRoutineRequest, SecretSummary, SendGroupMessageRequest, SendMessageRequest,
-    SendMessageResponse, SkillAssignmentRequest, SkillBundle, SkillContext, SkillDefinition,
-    SkillImportConflictPolicy, SkillSummary, SkillToolReference, StartRoutineRecordingRequest,
-    UpdateBotRequest, UpdateGroupParticipantRequest, UpdateRoutineRequest, UpdateSkillRequest,
-    WorkingTreeCondition, WorkspaceBranchesResponse, WorkspaceMode,
+    RepositoryWorkspaceSummary, RestoreCheckpointRequest, RetryPolicy, RoutineDefinition,
+    RoutineInput, RoutineInputKind, RoutineJobSummary, RoutineRecordingSummary, RoutineRunSummary,
+    RoutineSchedule, RoutineStep, RoutineStepStatus, RoutineSummary, RoutineTriggerDefinition,
+    RoutineTriggerSource, RunRoutineRequest, SecretSummary, SendGroupMessageRequest,
+    SendMessageRequest, SendMessageResponse, SkillAssignmentRequest, SkillBundle, SkillContext,
+    SkillDefinition, SkillImportConflictPolicy, SkillSummary, SkillToolReference,
+    StartRoutineRecordingRequest, TurnCheckpointSummary, UpdateBotRequest,
+    UpdateGroupParticipantRequest, UpdateRoutineRequest, UpdateSkillRequest, WorkingTreeCondition,
+    WorkspaceBranchesResponse, WorkspaceMode,
 };
 use homebot_providers::{
     ActivityKind, ActivityStatus as ProviderActivityStatus, ApprovalDecision, CompactRequest,
@@ -3022,6 +3024,237 @@ async fn repository_workspace_preserves_dirty_primary_and_guards_worktree_cleanu
     let unavailable: Vec<RepositoryWorkspaceSummary> = response_json(response).await?;
     assert_eq!(unavailable.len(), 1);
     assert_eq!(unavailable[0].condition, WorkingTreeCondition::Unavailable);
+    Ok(())
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn coding_turn_checkpoints_diff_restore_and_fork_provider_conversation()
+-> Result<(), Box<dyn std::error::Error>> {
+    let repository = tempfile::tempdir()?;
+    let git = |arguments: &[&str]| -> Result<(), Box<dyn std::error::Error>> {
+        let output = std::process::Command::new("/usr/bin/git")
+            .env_clear()
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .arg("-C")
+            .arg(repository.path())
+            .args(arguments)
+            .output()?;
+        if !output.status.success() {
+            return Err(String::from_utf8_lossy(&output.stderr).into_owned().into());
+        }
+        Ok(())
+    };
+    git(&["init", "-b", "main"])?;
+    git(&["config", "user.name", "HomeBot Fixture"])?;
+    git(&["config", "user.email", "fixture@homebot.invalid"])?;
+    std::fs::write(repository.path().join("README.md"), "committed\n")?;
+    git(&["add", "README.md"])?;
+    git(&["commit", "-m", "baseline"])?;
+    std::fs::write(repository.path().join("README.md"), "dirty baseline\n")?;
+    std::fs::write(repository.path().join("untracked.txt"), "before\n")?;
+
+    let directory = tempfile::tempdir()?;
+    let storage = Storage::open(&directory.path().join("homebot.db")).await?;
+    let profile_id = Uuid::now_v7();
+    sqlx::query("INSERT INTO provider_profiles (id, adapter_kind, display_name, configuration_json, created_at_ms, updated_at_ms) VALUES (?, 'chat-fake', 'Fixture', '{}', 1, 1)")
+        .bind(profile_id.to_string()).execute(storage.pool()).await?;
+    let mut domain_bot = homebot_domain::Bot::create("Patch", "Coding")?;
+    domain_bot.provider_profile_id = Some(profile_id);
+    let bot = storage.create_bot(Uuid::nil(), domain_bot, 1).await?;
+    let chat = storage
+        .create_direct_chat(Uuid::nil(), bot.id.0, Uuid::now_v7(), 2)
+        .await?;
+    let repository_root = std::fs::canonicalize(repository.path())?
+        .to_string_lossy()
+        .into_owned();
+    let workspace = homebot_storage::RepositoryWorkspaceRecord {
+        id: Uuid::now_v7(),
+        owner_id: Uuid::nil(),
+        name: "Checkpoint fixture".to_owned(),
+        root_path: repository_root.clone(),
+        created_at_ms: 3,
+        updated_at_ms: 3,
+    };
+    storage.create_repository_workspace(&workspace).await?;
+    storage
+        .attach_chat_workspace(&homebot_storage::ChatWorkspaceRecord {
+            owner_id: Uuid::nil(),
+            chat_id: chat.id,
+            workspace_id: workspace.id,
+            mode: WorkspaceMode::Primary,
+            worktree_path: None,
+            branch_name: Some("main".to_owned()),
+            base_ref: None,
+            created_at_ms: 4,
+            updated_at_ms: 4,
+        })
+        .await?;
+    let provider_runtime = Arc::new(ProviderRuntime::new());
+    provider_runtime
+        .register(Arc::new(ChatFakeAdapter::new()?))
+        .await?;
+    let app = router(
+        AppState::new(storage.clone(), "correct-token")
+            .with_provider_runtime(provider_runtime)
+            .with_git_runtime(
+                Arc::new(homebot_vcs::GitRuntime::discover()?),
+                directory.path().join("worktrees"),
+            ),
+    );
+
+    let response = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            &format!("/api/v1/chats/{}/messages", chat.id),
+            &SendMessageRequest {
+                request_id: Uuid::now_v7(),
+                idempotency_key: Uuid::now_v7(),
+                content: "Change the repository".to_owned(),
+                attachment_ids: Vec::new(),
+                reply_to_message_id: None,
+                mentioned_bot_ids: Vec::new(),
+                skill_ids: Vec::new(),
+            },
+        ))
+        .await?;
+    assert_eq!(response.status(), StatusCode::OK);
+    let timeline = wait_for_timeline(&app, chat.id, |timeline| {
+        timeline.approvals.len() == 1
+            && timeline
+                .checkpoints
+                .iter()
+                .any(|checkpoint| checkpoint.phase == CheckpointPhase::BeforeTurn)
+    })
+    .await?;
+    let before = timeline
+        .checkpoints
+        .iter()
+        .find(|checkpoint| checkpoint.phase == CheckpointPhase::BeforeTurn)
+        .ok_or("missing before-turn checkpoint")?
+        .clone();
+    std::fs::rename(
+        repository.path().join("README.md"),
+        repository.path().join("GUIDE.md"),
+    )?;
+    std::fs::write(repository.path().join("untracked.txt"), "after\n")?;
+    std::fs::write(
+        repository.path().join("binary.dat"),
+        [0_u8, 159, 146, 150, 0, 255],
+    )?;
+    let response = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            &format!("/api/v1/approvals/{}/decision", timeline.approvals[0].id),
+            &ApprovalDecisionRequest {
+                request_id: Uuid::now_v7(),
+                idempotency_key: Uuid::now_v7(),
+                allow: true,
+            },
+        ))
+        .await?;
+    assert_eq!(response.status(), StatusCode::OK);
+    let timeline = wait_for_timeline(&app, chat.id, |timeline| {
+        !timeline.chat.running
+            && timeline
+                .checkpoints
+                .iter()
+                .any(|checkpoint| checkpoint.phase == CheckpointPhase::AfterTurn)
+    })
+    .await?;
+    let after = timeline
+        .checkpoints
+        .iter()
+        .find(|checkpoint| checkpoint.phase == CheckpointPhase::AfterTurn)
+        .ok_or("missing after-turn checkpoint")?
+        .clone();
+    let response = app
+        .clone()
+        .oneshot(
+            Request::get(format!(
+                "/api/v1/chats/{}/checkpoints/diff?from_checkpoint_id={}&to_checkpoint_id={}",
+                chat.id, before.id, after.id
+            ))
+            .header("authorization", "Bearer correct-token")
+            .body(Body::empty())?,
+        )
+        .await?;
+    let diff: CheckpointDiffResponse = response_json(response).await?;
+    assert!(diff.patch.contains("GIT binary patch"));
+    assert!(
+        diff.files
+            .iter()
+            .any(|file| file.path == "binary.dat" && file.binary)
+    );
+    assert!(diff.files.iter().any(|file| file.path == "GUIDE.md"));
+    let full = app
+        .clone()
+        .oneshot(
+            Request::get(format!("/api/v1/chats/{}/checkpoints/diff/full", chat.id))
+                .header("authorization", "Bearer correct-token")
+                .body(Body::empty())?,
+        )
+        .await?;
+    assert_eq!(response_json::<CheckpointDiffResponse>(full).await?, diff);
+
+    let restore_request = RestoreCheckpointRequest {
+        request_id: Uuid::now_v7(),
+        idempotency_key: Uuid::now_v7(),
+    };
+    let response = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            &format!("/api/v1/checkpoints/{}/restore", before.id),
+            &restore_request,
+        ))
+        .await?;
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let restored: CheckpointRestoreSummary = response_json(response).await?;
+    assert_eq!(restored.reconciliation, ConversationReconciliation::Forked);
+    assert_eq!(
+        std::fs::read_to_string(repository.path().join("README.md"))?,
+        "dirty baseline\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(repository.path().join("untracked.txt"))?,
+        "before\n"
+    );
+    assert!(!repository.path().join("GUIDE.md").exists());
+    assert!(!repository.path().join("binary.dat").exists());
+    assert!(
+        storage
+            .provider_conversation(bot.id.0, chat.id, profile_id)
+            .await?
+            .is_none()
+    );
+    let replay = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            &format!("/api/v1/checkpoints/{}/restore", before.id),
+            &restore_request,
+        ))
+        .await?;
+    assert_eq!(replay.status(), StatusCode::OK);
+    let checkpoints = app
+        .oneshot(
+            Request::get(format!("/api/v1/chats/{}/checkpoints", chat.id))
+                .header("authorization", "Bearer correct-token")
+                .body(Body::empty())?,
+        )
+        .await?;
+    let checkpoints: Vec<TurnCheckpointSummary> = response_json(checkpoints).await?;
+    assert_eq!(checkpoints.len(), 3);
+    assert_eq!(
+        checkpoints
+            .iter()
+            .filter(|checkpoint| checkpoint.phase == CheckpointPhase::RestoreSafety)
+            .count(),
+        1
+    );
     Ok(())
 }
 

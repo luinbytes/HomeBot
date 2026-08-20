@@ -65,6 +65,7 @@ Read the deeper contracts:
 - [Secret storage](docs/secrets.md)
 - [Local computer capabilities](docs/tools.md)
 - [Repository workspaces](docs/workspaces.md)
+- [Turn checkpoints, diffs, and restore](docs/checkpoints.md)
 - [Security and threat model](docs/security.md)
 - [Android](docs/android.md)
 - [Routines](docs/routines.md)

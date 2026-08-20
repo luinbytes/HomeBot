@@ -10,6 +10,13 @@ use std::{
 use tokio::{process::Command, time::timeout};
 use uuid::Uuid;
 
+mod checkpoints;
+
+pub use checkpoints::{
+    CheckpointCapture, CheckpointDiff, CheckpointPhase, ConversationReconciliation, FileChange,
+    FileChangeStatus, RestoreResult,
+};
+
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_OUTPUT_BYTES: usize = 256 * 1_024;
 
@@ -67,6 +74,8 @@ pub enum VcsError {
     Git(String),
     #[error("Worktree contains changes and was preserved")]
     DirtyWorktree,
+    #[error("Restore would overwrite an ignored workspace path and was refused")]
+    RestoreConflict,
     #[error("Managed worktree path is outside its root")]
     UnsafeWorktreePath,
     #[error("filesystem operation failed: {0}")]
@@ -277,6 +286,20 @@ impl GitRuntime {
     }
 
     async fn git(&self, repository: Option<&Path>, arguments: &[&str]) -> Result<String, VcsError> {
+        let output = self
+            .git_bytes(repository, arguments, &[], MAX_OUTPUT_BYTES)
+            .await?;
+        String::from_utf8(output)
+            .map_err(|_| VcsError::Git("Git returned invalid UTF-8".to_owned()))
+    }
+
+    async fn git_bytes(
+        &self,
+        repository: Option<&Path>,
+        arguments: &[&str],
+        environment: &[(&str, &str)],
+        output_limit: usize,
+    ) -> Result<Vec<u8>, VcsError> {
         let mut command = Command::new(&self.executable);
         command
             .env_clear()
@@ -287,6 +310,9 @@ impl GitRuntime {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
+        for (key, value) in environment {
+            command.env(key, value);
+        }
         if let Some(repository) = repository {
             command.arg("-C").arg(repository);
         }
@@ -294,15 +320,14 @@ impl GitRuntime {
         let output = timeout(self.command_timeout, command.output())
             .await
             .map_err(|_| VcsError::Timeout)??;
-        if output.stdout.len() > MAX_OUTPUT_BYTES || output.stderr.len() > MAX_OUTPUT_BYTES {
+        if output.stdout.len() > output_limit || output.stderr.len() > output_limit {
             return Err(VcsError::OutputLimit);
         }
         if !output.status.success() {
             let message = String::from_utf8_lossy(&output.stderr);
             return Err(VcsError::Git(redact_git_error(message.trim())));
         }
-        String::from_utf8(output.stdout)
-            .map_err(|_| VcsError::Git("Git returned invalid UTF-8".to_owned()))
+        Ok(output.stdout)
     }
 }
 

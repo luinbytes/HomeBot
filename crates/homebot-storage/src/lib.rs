@@ -13,7 +13,7 @@ use homebot_routines::{
     RoutineTriggerDefinition,
 };
 use homebot_skills::{AppliedSkill, SkillDefinition};
-use homebot_vcs::WorkspaceMode;
+use homebot_vcs::{CheckpointPhase, ConversationReconciliation, WorkspaceMode};
 use serde_json::Value;
 use sqlx::{
     Row, SqlitePool,
@@ -23,7 +23,7 @@ use sqlx::{
 use std::{collections::HashSet, path::Path, str::FromStr, time::Duration};
 use uuid::Uuid;
 
-pub const SCHEMA_VERSION: u32 = 13;
+pub const SCHEMA_VERSION: u32 = 14;
 static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
 
 #[derive(Debug, thiserror::Error)]
@@ -88,6 +88,8 @@ pub enum StorageError {
     DuplicateWorkspacePath,
     #[error("This chat already has a workspace")]
     DuplicateChatWorkspace,
+    #[error("Turn checkpoint was not found")]
+    CheckpointNotFound,
     #[error("database JSON is invalid: {0}")]
     Serialization(String),
 }
@@ -332,6 +334,33 @@ pub struct ChatWorkspaceRecord {
     pub updated_at_ms: i64,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TurnCheckpointRecord {
+    pub id: Uuid,
+    pub owner_id: Uuid,
+    pub chat_id: Uuid,
+    pub workspace_id: Uuid,
+    pub message_id: Option<Uuid>,
+    pub phase: CheckpointPhase,
+    pub git_ref: String,
+    pub commit_oid: String,
+    pub provider_profile_id: Option<Uuid>,
+    pub provider_conversation_id: Option<String>,
+    pub created_at_ms: i64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CheckpointRestoreRecord {
+    pub id: Uuid,
+    pub owner_id: Uuid,
+    pub chat_id: Uuid,
+    pub checkpoint_id: Uuid,
+    pub safety_checkpoint_id: Uuid,
+    pub reconciliation: ConversationReconciliation,
+    pub previous_provider_conversation_id: Option<String>,
+    pub created_at_ms: i64,
+}
+
 pub struct QueuedPromptInput<'a> {
     pub content: &'a str,
     pub attachment_ids: &'a [Uuid],
@@ -532,6 +561,117 @@ impl Storage {
             return Err(StorageError::WorkspaceNotFound);
         }
         Ok(())
+    }
+
+    /// Persists one hidden-ref checkpoint after validating its owner-scoped chat workspace.
+    ///
+    /// # Errors
+    /// Returns missing workspace/chat or database errors.
+    pub async fn create_turn_checkpoint(
+        &self,
+        record: &TurnCheckpointRecord,
+    ) -> Result<(), StorageError> {
+        let association = self
+            .chat_workspace(record.owner_id, record.chat_id)
+            .await?
+            .ok_or(StorageError::WorkspaceNotFound)?;
+        if association.workspace_id != record.workspace_id {
+            return Err(StorageError::WorkspaceNotFound);
+        }
+        sqlx::query("INSERT INTO turn_checkpoints (id, owner_id, chat_id, workspace_id, message_id, phase, git_ref, commit_oid, provider_profile_id, provider_conversation_id, created_at_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+            .bind(record.id.to_string()).bind(record.owner_id.to_string()).bind(record.chat_id.to_string())
+            .bind(record.workspace_id.to_string()).bind(record.message_id.map(|id| id.to_string()))
+            .bind(checkpoint_phase(record.phase)).bind(&record.git_ref).bind(&record.commit_oid)
+            .bind(record.provider_profile_id.map(|id| id.to_string())).bind(&record.provider_conversation_id)
+            .bind(record.created_at_ms).execute(&self.pool).await?;
+        Ok(())
+    }
+
+    /// Lists a chat's checkpoints in stable creation order.
+    ///
+    /// # Errors
+    /// Returns ownership, database, or integrity errors.
+    pub async fn turn_checkpoints(
+        &self,
+        owner_id: Uuid,
+        chat_id: Uuid,
+    ) -> Result<Vec<TurnCheckpointRecord>, StorageError> {
+        let rows = sqlx::query("SELECT id, owner_id, chat_id, workspace_id, message_id, phase, git_ref, commit_oid, provider_profile_id, provider_conversation_id, created_at_ms FROM turn_checkpoints WHERE owner_id = ? AND chat_id = ? ORDER BY created_at_ms, id")
+            .bind(owner_id.to_string()).bind(chat_id.to_string()).fetch_all(&self.pool).await?;
+        rows.iter().map(turn_checkpoint_from_row).collect()
+    }
+
+    /// Loads one owner-scoped checkpoint.
+    ///
+    /// # Errors
+    /// Returns not-found, database, or integrity errors.
+    pub async fn turn_checkpoint(
+        &self,
+        owner_id: Uuid,
+        checkpoint_id: Uuid,
+    ) -> Result<TurnCheckpointRecord, StorageError> {
+        let row = sqlx::query("SELECT id, owner_id, chat_id, workspace_id, message_id, phase, git_ref, commit_oid, provider_profile_id, provider_conversation_id, created_at_ms FROM turn_checkpoints WHERE owner_id = ? AND id = ?")
+            .bind(owner_id.to_string()).bind(checkpoint_id.to_string()).fetch_optional(&self.pool).await?
+            .ok_or(StorageError::CheckpointNotFound)?;
+        turn_checkpoint_from_row(&row)
+    }
+
+    /// Atomically stores a restore safety checkpoint/audit row and forks the provider mapping.
+    ///
+    /// # Errors
+    /// Returns ownership, database, or integrity errors.
+    pub async fn record_checkpoint_restore(
+        &self,
+        safety: &TurnCheckpointRecord,
+        restore: &CheckpointRestoreRecord,
+        bot_id: Uuid,
+    ) -> Result<(), StorageError> {
+        let target = self
+            .turn_checkpoint(restore.owner_id, restore.checkpoint_id)
+            .await?;
+        if target.chat_id != restore.chat_id
+            || safety.chat_id != restore.chat_id
+            || target.workspace_id != safety.workspace_id
+            || safety.phase != CheckpointPhase::RestoreSafety
+        {
+            return Err(StorageError::CheckpointNotFound);
+        }
+        let mut transaction = self.pool.begin().await?;
+        sqlx::query("INSERT INTO turn_checkpoints (id, owner_id, chat_id, workspace_id, message_id, phase, git_ref, commit_oid, provider_profile_id, provider_conversation_id, created_at_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+            .bind(safety.id.to_string()).bind(safety.owner_id.to_string()).bind(safety.chat_id.to_string())
+            .bind(safety.workspace_id.to_string()).bind(safety.message_id.map(|id| id.to_string()))
+            .bind(checkpoint_phase(safety.phase)).bind(&safety.git_ref).bind(&safety.commit_oid)
+            .bind(safety.provider_profile_id.map(|id| id.to_string())).bind(&safety.provider_conversation_id)
+            .bind(safety.created_at_ms).execute(&mut *transaction).await?;
+        sqlx::query("INSERT INTO checkpoint_restores (id, owner_id, chat_id, checkpoint_id, safety_checkpoint_id, reconciliation, previous_provider_conversation_id, created_at_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+            .bind(restore.id.to_string()).bind(restore.owner_id.to_string()).bind(restore.chat_id.to_string())
+            .bind(restore.checkpoint_id.to_string()).bind(restore.safety_checkpoint_id.to_string())
+            .bind(conversation_reconciliation(restore.reconciliation)).bind(&restore.previous_provider_conversation_id)
+            .bind(restore.created_at_ms).execute(&mut *transaction).await?;
+        if restore.reconciliation == ConversationReconciliation::Forked
+            && let Some(profile_id) = target.provider_profile_id
+        {
+            sqlx::query("DELETE FROM provider_conversations WHERE bot_id = ? AND chat_id = ? AND provider_profile_id = ?")
+                .bind(bot_id.to_string()).bind(restore.chat_id.to_string()).bind(profile_id.to_string())
+                .execute(&mut *transaction).await?;
+        }
+        transaction.commit().await?;
+        Ok(())
+    }
+
+    /// Loads one idempotent owner-scoped checkpoint restore audit row.
+    ///
+    /// # Errors
+    /// Returns not-found, database, or integrity errors.
+    pub async fn checkpoint_restore(
+        &self,
+        owner_id: Uuid,
+        restore_id: Uuid,
+    ) -> Result<CheckpointRestoreRecord, StorageError> {
+        let row = sqlx::query("SELECT id, owner_id, chat_id, checkpoint_id, safety_checkpoint_id, reconciliation, previous_provider_conversation_id, created_at_ms FROM checkpoint_restores WHERE owner_id = ? AND id = ?")
+            .bind(owner_id.to_string()).bind(restore_id.to_string()).fetch_optional(&self.pool).await?
+            .ok_or(StorageError::CheckpointNotFound)?;
+        checkpoint_restore_from_row(&row)
     }
 
     /// Creates a Skill and immutable version 1 atomically.
@@ -4167,6 +4307,21 @@ fn workspace_mode(mode: WorkspaceMode) -> &'static str {
     }
 }
 
+fn checkpoint_phase(phase: CheckpointPhase) -> &'static str {
+    match phase {
+        CheckpointPhase::BeforeTurn => "before_turn",
+        CheckpointPhase::AfterTurn => "after_turn",
+        CheckpointPhase::RestoreSafety => "restore_safety",
+    }
+}
+
+fn conversation_reconciliation(value: ConversationReconciliation) -> &'static str {
+    match value {
+        ConversationReconciliation::Unchanged => "unchanged",
+        ConversationReconciliation::Forked => "forked",
+    }
+}
+
 fn repository_workspace_from_row(
     row: &sqlx::sqlite::SqliteRow,
 ) -> Result<RepositoryWorkspaceRecord, StorageError> {
@@ -4198,6 +4353,64 @@ fn chat_workspace_from_row(
         base_ref: row.try_get("base_ref")?,
         created_at_ms: row.try_get("created_at_ms")?,
         updated_at_ms: row.try_get("updated_at_ms")?,
+    })
+}
+
+fn turn_checkpoint_from_row(
+    row: &sqlx::sqlite::SqliteRow,
+) -> Result<TurnCheckpointRecord, StorageError> {
+    let phase: String = row.try_get("phase")?;
+    Ok(TurnCheckpointRecord {
+        id: parse_uuid(row.try_get("id")?)?,
+        owner_id: parse_uuid(row.try_get("owner_id")?)?,
+        chat_id: parse_uuid(row.try_get("chat_id")?)?,
+        workspace_id: parse_uuid(row.try_get("workspace_id")?)?,
+        message_id: row
+            .try_get::<Option<String>, _>("message_id")?
+            .map(|value| parse_uuid(&value))
+            .transpose()?,
+        phase: match phase.as_str() {
+            "before_turn" => CheckpointPhase::BeforeTurn,
+            "after_turn" => CheckpointPhase::AfterTurn,
+            "restore_safety" => CheckpointPhase::RestoreSafety,
+            _ => {
+                return Err(StorageError::Integrity(
+                    "invalid checkpoint phase".to_owned(),
+                ));
+            }
+        },
+        git_ref: row.try_get("git_ref")?,
+        commit_oid: row.try_get("commit_oid")?,
+        provider_profile_id: row
+            .try_get::<Option<String>, _>("provider_profile_id")?
+            .map(|value| parse_uuid(&value))
+            .transpose()?,
+        provider_conversation_id: row.try_get("provider_conversation_id")?,
+        created_at_ms: row.try_get("created_at_ms")?,
+    })
+}
+
+fn checkpoint_restore_from_row(
+    row: &sqlx::sqlite::SqliteRow,
+) -> Result<CheckpointRestoreRecord, StorageError> {
+    let reconciliation: String = row.try_get("reconciliation")?;
+    Ok(CheckpointRestoreRecord {
+        id: parse_uuid(row.try_get("id")?)?,
+        owner_id: parse_uuid(row.try_get("owner_id")?)?,
+        chat_id: parse_uuid(row.try_get("chat_id")?)?,
+        checkpoint_id: parse_uuid(row.try_get("checkpoint_id")?)?,
+        safety_checkpoint_id: parse_uuid(row.try_get("safety_checkpoint_id")?)?,
+        reconciliation: match reconciliation.as_str() {
+            "unchanged" => ConversationReconciliation::Unchanged,
+            "forked" => ConversationReconciliation::Forked,
+            _ => {
+                return Err(StorageError::Integrity(
+                    "invalid checkpoint reconciliation".to_owned(),
+                ));
+            }
+        },
+        previous_provider_conversation_id: row.try_get("previous_provider_conversation_id")?,
+        created_at_ms: row.try_get("created_at_ms")?,
     })
 }
 
@@ -5221,6 +5434,98 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn version_thirteen_checkpoint_upgrade_preserves_workspace_associations()
+    -> Result<(), StorageError> {
+        let directory = tempfile::tempdir()?;
+        let database = directory.path().join("homebot-v13.db");
+        let options =
+            SqliteConnectOptions::from_str(database.to_str().ok_or(StorageError::InvalidPath)?)?
+                .create_if_missing(true)
+                .foreign_keys(true);
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(options)
+            .await?;
+        for migration in [
+            include_str!("../migrations/0001_initial.sql"),
+            include_str!("../migrations/0002_event_retention.sql"),
+            include_str!("../migrations/0003_attachments.sql"),
+            include_str!("../migrations/0004_bot_lifecycle.sql"),
+            include_str!("../migrations/0005_direct_chat.sql"),
+            include_str!("../migrations/0006_group_coordination.sql"),
+            include_str!("../migrations/0007_activity_artifacts.sql"),
+            include_str!("../migrations/0008_secret_references.sql"),
+            include_str!("../migrations/0009_plugins.sql"),
+            include_str!("../migrations/0010_routines.sql"),
+            include_str!("../migrations/0011_routine_scheduler.sql"),
+            include_str!("../migrations/0012_skills.sql"),
+            include_str!("../migrations/0013_workspaces.sql"),
+        ] {
+            sqlx::raw_sql(migration).execute(&pool).await?;
+        }
+        let storage = Storage { pool: pool.clone() };
+        let owner = Uuid::now_v7();
+        let bot = storage
+            .create_bot(owner, Bot::create("Patch", "Coding")?, 1)
+            .await?;
+        let chat = storage
+            .create_direct_chat(owner, bot.id.0, Uuid::now_v7(), 2)
+            .await?;
+        let workspace = RepositoryWorkspaceRecord {
+            id: Uuid::now_v7(),
+            owner_id: owner,
+            name: "Existing workspace".to_owned(),
+            root_path: "/fixture/repository".to_owned(),
+            created_at_ms: 3,
+            updated_at_ms: 3,
+        };
+        storage.create_repository_workspace(&workspace).await?;
+        storage
+            .attach_chat_workspace(&ChatWorkspaceRecord {
+                owner_id: owner,
+                chat_id: chat.id,
+                workspace_id: workspace.id,
+                mode: WorkspaceMode::Primary,
+                worktree_path: None,
+                branch_name: Some("main".to_owned()),
+                base_ref: None,
+                created_at_ms: 4,
+                updated_at_ms: 4,
+            })
+            .await?;
+        sqlx::raw_sql(include_str!("../migrations/0014_checkpoints.sql"))
+            .execute(&pool)
+            .await?;
+        let checkpoint = TurnCheckpointRecord {
+            id: Uuid::now_v7(),
+            owner_id: owner,
+            chat_id: chat.id,
+            workspace_id: workspace.id,
+            message_id: None,
+            phase: CheckpointPhase::BeforeTurn,
+            git_ref: format!("refs/homebot/checkpoints/{}/fixture", chat.id.simple()),
+            commit_oid: "0123456789012345678901234567890123456789".to_owned(),
+            provider_profile_id: None,
+            provider_conversation_id: None,
+            created_at_ms: 5,
+        };
+        storage.create_turn_checkpoint(&checkpoint).await?;
+        assert_eq!(
+            storage.turn_checkpoints(owner, chat.id).await?,
+            vec![checkpoint]
+        );
+        assert_eq!(
+            storage
+                .chat_workspace(owner, chat.id)
+                .await?
+                .ok_or(StorageError::WorkspaceNotFound)?
+                .workspace_id,
+            workspace.id
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn version_ten_upgrade_preserves_routines_and_initializes_scheduler_state()
     -> Result<(), StorageError> {
         let directory = tempfile::tempdir()?;
@@ -5747,6 +6052,7 @@ mod tests {
             "bots",
             "chats",
             "chat_workspaces",
+            "checkpoint_restores",
             "event_outbox",
             "event_retention_cursors",
             "messages",
@@ -5761,6 +6067,7 @@ mod tests {
             "routines",
             "secret_references",
             "skills",
+            "turn_checkpoints",
             "vcs_metadata",
             "workspaces",
         ] {

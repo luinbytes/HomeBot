@@ -257,6 +257,21 @@ data class DetachChatWorkspaceRequest(val request_id: String, val idempotency_ke
 data class WorkspaceBranchesResponse(val branches: List<String>)
 
 @Serializable
+data class TurnCheckpointSummary(val id: String, val chat_id: String, val workspace_id: String, val message_id: String? = null, val phase: String, val created_at_unix_ms: Long)
+
+@Serializable
+data class FileChange(val status: String, val path: String, val previous_path: String? = null, val binary: Boolean)
+
+@Serializable
+data class CheckpointDiffResponse(val from_checkpoint_id: String, val to_checkpoint_id: String, val patch: String, val files: List<FileChange>)
+
+@Serializable
+data class RestoreCheckpointRequest(val request_id: String, val idempotency_key: String)
+
+@Serializable
+data class CheckpointRestoreSummary(val id: String, val chat_id: String, val checkpoint_id: String, val safety_checkpoint_id: String, val reconciliation: String, val created_at_unix_ms: Long)
+
+@Serializable
 data class RoutineInput(val key: String, val label: String, val kind: String, val required: Boolean)
 
 @Serializable
@@ -335,7 +350,7 @@ sealed interface SendMessageResponse {
 }
 
 @Serializable
-data class ChatTimelineResponse(val chat: ChatSummary, val messages: List<MessageSummary>, val activities: List<ActivitySummary>, val approvals: List<ApprovalSummary>, val queued_prompts: List<QueuedPromptSummary>, val boundary_sequence: Long)
+data class ChatTimelineResponse(val chat: ChatSummary, val messages: List<MessageSummary>, val activities: List<ActivitySummary>, val approvals: List<ApprovalSummary>, val queued_prompts: List<QueuedPromptSummary>, val checkpoints: List<TurnCheckpointSummary> = emptyList(), val boundary_sequence: Long)
 
 @Serializable
 data class CreateAttachmentRequest(val request_id: String, val idempotency_key: String, val filename: String, val media_type: String, val size_bytes: Long, val sha256: String)

@@ -30,6 +30,7 @@ pub struct HomeBotApp {
     pub settings: DesktopSettings,
     pub skills: SkillProjection,
     pub workspaces: WorkspaceProjection,
+    pub checkpoint_diff: Option<homebot_protocol::CheckpointDiffResponse>,
     pub active_deep_link: Option<DeepLink>,
     notification_center: NotificationCenter,
     notification_sink: SystemNotificationSink,
@@ -52,6 +53,7 @@ impl Default for HomeBotApp {
             settings: DesktopSettings::default(),
             skills: SkillProjection::default(),
             workspaces: WorkspaceProjection::default(),
+            checkpoint_diff: None,
             active_deep_link: None,
             notification_center: NotificationCenter::default(),
             notification_sink: SystemNotificationSink::new(deep_link_sender),
@@ -183,6 +185,7 @@ impl HomeBotApp {
                     self.workspaces.remove_chat(chat_id);
                 }
                 DesktopEvent::WorkspaceBranches { .. } => {}
+                DesktopEvent::CheckpointDiff(diff) => self.checkpoint_diff = Some(diff),
                 DesktopEvent::MutationFailed(error) => {
                     self.transport_error = Some(error.to_string());
                 }
@@ -402,6 +405,7 @@ impl HomeBotApp {
         ui.set_max_width(self.theme.layout.content_max_width);
         ui.heading(&bot.name);
         self.workspace_controls(ui);
+        self.checkpoint_controls(ui);
         if bot.provider == BotProviderStatus::Unavailable {
             ui.colored_label(
                 self.theme.palette.warning,
@@ -518,6 +522,34 @@ impl HomeBotApp {
                         base_ref: repository.current_branch,
                         branch_name: None,
                     }));
+                }
+            });
+        }
+    }
+
+    fn checkpoint_controls(&mut self, ui: &mut egui::Ui) {
+        let checkpoints = self.timeline.checkpoints.clone();
+        if checkpoints.is_empty() {
+            return;
+        }
+        ui.horizontal(|ui| {
+            ui.label(format!("{} checkpoints", checkpoints.len()));
+            if checkpoints.len() >= 2 && ui.button("View latest diff").clicked() {
+                let from = checkpoints[checkpoints.len() - 2].id;
+                let to = checkpoints[checkpoints.len() - 1].id;
+                self.timeline.load_checkpoint_diff(from, to);
+            }
+            if let Some(checkpoint) = checkpoints.iter().rev().find(|checkpoint| {
+                checkpoint.phase == homebot_protocol::CheckpointPhase::BeforeTurn
+            }) && ui.button("Restore before last turn").clicked()
+            {
+                self.timeline.restore_checkpoint(checkpoint.id);
+            }
+        });
+        if let Some(diff) = &self.checkpoint_diff {
+            ui.collapsing(format!("Changed files ({})", diff.files.len()), |ui| {
+                for file in &diff.files {
+                    ui.label(format!("{:?} · {}", file.status, file.path));
                 }
             });
         }

@@ -34,6 +34,12 @@
     "chat_workspace": {
       "$ref": "#/$defs/ChatWorkspaceSummary"
     },
+    "checkpoint_diff": {
+      "$ref": "#/$defs/CheckpointDiffResponse"
+    },
+    "checkpoint_restore": {
+      "$ref": "#/$defs/CheckpointRestoreSummary"
+    },
     "client_message": {
       "$ref": "#/$defs/ClientMessage"
     },
@@ -106,6 +112,9 @@
     "repository_workspace": {
       "$ref": "#/$defs/RepositoryWorkspaceSummary"
     },
+    "restore_checkpoint_request": {
+      "$ref": "#/$defs/RestoreCheckpointRequest"
+    },
     "routine": {
       "$ref": "#/$defs/RoutineSummary"
     },
@@ -148,6 +157,9 @@
     "start_routine_recording_request": {
       "$ref": "#/$defs/StartRoutineRecordingRequest"
     },
+    "turn_checkpoint": {
+      "$ref": "#/$defs/TurnCheckpointSummary"
+    },
     "update_bot_request": {
       "$ref": "#/$defs/UpdateBotRequest"
     },
@@ -189,6 +201,10 @@
     "repository_workspace",
     "chat_workspace",
     "workspace_branches",
+    "turn_checkpoint",
+    "checkpoint_diff",
+    "restore_checkpoint_request",
+    "checkpoint_restore",
     "create_routine_request",
     "update_routine_request",
     "duplicate_routine_request",
@@ -959,6 +975,13 @@
         "chat": {
           "$ref": "#/$defs/ChatSummary"
         },
+        "checkpoints": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/TurnCheckpointSummary"
+          }
+        },
         "messages": {
           "type": "array",
           "items": {
@@ -1028,6 +1051,81 @@
         "effective_path",
         "condition",
         "updated_at_unix_ms"
+      ]
+    },
+    "CheckpointDiffResponse": {
+      "type": "object",
+      "properties": {
+        "files": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/FileChange"
+          }
+        },
+        "from_checkpoint_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "patch": {
+          "type": "string"
+        },
+        "to_checkpoint_id": {
+          "type": "string",
+          "format": "uuid"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "from_checkpoint_id",
+        "to_checkpoint_id",
+        "patch",
+        "files"
+      ]
+    },
+    "CheckpointPhase": {
+      "type": "string",
+      "enum": [
+        "before_turn",
+        "after_turn",
+        "restore_safety"
+      ]
+    },
+    "CheckpointRestoreSummary": {
+      "type": "object",
+      "properties": {
+        "chat_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "checkpoint_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "created_at_unix_ms": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "reconciliation": {
+          "$ref": "#/$defs/ConversationReconciliation"
+        },
+        "safety_checkpoint_id": {
+          "type": "string",
+          "format": "uuid"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "chat_id",
+        "checkpoint_id",
+        "safety_checkpoint_id",
+        "reconciliation",
+        "created_at_unix_ms"
       ]
     },
     "ClientMessage": {
@@ -1177,6 +1275,13 @@
             "content"
           ]
         }
+      ]
+    },
+    "ConversationReconciliation": {
+      "type": "string",
+      "enum": [
+        "unchanged",
+        "forked"
       ]
     },
     "CreateAttachmentRequest": {
@@ -1670,6 +1775,45 @@
         "key",
         "description",
         "required"
+      ]
+    },
+    "FileChange": {
+      "type": "object",
+      "properties": {
+        "binary": {
+          "type": "boolean"
+        },
+        "path": {
+          "type": "string"
+        },
+        "previous_path": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "status": {
+          "$ref": "#/$defs/FileChangeStatus"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "path",
+        "binary"
+      ]
+    },
+    "FileChangeStatus": {
+      "type": "string",
+      "enum": [
+        "added",
+        "modified",
+        "deleted",
+        "renamed",
+        "copied",
+        "type_changed",
+        "unmerged",
+        "unknown"
       ]
     },
     "FinalizeAttachmentRequest": {
@@ -2425,6 +2569,24 @@
         "condition",
         "created_at_unix_ms",
         "updated_at_unix_ms"
+      ]
+    },
+    "RestoreCheckpointRequest": {
+      "type": "object",
+      "properties": {
+        "idempotency_key": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "request_id": {
+          "type": "string",
+          "format": "uuid"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "request_id",
+        "idempotency_key"
       ]
     },
     "ResumeDisposition": {
@@ -3730,6 +3892,38 @@
         {
           "type": "object",
           "properties": {
+            "checkpoint": {
+              "$ref": "#/$defs/TurnCheckpointSummary"
+            },
+            "kind": {
+              "type": "string",
+              "const": "turn_checkpoint_changed"
+            }
+          },
+          "required": [
+            "kind",
+            "checkpoint"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "checkpoint_restored"
+            },
+            "restore": {
+              "$ref": "#/$defs/CheckpointRestoreSummary"
+            }
+          },
+          "required": [
+            "kind",
+            "restore"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
             "kind": {
               "type": "string",
               "const": "routine_changed"
@@ -4214,6 +4408,46 @@
         "idempotency_key",
         "bot_id",
         "name"
+      ]
+    },
+    "TurnCheckpointSummary": {
+      "type": "object",
+      "properties": {
+        "chat_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "created_at_unix_ms": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "message_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid"
+        },
+        "phase": {
+          "$ref": "#/$defs/CheckpointPhase"
+        },
+        "workspace_id": {
+          "type": "string",
+          "format": "uuid"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "chat_id",
+        "workspace_id",
+        "phase",
+        "created_at_unix_ms"
       ]
     },
     "UpdateBotRequest": {

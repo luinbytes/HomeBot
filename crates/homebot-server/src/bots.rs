@@ -438,6 +438,11 @@ impl From<StorageError> for ApiError {
             StorageError::DuplicateChatWorkspace => {
                 Self::conflict("This chat already has a workspace")
             }
+            StorageError::CheckpointNotFound => Self::new(
+                StatusCode::NOT_FOUND,
+                ErrorCode::NotFound,
+                "Checkpoint was not found",
+            ),
             StorageError::RoutineNotFound => Self::new(
                 StatusCode::NOT_FOUND,
                 ErrorCode::NotFound,

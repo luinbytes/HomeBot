@@ -376,11 +376,11 @@ async fn association_paths(
     Ok((Some(path), Some(worktree.branch), Some(base.to_owned())))
 }
 
-fn vcs_error(error: &VcsError) -> ApiError {
+pub(super) fn vcs_error(error: &VcsError) -> ApiError {
     match error {
         VcsError::GitUnavailable => ApiError::unavailable("Git is not installed"),
         VcsError::InvalidPath | VcsError::NotRepository => ApiError::validation(&error.to_string()),
-        VcsError::DirtyWorktree | VcsError::UnsafeWorktreePath => {
+        VcsError::DirtyWorktree | VcsError::RestoreConflict | VcsError::UnsafeWorktreePath => {
             ApiError::conflict(&error.to_string())
         }
         VcsError::Git(_) => ApiError::conflict(&error.to_string()),

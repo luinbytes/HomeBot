@@ -2,8 +2,8 @@ use std::collections::HashSet;
 
 use homebot_protocol::{
     ActivitySummary, ApprovalStatus, ApprovalSummary, ChatSummary, ChatTimelineResponse,
-    MessagePart, MessageStatus, MessageSummary, QueuedPromptSummary, SequenceDisposition,
-    ServerEvent, ServerEventBody, classify_sequence,
+    CheckpointRestoreSummary, MessagePart, MessageStatus, MessageSummary, QueuedPromptSummary,
+    SequenceDisposition, ServerEvent, ServerEventBody, TurnCheckpointSummary, classify_sequence,
 };
 use uuid::Uuid;
 
@@ -23,7 +23,15 @@ pub enum TimelineCommand {
     Steer(ComposerDraft),
     Stop,
     Retry(Uuid),
-    DecideApproval { approval_id: Uuid, allow: bool },
+    DecideApproval {
+        approval_id: Uuid,
+        allow: bool,
+    },
+    LoadCheckpointDiff {
+        from_checkpoint_id: Uuid,
+        to_checkpoint_id: Uuid,
+    },
+    RestoreCheckpoint(Uuid),
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -47,6 +55,8 @@ pub struct TimelineModel {
     pub activities: Vec<ActivitySummary>,
     pub approvals: Vec<ApprovalSummary>,
     pub queued_prompts: Vec<QueuedPromptSummary>,
+    pub checkpoints: Vec<TurnCheckpointSummary>,
+    pub last_restore: Option<CheckpointRestoreSummary>,
     pub composer: ComposerDraft,
     pub cursor: u64,
     pub needs_snapshot: bool,
@@ -63,6 +73,8 @@ impl Default for TimelineModel {
             activities: Vec::new(),
             approvals: Vec::new(),
             queued_prompts: Vec::new(),
+            checkpoints: Vec::new(),
+            last_restore: None,
             composer: ComposerDraft::default(),
             cursor: 0,
             needs_snapshot: false,
@@ -83,6 +95,8 @@ impl TimelineModel {
         self.activities = timeline.activities;
         self.approvals = timeline.approvals;
         self.queued_prompts = timeline.queued_prompts;
+        self.checkpoints = timeline.checkpoints;
+        self.last_restore = None;
         self.cursor = timeline.boundary_sequence;
         self.needs_snapshot = false;
         self.applied_event_ids.clear();
@@ -158,6 +172,20 @@ impl TimelineModel {
                 self.queued_prompts.sort_by_key(|prompt| prompt.position);
                 true
             }
+            ServerEventBody::TurnCheckpointChanged { checkpoint }
+                if Some(checkpoint.chat_id) == chat_id =>
+            {
+                upsert(&mut self.checkpoints, checkpoint, |checkpoint| {
+                    checkpoint.id
+                });
+                self.checkpoints
+                    .sort_by_key(|checkpoint| checkpoint.created_at_unix_ms);
+                true
+            }
+            ServerEventBody::CheckpointRestored { restore } if Some(restore.chat_id) == chat_id => {
+                self.last_restore = Some(restore);
+                true
+            }
             _ => false,
         }
     }
@@ -206,6 +234,25 @@ impl TimelineModel {
         }) {
             self.commands
                 .push(TimelineCommand::DecideApproval { approval_id, allow });
+        }
+    }
+
+    pub fn load_checkpoint_diff(&mut self, from_checkpoint_id: Uuid, to_checkpoint_id: Uuid) {
+        self.commands.push(TimelineCommand::LoadCheckpointDiff {
+            from_checkpoint_id,
+            to_checkpoint_id,
+        });
+    }
+
+    pub fn restore_checkpoint(&mut self, checkpoint_id: Uuid) {
+        if self.chat.as_ref().is_some_and(|chat| !chat.running)
+            && self
+                .checkpoints
+                .iter()
+                .any(|checkpoint| checkpoint.id == checkpoint_id)
+        {
+            self.commands
+                .push(TimelineCommand::RestoreCheckpoint(checkpoint_id));
         }
     }
 
@@ -331,6 +378,7 @@ mod tests {
             activities: Vec::new(),
             approvals: Vec::new(),
             queued_prompts: Vec::new(),
+            checkpoints: Vec::new(),
             boundary_sequence: 10,
         });
         let delta = event(
@@ -370,6 +418,7 @@ mod tests {
             activities: Vec::new(),
             approvals: Vec::new(),
             queued_prompts: Vec::new(),
+            checkpoints: Vec::new(),
             boundary_sequence: 0,
         });
         model.composer.content = " Follow up ".to_owned();
@@ -397,5 +446,60 @@ mod tests {
         assert_eq!(model.scroll.unseen_updates, 1);
         model.set_at_bottom(true);
         assert_eq!(model.scroll.unseen_updates, 0);
+    }
+
+    #[test]
+    fn checkpoint_projection_and_commands_remain_server_authoritative() {
+        let chat_id = Uuid::now_v7();
+        let workspace_id = Uuid::now_v7();
+        let before_id = Uuid::now_v7();
+        let after_id = Uuid::now_v7();
+        let mut model = TimelineModel::default();
+        model.hydrate(ChatTimelineResponse {
+            chat: chat(chat_id, false),
+            messages: Vec::new(),
+            activities: Vec::new(),
+            approvals: Vec::new(),
+            queued_prompts: Vec::new(),
+            checkpoints: vec![homebot_protocol::TurnCheckpointSummary {
+                id: before_id,
+                chat_id,
+                workspace_id,
+                message_id: None,
+                phase: homebot_protocol::CheckpointPhase::BeforeTurn,
+                created_at_unix_ms: 1,
+            }],
+            boundary_sequence: 4,
+        });
+        assert_eq!(
+            model.apply_event(event(
+                5,
+                ServerEventBody::TurnCheckpointChanged {
+                    checkpoint: homebot_protocol::TurnCheckpointSummary {
+                        id: after_id,
+                        chat_id,
+                        workspace_id,
+                        message_id: None,
+                        phase: homebot_protocol::CheckpointPhase::AfterTurn,
+                        created_at_unix_ms: 2,
+                    }
+                }
+            )),
+            ReconcileOutcome::Applied
+        );
+        model.load_checkpoint_diff(before_id, after_id);
+        model.restore_checkpoint(before_id);
+        assert!(matches!(
+            model.take_commands().as_slice(),
+            [
+                TimelineCommand::LoadCheckpointDiff {
+                    from_checkpoint_id,
+                    to_checkpoint_id
+                },
+                TimelineCommand::RestoreCheckpoint(checkpoint_id)
+            ] if *from_checkpoint_id == before_id
+                && *to_checkpoint_id == after_id
+                && *checkpoint_id == before_id
+        ));
     }
 }

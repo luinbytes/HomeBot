@@ -89,6 +89,13 @@ pub(super) async fn timeline(
         .storage
         .chat_approvals(state.owner_id, chat_id)
         .await?;
+    let checkpoints = state
+        .storage
+        .turn_checkpoints(state.owner_id, chat_id)
+        .await?
+        .into_iter()
+        .map(|checkpoint| crate::checkpoints::summary(&checkpoint))
+        .collect();
     let mut summaries = Vec::with_capacity(messages.len());
     for message in messages {
         summaries.push(message_summary(&state, message).await?);
@@ -99,6 +106,7 @@ pub(super) async fn timeline(
         activities: activities.into_iter().map(activity_summary).collect(),
         approvals: approvals.into_iter().map(approval_summary).collect(),
         queued_prompts: prompts.into_iter().map(prompt_summary).collect(),
+        checkpoints,
         boundary_sequence: state
             .storage
             .latest_sequence(state.owner_id)

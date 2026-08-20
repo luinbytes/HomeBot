@@ -12,12 +12,13 @@ use std::{
 use futures_util::{SinkExt, StreamExt};
 use homebot_protocol::{
     ApprovalDecisionRequest, AttachChatWorkspaceRequest, BotMutationRequest, BotResponse,
-    ChatTimelineResponse, ChatWorkspaceSummary, ClientMessage, CreateAttachmentRequest,
-    CreateAttachmentResponse, CreateBotRequest, CreateDirectChatRequest, CreateDirectChatResponse,
-    CreateRepositoryWorkspaceRequest, DetachChatWorkspaceRequest, ErrorEnvelope,
-    FinalizeAttachmentRequest, MIN_COMPATIBLE_PROTOCOL_VERSION, MessageMutationRequest,
-    PROTOCOL_VERSION, ProtocolRange, RepositoryWorkspaceSummary, SendMessageRequest, ServerEvent,
-    ServerEventBody, Snapshot, UpdateBotRequest, WorkspaceBranchesResponse,
+    ChatTimelineResponse, ChatWorkspaceSummary, CheckpointDiffResponse, ClientMessage,
+    CreateAttachmentRequest, CreateAttachmentResponse, CreateBotRequest, CreateDirectChatRequest,
+    CreateDirectChatResponse, CreateRepositoryWorkspaceRequest, DetachChatWorkspaceRequest,
+    ErrorEnvelope, FinalizeAttachmentRequest, MIN_COMPATIBLE_PROTOCOL_VERSION,
+    MessageMutationRequest, PROTOCOL_VERSION, ProtocolRange, RepositoryWorkspaceSummary,
+    RestoreCheckpointRequest, SendMessageRequest, ServerEvent, ServerEventBody, Snapshot,
+    UpdateBotRequest, WorkspaceBranchesResponse,
 };
 use reqwest::{Client, Method, StatusCode};
 use serde::Deserialize;
@@ -123,6 +124,7 @@ pub enum DesktopEvent {
         workspace_id: Uuid,
         branches: Vec<String>,
     },
+    CheckpointDiff(CheckpointDiffResponse),
     MutationFailed(TransportFailure),
 }
 

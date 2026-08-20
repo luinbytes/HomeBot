@@ -6,7 +6,10 @@ pub use homebot_routines::{
     RoutineStep, RoutineStepStatus, RoutineTriggerDefinition, RoutineTriggerSource,
 };
 pub use homebot_skills::{SkillContext, SkillDefinition, SkillToolReference};
-pub use homebot_vcs::{WorkingTreeCondition, WorkspaceMode};
+pub use homebot_vcs::{
+    CheckpointPhase, ConversationReconciliation, FileChange, FileChangeStatus,
+    WorkingTreeCondition, WorkspaceMode,
+};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -137,6 +140,12 @@ pub enum ServerEventBody {
     },
     ChatWorkspaceRemoved {
         chat_id: Uuid,
+    },
+    TurnCheckpointChanged {
+        checkpoint: TurnCheckpointSummary,
+    },
+    CheckpointRestored {
+        restore: CheckpointRestoreSummary,
     },
     RoutineChanged {
         routine: RoutineSummary,
@@ -684,6 +693,8 @@ pub struct ChatTimelineResponse {
     pub activities: Vec<ActivitySummary>,
     pub approvals: Vec<ApprovalSummary>,
     pub queued_prompts: Vec<QueuedPromptSummary>,
+    #[serde(default)]
+    pub checkpoints: Vec<TurnCheckpointSummary>,
     pub boundary_sequence: u64,
 }
 
@@ -1019,6 +1030,44 @@ pub struct WorkspaceBranchesResponse {
     pub branches: Vec<String>,
 }
 
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct TurnCheckpointSummary {
+    pub id: Uuid,
+    pub chat_id: Uuid,
+    pub workspace_id: Uuid,
+    pub message_id: Option<Uuid>,
+    pub phase: CheckpointPhase,
+    pub created_at_unix_ms: u64,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CheckpointDiffResponse {
+    pub from_checkpoint_id: Uuid,
+    pub to_checkpoint_id: Uuid,
+    pub patch: String,
+    pub files: Vec<FileChange>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RestoreCheckpointRequest {
+    pub request_id: Uuid,
+    pub idempotency_key: Uuid,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CheckpointRestoreSummary {
+    pub id: Uuid,
+    pub chat_id: Uuid,
+    pub checkpoint_id: Uuid,
+    pub safety_checkpoint_id: Uuid,
+    pub reconciliation: ConversationReconciliation,
+    pub created_at_unix_ms: u64,
+}
+
 #[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct RoutineSummary {
@@ -1253,6 +1302,10 @@ pub struct ProtocolV1Schema {
     pub repository_workspace: RepositoryWorkspaceSummary,
     pub chat_workspace: ChatWorkspaceSummary,
     pub workspace_branches: WorkspaceBranchesResponse,
+    pub turn_checkpoint: TurnCheckpointSummary,
+    pub checkpoint_diff: CheckpointDiffResponse,
+    pub restore_checkpoint_request: RestoreCheckpointRequest,
+    pub checkpoint_restore: CheckpointRestoreSummary,
     pub create_routine_request: CreateRoutineRequest,
     pub update_routine_request: UpdateRoutineRequest,
     pub duplicate_routine_request: DuplicateRoutineRequest,

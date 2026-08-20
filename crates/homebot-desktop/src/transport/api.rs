@@ -35,7 +35,7 @@ pub(super) async fn execute_command(
             bot_id,
             chat_id,
             command,
-        } => execute_timeline(client, config, bot_id, chat_id, command).await,
+        } => execute_timeline(client, config, bot_id, chat_id, command, events).await,
         DesktopCommand::UploadAttachment {
             filename,
             media_type,
@@ -237,6 +237,7 @@ async fn execute_timeline(
     bot_id: Uuid,
     chat_id: Option<Uuid>,
     command: TimelineCommand,
+    events: &Sender<DesktopEvent>,
 ) -> Result<(), TransportFailure> {
     match command {
         TimelineCommand::Send(draft) | TimelineCommand::Queue(draft) => {
@@ -278,6 +279,48 @@ async fn execute_timeline(
                     config,
                     Method::POST,
                     &format!("/api/v1/approvals/{approval_id}/decision"),
+                )
+                .json(&body)
+                .send()
+                .await
+                .map_err(request_error)?,
+            )
+            .await
+        }
+        TimelineCommand::LoadCheckpointDiff {
+            from_checkpoint_id,
+            to_checkpoint_id,
+        } => {
+            let chat_id =
+                chat_id.ok_or_else(|| TransportFailure::Protocol("No active chat".to_owned()))?;
+            let diff = response_json(
+                authenticated(
+                    client,
+                    config,
+                    Method::GET,
+                    &format!(
+                        "/api/v1/chats/{chat_id}/checkpoints/diff?from_checkpoint_id={from_checkpoint_id}&to_checkpoint_id={to_checkpoint_id}"
+                    ),
+                )
+                .send()
+                .await
+                .map_err(request_error)?,
+            )
+            .await?;
+            let _ = events.send(DesktopEvent::CheckpointDiff(diff));
+            Ok(())
+        }
+        TimelineCommand::RestoreCheckpoint(checkpoint_id) => {
+            let body = super::RestoreCheckpointRequest {
+                request_id: Uuid::now_v7(),
+                idempotency_key: Uuid::now_v7(),
+            };
+            ensure_success(
+                authenticated(
+                    client,
+                    config,
+                    Method::POST,
+                    &format!("/api/v1/checkpoints/{checkpoint_id}/restore"),
                 )
                 .json(&body)
                 .send()

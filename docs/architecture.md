@@ -40,6 +40,8 @@ Dependencies point inward toward `homebot-domain` and `homebot-protocol`. Domain
 
 `homebot-vcs` owns shell-free repository inspection and isolated Git-worktree lifecycle. SQLite stores owner-scoped repository registrations and optional per-chat associations; live Git condition is inspected rather than guessed from stored metadata. The server alone creates or removes deterministic managed worktrees, never mutates the primary checkout, and refuses cleanup when a worktree is dirty or outside its canonical managed root. See [workspaces.md](workspaces.md).
 
+Coding turns are bracketed by hidden-ref commits built through alternate Git indexes. Exact per-turn/full-chat diffs and restore remain server operations; restore first captures a safety checkpoint, preserves the real index/branch, and forks an incompatible provider conversation mapping. See [checkpoints.md](checkpoints.md).
+
 ## Identity and conversations
 
 A `Bot` has a HomeBot-owned stable ID, identity, instructions, memory policy, provider profile reference, permissions, skills, and plugins. A direct chat or group chat owns HomeBot transcript history. Backend conversation IDs are mappings keyed by chat and provider profile. Provider switching retains Bot identity and transcript but creates or resumes the appropriate backend mapping.

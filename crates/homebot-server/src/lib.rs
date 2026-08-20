@@ -4,6 +4,7 @@ pub mod artifacts;
 mod attachments;
 mod bots;
 mod chats;
+mod checkpoints;
 mod groups;
 mod plugins;
 mod provider_turn;
@@ -297,6 +298,22 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/v1/chats/{chat_id}/workspace/detach",
             post(workspaces::detach),
+        )
+        .route(
+            "/api/v1/chats/{chat_id}/checkpoints",
+            get(checkpoints::list),
+        )
+        .route(
+            "/api/v1/chats/{chat_id}/checkpoints/diff",
+            get(checkpoints::diff),
+        )
+        .route(
+            "/api/v1/chats/{chat_id}/checkpoints/diff/full",
+            get(checkpoints::full_diff),
+        )
+        .route(
+            "/api/v1/checkpoints/{checkpoint_id}/restore",
+            post(checkpoints::restore),
         )
         .route(
             "/api/v1/routines",

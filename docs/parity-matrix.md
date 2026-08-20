@@ -2,6 +2,8 @@
 
 Baseline researched 20 August 2026. `Specified` means an authoritative reference and acceptance contract exist, not that HomeBot implements the row. No row becomes `Pass` without platform evidence. Visual golden references are still required before 6C7-31 can close.
 
+Visible surfaces and state-specific golden IDs are tracked in [visual-reference-index.md](visual-reference-index.md). `Capture required` is intentional: public authoritative material fixes the behavioural contract, while exact current-app pixel comparisons remain a 6C7-42 gate.
+
 Sources: [overview](https://docs.x.ai/grok-bot/overview), [Bots](https://docs.x.ai/grok-bot/bots), [chat and collaboration](https://docs.x.ai/grok-bot/chat-and-collaboration), [files and results](https://docs.x.ai/grok-bot/files-and-results), [computer and apps](https://docs.x.ai/grok-bot/computer-and-apps), [skills and routines](https://docs.x.ai/grok-bot/skills-routines-and-automations), [settings and notifications](https://docs.x.ai/grok-bot/settings-and-notifications), [security and approvals](https://docs.x.ai/grok-bot/approvals-security-and-privacy), [mobile](https://docs.x.ai/grok-bot/mobile), and [FAQ](https://docs.x.ai/grok-bot/faq).
 
 | Capability/state | Source | Desktop contract | Android contract | Server capability | Acceptance | Status |

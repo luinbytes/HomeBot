@@ -7,10 +7,10 @@ This file is operational state for coding agents. It is not user-facing product 
 ## Current state
 
 - Current milestone: M0, Product & Architecture Baseline
-- Current Linear issues: 6C7-31 parity inventory and visual states; 6C7-32 protocol contract; 6C7-33 threat model pending final Linear closure
+- Current Linear issues: 6C7-31 parity inventory and visual states; 6C7-32 protocol contract
 - Parallel scaffold issue: 6C7-35 remains In Progress but cannot close until compilation and CI are verified
 - Current Git branch: `feat/m0-contracts`
-- Latest verified remote commit: `00cdca9192d2b35e4931ec0455968e227d6f894a`
+- Latest verified remote commit: `1a8e24317514dcb52cd9247f797696466be10aae`
 - Public repository: `https://github.com/luinbytes/HomeBot`
 - Repository owner and commit identity: `luinbytes <42706009+luinbytes@users.noreply.github.com>`
 
@@ -29,8 +29,8 @@ Architecture decisions currently frozen:
 Current blockers:
 
 - This execution host has no `rustc` or `cargo`, so Rust formatting, clippy, compilation, and tests cannot run locally.
-- GitHub currently exposes no Actions run or combined status for remote head `00cdca9`; CI success is unverified.
-- 6C7-31 still needs a complete visible-state reference index, especially empty, loading, disconnected, approval, and error states.
+- GitHub Actions runs 1 and 2 are queued; CI success is unverified.
+- 6C7-31 now has a complete behavioural reference/golden-ID index, but exact current-app pixel captures remain deliberately gated to 6C7-42.
 - Android protocol generation or mechanical schema validation has not been implemented, so 6C7-32 is not complete.
 
 ## Completed work
@@ -39,16 +39,15 @@ Current blockers:
 - Initial Rust monorepo crate boundaries and baseline GitHub Actions committed.
 - Architecture, protocol, provider, Android, routines, plugins, development, release, installation, and security documents created.
 - Initial Grok Bot feature parity matrix created from authoritative SpaceXAI documentation.
-- M0 security/capability threat model implemented in `docs/security.md`; Linear 6C7-33 is ready for Done after evidence is posted.
+- M0 security/capability threat model implemented in `docs/security.md`; Linear 6C7-33 is Done.
 
 ## Immediate next work
 
-1. Complete and verify Linear 6C7-33, then mark Done.
-2. Complete 6C7-31 by adding a canonical visual-state/reference index covering every visible surface and state.
-3. Complete 6C7-32 with full protocol schemas, golden fixtures, malformed/skew fixtures, and Android mechanical validation scaffolding.
-4. Close epic 6C7-30 only after all three children are genuinely Done.
-5. Finish 6C7-35 by running rustfmt, clippy, tests, dependency policy, and all target compile jobs through a working Rust environment/CI.
-6. Refresh Linear and start 6C7-36, SQLite persistence, migrations, and event outbox.
+1. Review 6C7-31 against `docs/visual-reference-index.md`; keep exact pixel capture as an explicit 6C7-42 implementation gate.
+2. Complete 6C7-32 with full protocol schemas, golden fixtures, malformed/skew fixtures, and Android mechanical validation scaffolding.
+3. Close epic 6C7-30 only after its remaining children are genuinely Done.
+4. Finish 6C7-35 by running rustfmt, clippy, tests, dependency policy, and all target compile jobs through a working Rust environment/CI.
+5. Refresh Linear and start 6C7-36, SQLite persistence, migrations, and event outbox.
 
 ## Verification state
 

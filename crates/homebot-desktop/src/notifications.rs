@@ -5,7 +5,9 @@ use std::sync::mpsc::Sender;
 use homebot_protocol::{
     ActivityStatus, ApprovalStatus, MessageStatus, ServerEvent, ServerEventBody,
 };
-use notify_rust::{Notification, Urgency};
+use notify_rust::Notification;
+#[cfg(not(target_os = "macos"))]
+use notify_rust::Urgency;
 use uuid::Uuid;
 
 use crate::settings::{DesktopSettings, NotificationTopic};
@@ -56,16 +58,18 @@ impl SystemNotificationSink {
 
 impl NotificationSink for SystemNotificationSink {
     fn show(&self, intent: NotificationIntent) -> Result<(), String> {
-        let urgency = match intent.kind {
-            NotificationKind::Finished => Urgency::Low,
-            NotificationKind::NeedsApproval | NotificationKind::Error => Urgency::Critical,
-        };
-        let handle = Notification::new()
+        let mut notification = Notification::new();
+        notification
             .appname("HomeBot")
             .summary(&intent.title)
             .body(&intent.body)
-            .urgency(urgency)
-            .action("open", "Open HomeBot")
+            .action("open", "Open HomeBot");
+        #[cfg(not(target_os = "macos"))]
+        notification.urgency(match intent.kind {
+            NotificationKind::Finished => Urgency::Low,
+            NotificationKind::NeedsApproval | NotificationKind::Error => Urgency::Critical,
+        });
+        let handle = notification
             .show()
             .map_err(|_| "Desktop notifications are unavailable".to_owned())?;
         let sender = self.deep_links.clone();

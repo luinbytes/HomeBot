@@ -17,7 +17,11 @@ async fn main() -> anyhow::Result<()> {
     let token = std::env::var("HOMEBOT_DEVICE_TOKEN")
         .map_err(|_| anyhow::anyhow!("HOMEBOT_DEVICE_TOKEN must be set"))?;
     let storage = Storage::open(&data_path).await?;
-    let app = router(AppState::new(storage, &token));
+    let artifact_root = data_path
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."))
+        .join("artifacts");
+    let app = router(AppState::new(storage, &token).with_artifact_root(artifact_root));
     let listener = TcpListener::bind(DEFAULT_BIND).await?;
     tracing::info!(
         address = DEFAULT_BIND,

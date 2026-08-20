@@ -9,7 +9,7 @@ use sqlx::{
 use std::{path::Path, str::FromStr, time::Duration};
 use uuid::Uuid;
 
-pub const SCHEMA_VERSION: u32 = 2;
+pub const SCHEMA_VERSION: u32 = 3;
 static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
 
 #[derive(Debug, thiserror::Error)]
@@ -52,6 +52,28 @@ pub enum IdempotencyClaim {
 pub enum ReplayWindow {
     Available(Vec<OutboxEvent>),
     Unavailable,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AttachmentRecord {
+    pub id: Uuid,
+    pub owner_id: Uuid,
+    pub filename: String,
+    pub media_type: String,
+    pub size_bytes: u64,
+    pub sha256: String,
+    pub storage_path: Option<String>,
+    pub status: String,
+    pub expires_at_ms: i64,
+    pub created_at_ms: i64,
+    pub finalized_at_ms: Option<i64>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum AttachmentClaim {
+    Claimed(AttachmentRecord),
+    Replayed(AttachmentRecord),
+    Conflict,
 }
 
 impl Storage {
@@ -196,6 +218,107 @@ impl Storage {
         };
         transaction.commit().await?;
         Ok(outcome)
+    }
+
+    /// Claims an attachment-create key and durably stores pending metadata.
+    ///
+    /// # Errors
+    ///
+    /// Returns a storage error if the claim cannot be resolved atomically.
+    pub async fn claim_attachment_create(
+        &self,
+        idempotency_key: Uuid,
+        request_hash: &str,
+        proposed: &AttachmentRecord,
+    ) -> Result<AttachmentClaim, StorageError> {
+        let mut transaction = self.pool.begin().await?;
+        let existing = sqlx::query(
+            "SELECT request_hash, attachment_id FROM attachment_create_requests WHERE idempotency_key = ?",
+        )
+        .bind(idempotency_key.to_string())
+        .fetch_optional(&mut *transaction)
+        .await?;
+        if let Some(row) = existing {
+            let existing_hash: String = row.try_get("request_hash")?;
+            if existing_hash != request_hash {
+                transaction.commit().await?;
+                return Ok(AttachmentClaim::Conflict);
+            }
+            let attachment_id: String = row.try_get("attachment_id")?;
+            let record = fetch_attachment(&mut *transaction, &attachment_id, &proposed.owner_id)
+                .await?
+                .ok_or_else(|| {
+                    StorageError::Integrity(
+                        "attachment idempotency record references missing metadata".to_owned(),
+                    )
+                })?;
+            transaction.commit().await?;
+            return Ok(AttachmentClaim::Replayed(record));
+        }
+
+        let size_bytes = i64::try_from(proposed.size_bytes).map_err(|_| {
+            StorageError::Integrity("attachment size exceeds SQLite range".to_owned())
+        })?;
+        sqlx::query("INSERT INTO attachments (id, owner_id, filename, media_type, size_bytes, sha256, storage_path, status, expires_at_ms, created_at_ms, finalized_at_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+            .bind(proposed.id.to_string())
+            .bind(proposed.owner_id.to_string())
+            .bind(&proposed.filename)
+            .bind(&proposed.media_type)
+            .bind(size_bytes)
+            .bind(&proposed.sha256)
+            .bind(&proposed.storage_path)
+            .bind(&proposed.status)
+            .bind(proposed.expires_at_ms)
+            .bind(proposed.created_at_ms)
+            .bind(proposed.finalized_at_ms)
+            .execute(&mut *transaction)
+            .await?;
+        sqlx::query("INSERT INTO attachment_create_requests (idempotency_key, request_hash, attachment_id) VALUES (?, ?, ?)")
+            .bind(idempotency_key.to_string())
+            .bind(request_hash)
+            .bind(proposed.id.to_string())
+            .execute(&mut *transaction)
+            .await?;
+        transaction.commit().await?;
+        Ok(AttachmentClaim::Claimed(proposed.clone()))
+    }
+
+    /// Returns attachment metadata visible to an owner.
+    ///
+    /// # Errors
+    ///
+    /// Returns a storage error if metadata cannot be decoded.
+    pub async fn attachment(
+        &self,
+        owner_id: Uuid,
+        attachment_id: Uuid,
+    ) -> Result<Option<AttachmentRecord>, StorageError> {
+        let mut connection = self.pool.acquire().await?;
+        fetch_attachment(&mut *connection, &attachment_id.to_string(), &owner_id).await
+    }
+
+    /// Atomically makes a verified pending attachment consumable.
+    ///
+    /// # Errors
+    ///
+    /// Returns a storage error if the state transition cannot be stored.
+    pub async fn mark_attachment_ready(
+        &self,
+        owner_id: Uuid,
+        attachment_id: Uuid,
+        storage_path: &str,
+        finalized_at_ms: i64,
+    ) -> Result<bool, StorageError> {
+        let updated = sqlx::query("UPDATE attachments SET status = 'ready', storage_path = ?, finalized_at_ms = ? WHERE id = ? AND owner_id = ? AND status = 'pending' AND expires_at_ms >= ?")
+            .bind(storage_path)
+            .bind(finalized_at_ms)
+            .bind(attachment_id.to_string())
+            .bind(owner_id.to_string())
+            .bind(finalized_at_ms)
+            .execute(&self.pool)
+            .await?
+            .rows_affected();
+        Ok(updated == 1)
     }
 
     /// Replays owner-authorised events strictly after `sequence`.
@@ -348,6 +471,41 @@ fn row_to_event(row: &sqlx::sqlite::SqliteRow) -> Result<OutboxEvent, StorageErr
     })
 }
 
+async fn fetch_attachment<'e, E>(
+    executor: E,
+    attachment_id: &str,
+    owner_id: &Uuid,
+) -> Result<Option<AttachmentRecord>, StorageError>
+where
+    E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
+{
+    let row = sqlx::query("SELECT id, owner_id, filename, media_type, size_bytes, sha256, storage_path, status, expires_at_ms, created_at_ms, finalized_at_ms FROM attachments WHERE id = ? AND owner_id = ?")
+        .bind(attachment_id)
+        .bind(owner_id.to_string())
+        .fetch_optional(executor)
+        .await?;
+    row.map(|row| {
+        let id: String = row.try_get("id")?;
+        let owner_id: String = row.try_get("owner_id")?;
+        let size_bytes: i64 = row.try_get("size_bytes")?;
+        Ok(AttachmentRecord {
+            id: parse_uuid(&id)?,
+            owner_id: parse_uuid(&owner_id)?,
+            filename: row.try_get("filename")?,
+            media_type: row.try_get("media_type")?,
+            size_bytes: u64::try_from(size_bytes)
+                .map_err(|_| StorageError::Integrity("negative attachment size".to_owned()))?,
+            sha256: row.try_get("sha256")?,
+            storage_path: row.try_get("storage_path")?,
+            status: row.try_get("status")?,
+            expires_at_ms: row.try_get("expires_at_ms")?,
+            created_at_ms: row.try_get("created_at_ms")?,
+            finalized_at_ms: row.try_get("finalized_at_ms")?,
+        })
+    })
+    .transpose()
+}
+
 fn parse_uuid(value: &str) -> Result<Uuid, StorageError> {
     Uuid::parse_str(value)
         .map_err(|_| StorageError::Integrity("database contains an invalid UUID".to_owned()))
@@ -429,6 +587,7 @@ mod tests {
                 .await?;
         for required in [
             "approvals",
+            "attachments",
             "bots",
             "chats",
             "event_outbox",
@@ -558,6 +717,59 @@ mod tests {
         assert_eq!(
             storage.replay_after(owner, 3, 100).await?,
             ReplayWindow::Unavailable
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn attachment_create_is_idempotent_and_ready_transition_is_guarded()
+    -> Result<(), StorageError> {
+        let directory = tempfile::tempdir()?;
+        let storage = Storage::open(&directory.path().join("homebot.db")).await?;
+        let key = Uuid::now_v7();
+        let record = AttachmentRecord {
+            id: Uuid::now_v7(),
+            owner_id: Uuid::now_v7(),
+            filename: "report.txt".to_owned(),
+            media_type: "text/plain".to_owned(),
+            size_bytes: 5,
+            sha256: "a".repeat(64),
+            storage_path: None,
+            status: "pending".to_owned(),
+            expires_at_ms: 100,
+            created_at_ms: 1,
+            finalized_at_ms: None,
+        };
+        assert!(matches!(
+            storage.claim_attachment_create(key, "hash", &record).await?,
+            AttachmentClaim::Claimed(value) if value == record
+        ));
+        assert!(matches!(
+            storage.claim_attachment_create(key, "hash", &record).await?,
+            AttachmentClaim::Replayed(value) if value == record
+        ));
+        assert_eq!(
+            storage
+                .claim_attachment_create(key, "other", &record)
+                .await?,
+            AttachmentClaim::Conflict
+        );
+        assert!(
+            storage
+                .mark_attachment_ready(record.owner_id, record.id, "objects/hash", 50)
+                .await?
+        );
+        assert!(
+            !storage
+                .mark_attachment_ready(record.owner_id, record.id, "objects/hash", 51)
+                .await?
+        );
+        assert_eq!(
+            storage
+                .attachment(record.owner_id, record.id)
+                .await?
+                .map(|value| value.status),
+            Some("ready".to_owned())
         );
         Ok(())
     }

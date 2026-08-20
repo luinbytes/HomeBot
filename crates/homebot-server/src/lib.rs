@@ -1,5 +1,7 @@
 //! Authoritative authenticated HTTP and WebSocket transport.
 
+mod attachments;
+
 use axum::{
     Json, Router,
     extract::{
@@ -9,7 +11,7 @@ use axum::{
     http::{HeaderMap, StatusCode},
     middleware::{self, Next},
     response::{IntoResponse, Response},
-    routing::get,
+    routing::{get, post, put},
 };
 use futures_util::StreamExt;
 use homebot_protocol::{
@@ -19,6 +21,7 @@ use homebot_protocol::{
 use homebot_storage::{IdempotencyClaim, ReplayWindow, Storage};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
+use std::path::PathBuf;
 use subtle::ConstantTimeEq;
 use uuid::Uuid;
 
@@ -32,6 +35,7 @@ pub struct AppState {
     owner_id: Uuid,
     heartbeat_interval: std::time::Duration,
     heartbeat_timeout: std::time::Duration,
+    artifact_root: PathBuf,
 }
 
 impl AppState {
@@ -43,6 +47,7 @@ impl AppState {
             owner_id: Uuid::nil(),
             heartbeat_interval: HEARTBEAT_INTERVAL,
             heartbeat_timeout: HEARTBEAT_TIMEOUT,
+            artifact_root: std::env::temp_dir().join("homebot-artifacts"),
         }
     }
 
@@ -61,12 +66,27 @@ impl AppState {
         self.heartbeat_timeout = timeout;
         self
     }
+
+    #[must_use]
+    pub fn with_artifact_root(mut self, artifact_root: PathBuf) -> Self {
+        self.artifact_root = artifact_root;
+        self
+    }
 }
 
 pub fn router(state: AppState) -> Router {
     let authenticated = Router::new()
         .route("/api/v1/version", get(version))
         .route("/api/v1/events", get(events_socket))
+        .route("/api/v1/attachments", post(attachments::create_attachment))
+        .route(
+            "/api/v1/attachments/{attachment_id}/content",
+            put(attachments::upload_attachment),
+        )
+        .route(
+            "/api/v1/attachments/{attachment_id}/finalize",
+            post(attachments::finalize_attachment),
+        )
         .route_layer(middleware::from_fn_with_state(state.clone(), authenticate));
     Router::new()
         .route("/health", get(health))
@@ -416,6 +436,9 @@ mod tests {
     use super::*;
     use axum::{body::Body, http::Request};
     use futures_util::{SinkExt, StreamExt};
+    use homebot_protocol::{
+        Attachment, CreateAttachmentRequest, CreateAttachmentResponse, FinalizeAttachmentRequest,
+    };
     use tokio::task::JoinHandle;
     use tokio_tungstenite::{connect_async, tungstenite::client::IntoClientRequest};
     use tower::ServiceExt;
@@ -787,6 +810,147 @@ mod tests {
         .await;
         assert!(closed.is_ok());
         task.abort();
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn attachment_upload_is_idempotent_bounded_and_integrity_checked()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let storage = Storage::open(&directory.path().join("homebot.db")).await?;
+        let artifact_root = directory.path().join("artifacts");
+        let app = router(
+            AppState::new(storage.clone(), "correct-token")
+                .with_artifact_root(artifact_root.clone()),
+        );
+        let content = b"hello";
+        let sha256 = format!("{:x}", Sha256::digest(content));
+        let create = CreateAttachmentRequest {
+            request_id: Uuid::now_v7(),
+            idempotency_key: Uuid::now_v7(),
+            filename: "greeting.txt".to_owned(),
+            media_type: "text/plain".to_owned(),
+            size_bytes: u64::try_from(content.len())?,
+            sha256: sha256.clone(),
+        };
+        let create_request = || {
+            Request::post("/api/v1/attachments")
+                .header("authorization", "Bearer correct-token")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&create).unwrap_or_default()))
+        };
+        let response = app.clone().oneshot(create_request()?).await?;
+        assert_eq!(response.status(), StatusCode::CREATED);
+        let response_body = axum::body::to_bytes(response.into_body(), 16 * 1024).await?;
+        let created: CreateAttachmentResponse = serde_json::from_slice(&response_body)?;
+        let replay = app.clone().oneshot(create_request()?).await?;
+        let replay_body = axum::body::to_bytes(replay.into_body(), 16 * 1024).await?;
+        let replayed: CreateAttachmentResponse = serde_json::from_slice(&replay_body)?;
+        assert_eq!(replayed.attachment_id, created.attachment_id);
+
+        let upload = app
+            .clone()
+            .oneshot(
+                Request::put(&created.upload_url)
+                    .header("authorization", "Bearer correct-token")
+                    .body(Body::from(content.as_slice()))?,
+            )
+            .await?;
+        assert_eq!(upload.status(), StatusCode::NO_CONTENT);
+        let finalize = FinalizeAttachmentRequest {
+            request_id: Uuid::now_v7(),
+            idempotency_key: Uuid::now_v7(),
+            sha256: sha256.clone(),
+        };
+        let finalize_url = format!("/api/v1/attachments/{}/finalize", created.attachment_id);
+        let finalize_request = || {
+            Request::post(&finalize_url)
+                .header("authorization", "Bearer correct-token")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&finalize).unwrap_or_default(),
+                ))
+        };
+        let finalized = app.clone().oneshot(finalize_request()?).await?;
+        assert_eq!(finalized.status(), StatusCode::OK);
+        let finalized_body = axum::body::to_bytes(finalized.into_body(), 16 * 1024).await?;
+        let attachment: Attachment = serde_json::from_slice(&finalized_body)?;
+        assert_eq!(attachment.sha256, sha256);
+        let finalized_again = app.clone().oneshot(finalize_request()?).await?;
+        assert_eq!(finalized_again.status(), StatusCode::OK);
+        assert!(
+            artifact_root
+                .join("objects")
+                .join(&sha256[..2])
+                .join(&sha256)
+                .is_file()
+        );
+        assert_eq!(
+            storage
+                .attachment(Uuid::nil(), created.attachment_id)
+                .await?
+                .map(|record| record.status),
+            Some("ready".to_owned())
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn invalid_attachment_bytes_are_deleted_and_cannot_be_finalized()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let storage = Storage::open(&directory.path().join("homebot.db")).await?;
+        let app = router(
+            AppState::new(storage, "correct-token")
+                .with_artifact_root(directory.path().join("artifacts")),
+        );
+        let expected = b"hello";
+        let sha256 = format!("{:x}", Sha256::digest(expected));
+        let create = CreateAttachmentRequest {
+            request_id: Uuid::now_v7(),
+            idempotency_key: Uuid::now_v7(),
+            filename: "greeting.txt".to_owned(),
+            media_type: "text/plain".to_owned(),
+            size_bytes: 5,
+            sha256: sha256.clone(),
+        };
+        let response = app
+            .clone()
+            .oneshot(
+                Request::post("/api/v1/attachments")
+                    .header("authorization", "Bearer correct-token")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_vec(&create)?))?,
+            )
+            .await?;
+        let body = axum::body::to_bytes(response.into_body(), 16 * 1024).await?;
+        let created: CreateAttachmentResponse = serde_json::from_slice(&body)?;
+        let invalid = app
+            .clone()
+            .oneshot(
+                Request::put(&created.upload_url)
+                    .header("authorization", "Bearer correct-token")
+                    .body(Body::from("wrong"))?,
+            )
+            .await?;
+        assert_eq!(invalid.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let finalize = FinalizeAttachmentRequest {
+            request_id: Uuid::now_v7(),
+            idempotency_key: Uuid::now_v7(),
+            sha256,
+        };
+        let finalize_response = app
+            .oneshot(
+                Request::post(format!(
+                    "/api/v1/attachments/{}/finalize",
+                    created.attachment_id
+                ))
+                .header("authorization", "Bearer correct-token")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&finalize)?))?,
+            )
+            .await?;
+        assert_eq!(finalize_response.status(), StatusCode::CONFLICT);
         Ok(())
     }
 }

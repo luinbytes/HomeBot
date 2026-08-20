@@ -9,7 +9,7 @@ This file is operational state for coding agents. It is not user-facing product 
 - Current milestone: M1, Local Runtime Foundation
 - Current Linear issue: 6C7-37 authenticated HTTP/WebSocket server and reconnect semantics
 - Current Git branch: `feat/m0-contracts`
-- Latest verified remote commit: `411837f3f1e1cee528acabb42e5567e7bffc28e8`
+- Latest verified remote commit: `d1a1b5df84dba2113191a818f2cd4a6ddcae8ecf`
 - Public repository: `https://github.com/luinbytes/HomeBot`
 - Repository owner and commit identity: `luinbytes <42706009+luinbytes@users.noreply.github.com>`
 
@@ -29,7 +29,7 @@ Current blockers:
 
 - Rust is installed in isolated task paths under `/tmp/homebot-rustup` and `/tmp/homebot-cargo`.
 - Exact current-app pixel captures remain deliberately gated to 6C7-42.
-- 6C7-37 is In Progress. Replay now distinguishes retained, pruned, and future cursors and falls back to a snapshot without silently skipping gaps. Attachment upload, real operation cancellation, and explicit slow-client backpressure work remains.
+- 6C7-37 is In Progress. Authenticated attachment create/upload/finalise now uses bounded streaming, SHA-256 verification, durable idempotency, logical expiry, and content-addressed storage. Real operation cancellation and explicit slow-client backpressure work remains.
 
 ## Completed work
 
@@ -46,9 +46,9 @@ Current blockers:
 
 ## Immediate next work
 
-1. Commit and push the replay-retention fallback for 6C7-37.
-2. Implement authenticated, bounded attachment create/upload/finalise with digest checks and expiry tests.
-3. Implement real operation cancellation and bounded slow-client queues with disconnect/reconnect tests.
+1. Commit and push authenticated attachment transport for 6C7-37.
+2. Refactor command execution around durable operation state and implement real cooperative cancellation with exactly one terminal event.
+3. Add bounded slow-client queues and prove disconnect/reconnect resumes without event loss.
 4. Run the full workspace and remote CI gates, then close 6C7-37 only if every postcondition passes.
 
 ## Verification state
@@ -63,10 +63,10 @@ Verified:
 - Local documentation link targets referenced by the README exist.
 - `git diff --check` passed for the committed baseline.
 - `cargo fmt --all -- --check` passes.
-- `cargo test -p homebot-storage -p homebot-server` passes with 18 tests, including pruned/future replay cursors and WebSocket snapshot fallback.
+- `cargo test -p homebot-storage -p homebot-server` passes with 21 tests, including attachment idempotency, digest rejection, finalisation, and content-addressed persistence.
 - `cargo clippy --workspace --all-targets -- -D warnings` passes.
 - Rust JSON Schema and generated Android binding drift checks pass.
-- `homebot-storage` has nine passing tests covering clean install/table inventory, WAL mode, restart/outbox durability, backup/restore, migration rollback, corrupted startup, concurrent access, idempotency, and replay retention.
+- `homebot-storage` has ten passing tests covering clean install/table inventory, WAL mode, restart/outbox durability, backup/restore, migration rollback, corrupted startup, concurrent access, idempotency, replay retention, and attachment transitions.
 
 Not yet verified:
 
@@ -76,8 +76,8 @@ Not yet verified:
 
 ## Known failures and incomplete implementation
 
-- `homebot-server` has authenticated HTTP/version, snapshot/replay, durable idempotent lifecycle, and heartbeat foundations but not the complete 6C7-37 transport.
-- Attachment transport, real cancellation, slow-client backpressure, providers, desktop egui, Android, routines, plugins, tools, VCS, pairing, and packaging are not implemented.
+- `homebot-server` has authenticated HTTP/version, attachment transport, snapshot/replay, durable idempotent lifecycle, and heartbeat foundations but not the complete 6C7-37 transport.
+- Real cancellation, slow-client backpressure, providers, desktop egui, Android, routines, plugins, tools, VCS, pairing, and packaging are not implemented.
 - The protocol defines product-level v1 envelopes and lifecycle contracts; server persistence and transport behaviour remain implementation work in later issues.
 - No release artifact exists. Do not describe the project as installable or v1-ready.
 

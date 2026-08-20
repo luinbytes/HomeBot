@@ -7,10 +7,10 @@ This file is operational state for coding agents. It is not user-facing product 
 ## Current state
 
 - Current milestone: M3, Skills, Plugins, Routines & Secrets.
-- Current Linear issue: 6C7-50, plugin/MCP connection registry and authorization UX (`In Progress`).
+- Current Linear issue: 6C7-52, routine recorder/editor and deterministic replay (`In Progress`).
 - Current Git branch: `feat/m0-contracts`.
-- Latest verified remote commit: `6bf54bb3d001eae6e6ac224b2bb1681965fdaab1`.
-- Latest verified GitHub Actions run: `32382518033`, all nine jobs passed.
+- Latest verified remote commit: `e0c9014551133aaab9873538c54f8a4a758a5d0d`.
+- Latest verified GitHub Actions run: `32385491987`, all nine jobs passed.
 - Public repository: `https://github.com/luinbytes/HomeBot`.
 - Required commit identity: `luinbytes <42706009+luinbytes@users.noreply.github.com>`.
 
@@ -23,6 +23,7 @@ Architecture decisions currently frozen:
 - Secret values use macOS Keychain or Linux Secret Service through `homebot-secrets`; SQLite, protocol events, chat/routine context, and normal provider configuration hold opaque references only.
 - OS credential calls run on Tokio's blocking pool. Locked/unavailable stores fail closed with no plaintext fallback. Resolved provider values are redacted and zeroized.
 - Codex uses structured App Server stdio JSONL. Claude uses its documented stream-JSON CLI surface. Community processes use a constrained direct-executable JSONL contract.
+- Local MCP plugins use a provider-neutral adapter boundary and constrained direct-executable stdio lifecycle. Plugin results are explicitly untrusted data; connection and Bot assignment never grant tool capability authority.
 - Filesystem authority uses `cap-std`; terminal authority uses bounded `portable-pty`; browser authority uses loopback-only CDP.
 
 Current blockers:
@@ -35,26 +36,27 @@ Current blockers:
 - M0 epic 6C7-30: baseline, parity inventory, protocol contract, and security model.
 - M1 epic 6C7-34: Rust/CI foundation, SQLite/outbox/recovery, authenticated HTTP/WebSocket transport, provider runtime, Codex, Claude/OpenAI-compatible/community adapters, and local filesystem/PTY/browser capabilities.
 - M2 epic 6C7-41: egui visual system, native shell, Bot lifecycle, direct chats, three-Bot groups/coordination, normalized activity/artifact surfaces, and settings/native notifications.
-- Most recent completed issue: 6C7-51, OS-backed secret storage and policy-gated secret-aware provider/tool injection.
+- 6C7-50, local MCP/plugin registry, exact client recovery states, health/discovery, enablement/removal and per-Bot assignment.
+- Most recent completed issue: 6C7-50.
 
 ## Immediate next work
 
-1. For 6C7-50, define the provider-neutral plugin/MCP registry contract and server-owned state machine for Connect, Waiting, Reopen, Connected, and Error.
-2. Add durable local MCP connection metadata, safe direct-executable stdio process supervision, discovery/health/enable/disable/remove operations, and per-Bot assignment without granting MCP output instruction authority.
-3. Add authenticated server APIs/events, desktop settings states/actions, hostile MCP fixtures, protocol/schema/Android drift updates, and docs; then run the full gate, commit/push, wait for CI, and update Linear.
+1. For 6C7-52, define versioned routine/draft/recording contracts with structured steps, typed inputs, expected outputs, plugin/tool references, explicit approvals and deterministic replay semantics.
+2. Add durable create/edit/rename/duplicate/delete/enable-disable operations plus recording-to-editable-draft conversion, dry-run and manual Run now execution.
+3. Add authenticated APIs/events, desktop routine list/editor/recording projections and goldens, protocol/schema/Android models, restart/error/approval fixtures and docs; then pass the complete gate and remote CI.
 
 ## Verification state
 
 Verified at the last remote baseline:
 
-- GitHub Actions run 32382518033 passed formatting/clippy/101 tests, dependency policy/audit, Linux, macOS Intel, macOS Apple Silicon, and cross-platform visual goldens.
+- GitHub Actions run 32385491987 passed formatting/clippy/107 tests, dependency policy/audit, Linux, macOS Intel, macOS Apple Silicon, and 12 cross-platform visual goldens.
 - The remote commit author and committer resolve to GitHub account `luinbytes`.
-- `./scripts/check.sh` passed with 92 Rust tests and 11 exact desktop visual fixtures before 6C7-51 began.
+- 6C7-50's authenticated integration fixture proves Connect -> Waiting -> Connected discovery, then malformed MCP health -> Error with disablement and cleared tools; the child environment is cleared and MCP results remain explicitly untrusted.
 
 Verified locally for the active issue:
 
 - `cargo check --workspace --all-targets` passes with `keyring` 3.6.3 on Linux.
-- `./scripts/check.sh` passes with 101 Rust tests, 11 exact desktop visual fixtures, full workspace clippy, and both protocol drift checks.
+- `./scripts/check.sh` passes with 107 Rust tests, 12 exact desktop visual fixtures, full workspace clippy, and both protocol drift checks.
 - Secret-specific coverage passes: three vault tests, two policy-gated secret-tool tests, one authenticated API canary test, and two storage/migration tests.
 - Secret API canary coverage proves values are absent from response bytes and message/activity/outbox JSON; locked-store mutation fails with `secret_store_locked`; delete removes the value.
 - Protocol schema and generated Android bindings were regenerated with redacted Android secret-request `toString` behavior.
@@ -62,10 +64,11 @@ Verified locally for the active issue:
 - Cargo-deny 0.20.2 reports advisories, bans, licenses, and sources all OK with only the existing documented warnings.
 
 6C7-51 completion evidence is recorded in Linear and the issue is Done.
+6C7-50 completion evidence is recorded in Linear and the issue is Done.
 
 ## Known failures and incomplete implementation
 
-- Android app, routines, plugins/MCP, VCS/worktrees/checkpoints, device pairing/Tailscale, packaging, and release artifacts remain incomplete roadmap work.
+- Android app, routines, skills, VCS/worktrees/checkpoints, device pairing/Tailscale, packaging, and release artifacts remain incomplete roadmap work.
 - Real authenticated Codex/Claude round trips are unavailable in this environment. OpenAI-compatible and CDP behavior use protocol-faithful local fixtures.
 - No release artifact exists. Do not describe HomeBot as installable or v1-ready.
 

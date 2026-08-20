@@ -4,6 +4,9 @@
   "description": "Root exported to the committed machine-readable JSON Schema.",
   "type": "object",
   "properties": {
+    "append_routine_recording_request": {
+      "$ref": "#/$defs/AppendRoutineRecordingRequest"
+    },
     "approval_decision_request": {
       "$ref": "#/$defs/ApprovalDecisionRequest"
     },
@@ -43,8 +46,14 @@
     "create_local_mcp_plugin_request": {
       "$ref": "#/$defs/CreateLocalMcpPluginRequest"
     },
+    "create_routine_request": {
+      "$ref": "#/$defs/CreateRoutineRequest"
+    },
     "create_secret_request": {
       "$ref": "#/$defs/CreateSecretRequest"
+    },
+    "duplicate_routine_request": {
+      "$ref": "#/$defs/DuplicateRoutineRequest"
     },
     "error": {
       "$ref": "#/$defs/ErrorEnvelope"
@@ -64,6 +73,18 @@
     "plugin_mutation_request": {
       "$ref": "#/$defs/PluginMutationRequest"
     },
+    "routine": {
+      "$ref": "#/$defs/RoutineSummary"
+    },
+    "routine_recording": {
+      "$ref": "#/$defs/RoutineRecordingSummary"
+    },
+    "routine_run": {
+      "$ref": "#/$defs/RoutineRunSummary"
+    },
+    "run_routine_request": {
+      "$ref": "#/$defs/RunRoutineRequest"
+    },
     "secret": {
       "$ref": "#/$defs/SecretSummary"
     },
@@ -76,8 +97,14 @@
     "server_event": {
       "$ref": "#/$defs/ServerEvent"
     },
+    "start_routine_recording_request": {
+      "$ref": "#/$defs/StartRoutineRecordingRequest"
+    },
     "update_bot_request": {
       "$ref": "#/$defs/UpdateBotRequest"
+    },
+    "update_routine_request": {
+      "$ref": "#/$defs/UpdateRoutineRequest"
     },
     "update_secret_request": {
       "$ref": "#/$defs/UpdateSecretRequest"
@@ -94,6 +121,15 @@
     "plugin_mutation_request",
     "plugin_assignment_request",
     "plugin",
+    "create_routine_request",
+    "update_routine_request",
+    "duplicate_routine_request",
+    "start_routine_recording_request",
+    "append_routine_recording_request",
+    "run_routine_request",
+    "routine",
+    "routine_recording",
+    "routine_run",
     "create_attachment_request",
     "create_attachment_response",
     "finalize_attachment_request",
@@ -375,6 +411,28 @@
         "status",
         "requires_attention",
         "started_at_ms"
+      ]
+    },
+    "AppendRoutineRecordingRequest": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "$ref": "#/$defs/RecordedAction"
+        },
+        "idempotency_key": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "request_id": {
+          "type": "string",
+          "format": "uuid"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "request_id",
+        "idempotency_key",
+        "action"
       ]
     },
     "ApprovalDecisionRequest": {
@@ -1114,6 +1172,45 @@
         "program"
       ]
     },
+    "CreateRoutineRequest": {
+      "type": "object",
+      "properties": {
+        "bot_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "definition": {
+          "$ref": "#/$defs/RoutineDefinition"
+        },
+        "description": {
+          "type": "string",
+          "default": ""
+        },
+        "draft": {
+          "type": "boolean",
+          "default": true
+        },
+        "idempotency_key": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "name": {
+          "type": "string"
+        },
+        "request_id": {
+          "type": "string",
+          "format": "uuid"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "request_id",
+        "idempotency_key",
+        "bot_id",
+        "name",
+        "definition"
+      ]
+    },
     "CreateSecretRequest": {
       "description": "Secret-bearing request. Deliberately does not implement `Debug` or `Serialize`.",
       "type": "object",
@@ -1139,6 +1236,28 @@
         "idempotency_key",
         "label",
         "value"
+      ]
+    },
+    "DuplicateRoutineRequest": {
+      "type": "object",
+      "properties": {
+        "idempotency_key": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "name": {
+          "type": "string"
+        },
+        "request_id": {
+          "type": "string",
+          "format": "uuid"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "request_id",
+        "idempotency_key",
+        "name"
       ]
     },
     "ErrorCode": {
@@ -1195,6 +1314,26 @@
         "code",
         "message",
         "retryable"
+      ]
+    },
+    "ExpectedOutput": {
+      "type": "object",
+      "properties": {
+        "description": {
+          "type": "string"
+        },
+        "key": {
+          "type": "string"
+        },
+        "required": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "key",
+        "description",
+        "required"
       ]
     },
     "FinalizeAttachmentRequest": {
@@ -1787,6 +1926,29 @@
         "created_at_ms"
       ]
     },
+    "RecordedAction": {
+      "type": "object",
+      "properties": {
+        "actor": {
+          "$ref": "#/$defs/RecordedActor"
+        },
+        "step": {
+          "$ref": "#/$defs/RoutineStep"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "actor",
+        "step"
+      ]
+    },
+    "RecordedActor": {
+      "type": "string",
+      "enum": [
+        "user",
+        "bot"
+      ]
+    },
     "ResumeDisposition": {
       "type": "string",
       "enum": [
@@ -1800,6 +1962,361 @@
         "low",
         "elevated",
         "high"
+      ]
+    },
+    "RoutineDefinition": {
+      "type": "object",
+      "properties": {
+        "expected_outputs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ExpectedOutput"
+          }
+        },
+        "inputs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/RoutineInput"
+          }
+        },
+        "steps": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/RoutineStep"
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "inputs",
+        "steps",
+        "expected_outputs"
+      ]
+    },
+    "RoutineExecutionResult": {
+      "type": "object",
+      "properties": {
+        "output": true,
+        "status": {
+          "$ref": "#/$defs/RoutineStepStatus"
+        },
+        "step_index": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "step_index",
+        "status"
+      ]
+    },
+    "RoutineInput": {
+      "type": "object",
+      "properties": {
+        "key": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/RoutineInputKind"
+        },
+        "label": {
+          "type": "string"
+        },
+        "required": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "key",
+        "label",
+        "kind",
+        "required"
+      ]
+    },
+    "RoutineInputKind": {
+      "type": "string",
+      "enum": [
+        "text",
+        "number",
+        "boolean",
+        "file_reference",
+        "secret_reference"
+      ]
+    },
+    "RoutineRecordingSummary": {
+      "type": "object",
+      "properties": {
+        "actions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/RecordedAction"
+          }
+        },
+        "bot_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "created_at_unix_ms": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "description": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "name": {
+          "type": "string"
+        },
+        "updated_at_unix_ms": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "bot_id",
+        "name",
+        "description",
+        "actions",
+        "created_at_unix_ms",
+        "updated_at_unix_ms"
+      ]
+    },
+    "RoutineRunSummary": {
+      "type": "object",
+      "properties": {
+        "dry_run": {
+          "type": "boolean"
+        },
+        "error_message": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "finished_at_unix_ms": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "results": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/RoutineExecutionResult"
+          }
+        },
+        "routine_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "routine_version_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "started_at_unix_ms": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "status": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "routine_id",
+        "routine_version_id",
+        "status",
+        "dry_run",
+        "results",
+        "started_at_unix_ms"
+      ]
+    },
+    "RoutineStep": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "bot_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "kind": {
+              "type": "string",
+              "const": "bot_prompt"
+            },
+            "prompt_template": {
+              "type": "string"
+            },
+            "requires_approval": {
+              "type": "boolean"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "bot_id",
+            "prompt_template",
+            "requires_approval"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "arguments": true,
+            "kind": {
+              "type": "string",
+              "const": "plugin_tool"
+            },
+            "plugin_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "requires_approval": {
+              "type": "boolean"
+            },
+            "tool_name": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "plugin_id",
+            "tool_name",
+            "arguments",
+            "requires_approval"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "record_output"
+            },
+            "output_key": {
+              "type": "string"
+            },
+            "value_template": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "output_key",
+            "value_template"
+          ]
+        }
+      ]
+    },
+    "RoutineStepStatus": {
+      "type": "string",
+      "enum": [
+        "planned",
+        "succeeded",
+        "approval_required",
+        "failed"
+      ]
+    },
+    "RoutineSummary": {
+      "type": "object",
+      "properties": {
+        "active_version_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "bot_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "created_at_unix_ms": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "definition": {
+          "$ref": "#/$defs/RoutineDefinition"
+        },
+        "description": {
+          "type": "string"
+        },
+        "draft": {
+          "type": "boolean"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "name": {
+          "type": "string"
+        },
+        "updated_at_unix_ms": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "version": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "bot_id",
+        "name",
+        "description",
+        "enabled",
+        "draft",
+        "active_version_id",
+        "version",
+        "definition",
+        "created_at_unix_ms",
+        "updated_at_unix_ms"
+      ]
+    },
+    "RunRoutineRequest": {
+      "type": "object",
+      "properties": {
+        "idempotency_key": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "inputs": {
+          "default": {}
+        },
+        "request_id": {
+          "type": "string",
+          "format": "uuid"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "request_id",
+        "idempotency_key"
       ]
     },
     "SecretStatus": {
@@ -2266,6 +2783,71 @@
           "properties": {
             "kind": {
               "type": "string",
+              "const": "routine_changed"
+            },
+            "routine": {
+              "$ref": "#/$defs/RoutineSummary"
+            }
+          },
+          "required": [
+            "kind",
+            "routine"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "routine_removed"
+            },
+            "routine_id": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          "required": [
+            "kind",
+            "routine_id"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "routine_recording_changed"
+            },
+            "recording": {
+              "$ref": "#/$defs/RoutineRecordingSummary"
+            }
+          },
+          "required": [
+            "kind",
+            "recording"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "routine_run_changed"
+            },
+            "run": {
+              "$ref": "#/$defs/RoutineRunSummary"
+            }
+          },
+          "required": [
+            "kind",
+            "run"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
               "const": "command_accepted"
             },
             "operation_id": {
@@ -2408,6 +2990,37 @@
         "chats"
       ]
     },
+    "StartRoutineRecordingRequest": {
+      "type": "object",
+      "properties": {
+        "bot_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "description": {
+          "type": "string",
+          "default": ""
+        },
+        "idempotency_key": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "name": {
+          "type": "string"
+        },
+        "request_id": {
+          "type": "string",
+          "format": "uuid"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "request_id",
+        "idempotency_key",
+        "bot_id",
+        "name"
+      ]
+    },
     "UpdateBotRequest": {
       "type": "object",
       "properties": {
@@ -2455,6 +3068,40 @@
         "shape",
         "color",
         "permission_profile"
+      ]
+    },
+    "UpdateRoutineRequest": {
+      "type": "object",
+      "properties": {
+        "definition": {
+          "$ref": "#/$defs/RoutineDefinition"
+        },
+        "description": {
+          "type": "string",
+          "default": ""
+        },
+        "draft": {
+          "type": "boolean"
+        },
+        "idempotency_key": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "name": {
+          "type": "string"
+        },
+        "request_id": {
+          "type": "string",
+          "format": "uuid"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "request_id",
+        "idempotency_key",
+        "name",
+        "definition",
+        "draft"
       ]
     },
     "UpdateSecretRequest": {

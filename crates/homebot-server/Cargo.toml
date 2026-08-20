@@ -8,12 +8,14 @@ rust-version.workspace = true
 
 [dependencies]
 anyhow.workspace = true
+async-trait.workspace = true
 axum.workspace = true
 futures-util.workspace = true
 homebot-protocol.workspace = true
 homebot-domain.workspace = true
 homebot-providers.workspace = true
 homebot-plugins.workspace = true
+homebot-routines.workspace = true
 homebot-secrets.workspace = true
 homebot-storage = { version = "=0.0.1", path = "../homebot-storage" }
 serde.workspace = true
@@ -29,7 +31,6 @@ tracing-subscriber.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
-async-trait.workspace = true
 tempfile = "3.20"
 tokio-tungstenite = "0.29"
 

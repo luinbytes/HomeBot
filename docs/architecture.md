@@ -59,6 +59,8 @@ All mutations carry an idempotency key. Accepted asynchronous operations have st
 
 Provider, MCP, browser, terminal, and Git failures are isolated from the server process and represented as provider-neutral error/activity events. Bounded output, cancellation, child cleanup, and backoff are mandatory.
 
+Routine demonstration records only typed server actions. Editing appends an immutable version; Run now and dry run bind to that exact version and use the same sequential executor boundary. This keeps historical context reproducible and prevents desktop/Android from becoming independent automation engines.
+
 ## Decisions still requiring implementation evidence
 
 - content-addressed artifact garbage collection policy

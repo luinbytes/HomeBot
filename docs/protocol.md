@@ -42,6 +42,12 @@ Authenticated `/api/v1/secrets` endpoints list, create, update, and delete owner
 
 Authenticated `/api/v1/plugins` operations expose provider-neutral summaries and exact `connect`, `waiting`, `reopen`, `connected`, and `error` states. Summaries include authentication state, bounded discovered-tool metadata, enablement and Bot assignments, but never raw MCP frames or secret values. Mutations emit monotonic `plugin_changed` and `plugin_removed` events so desktop and Android render server state rather than inferring transport health.
 
+## Routines
+
+Routine definitions contain typed inputs, expected outputs and tagged structured steps. Recording actions use the same step representation, so replay never depends on UI coordinates. Create/edit/duplicate/enable/disable/delete, recording append/finish/cancel, dry run, Run now and run history are authenticated server operations. `routine_changed`, `routine_removed`, `routine_recording_changed` and `routine_run_changed` events are durable and sequenced.
+
+Each run carries the immutable `routine_version_id`, step status and redacted structured output. Dry-run results are `planned` and have no output. Approval-required replay stops before executing the marked step.
+
 ## Attachments
 
 Attachments are uploaded over authenticated HTTP with size/type limits, streaming digest verification, an idempotency key, and an explicit finalise step. WebSocket messages refer to completed attachment IDs. Partial uploads expire and cannot be consumed.

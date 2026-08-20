@@ -7,6 +7,7 @@ members = [
   "crates/homebot-server",
   "crates/homebot-providers",
   "crates/homebot-plugins",
+  "crates/homebot-routines",
   "crates/homebot-secrets",
   "crates/homebot-tools",
   "crates/homebot-vcs",
@@ -33,6 +34,7 @@ homebot-domain = { version = "=0.0.1", path = "crates/homebot-domain" }
 homebot-protocol = { version = "=0.0.1", path = "crates/homebot-protocol" }
 homebot-providers = { version = "=0.0.1", path = "crates/homebot-providers" }
 homebot-plugins = { version = "=0.0.1", path = "crates/homebot-plugins" }
+homebot-routines = { version = "=0.0.1", path = "crates/homebot-routines" }
 homebot-secrets = { version = "=0.0.1", path = "crates/homebot-secrets" }
 keyring = { version = "=3.6.3", default-features = false }
 notify-rust = "4.18.0"

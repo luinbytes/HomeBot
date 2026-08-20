@@ -205,6 +205,45 @@ data class PluginMutationRequest(val request_id: String, val idempotency_key: St
 data class PluginAssignmentRequest(val request_id: String, val idempotency_key: String, val bot_id: String, val enabled: Boolean)
 
 @Serializable
+data class RoutineInput(val key: String, val label: String, val kind: String, val required: Boolean)
+
+@Serializable
+data class ExpectedOutput(val key: String, val description: String, val required: Boolean)
+
+@Serializable
+data class RoutineDefinition(val inputs: List<RoutineInput>, val steps: List<JsonElement>, val expected_outputs: List<ExpectedOutput>)
+
+@Serializable
+data class RecordedAction(val actor: String, val step: JsonElement)
+
+@Serializable
+data class RoutineExecutionResult(val step_index: Int, val status: String, val output: JsonElement? = null)
+
+@Serializable
+data class RoutineSummary(val id: String, val bot_id: String, val name: String, val description: String, val enabled: Boolean, val draft: Boolean, val active_version_id: String, val version: Int, val definition: RoutineDefinition, val created_at_unix_ms: Long, val updated_at_unix_ms: Long)
+
+@Serializable
+data class CreateRoutineRequest(val request_id: String, val idempotency_key: String, val bot_id: String, val name: String, val description: String = "", val definition: RoutineDefinition, val draft: Boolean = true)
+
+@Serializable
+data class UpdateRoutineRequest(val request_id: String, val idempotency_key: String, val name: String, val description: String = "", val definition: RoutineDefinition, val draft: Boolean)
+
+@Serializable
+data class StartRoutineRecordingRequest(val request_id: String, val idempotency_key: String, val bot_id: String, val name: String, val description: String = "")
+
+@Serializable
+data class AppendRoutineRecordingRequest(val request_id: String, val idempotency_key: String, val action: RecordedAction)
+
+@Serializable
+data class RoutineRecordingSummary(val id: String, val bot_id: String, val name: String, val description: String, val actions: List<RecordedAction>, val created_at_unix_ms: Long, val updated_at_unix_ms: Long)
+
+@Serializable
+data class RunRoutineRequest(val request_id: String, val idempotency_key: String, val inputs: JsonElement)
+
+@Serializable
+data class RoutineRunSummary(val id: String, val routine_id: String, val routine_version_id: String, val status: String, val dry_run: Boolean, val results: List<RoutineExecutionResult>, val error_message: String? = null, val started_at_unix_ms: Long, val finished_at_unix_ms: Long? = null)
+
+@Serializable
 class CreateSecretRequest(val request_id: String, val idempotency_key: String, val label: String, val value: String) {
     override fun toString(): String = "CreateSecretRequest(request_id=$request_id, idempotency_key=$idempotency_key, label=$label, value=[REDACTED])"
 }

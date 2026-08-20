@@ -10,6 +10,7 @@ use crate::{
         AttentionIndicator, AvatarShape, BotIdentity, activity_card, approval_card, composer,
         message, roster_row, section_label,
     },
+    routines::{RoutineSurface, routine_surface},
     settings::{
         DesktopSettings, PluginSettingsItem, PluginViewState, SettingsSection, ThemePreference,
         settings_view,
@@ -31,6 +32,9 @@ pub enum FixtureState {
     Settings,
     SettingsAppearance,
     SettingsPlugins,
+    RoutinesList,
+    RoutineEditor,
+    RoutineRecording,
 }
 
 fn nova(theme: HomeBotTheme) -> BotIdentity<'static> {
@@ -125,6 +129,9 @@ pub fn render_fixture(context: &egui::Context, theme: HomeBotTheme, state: Fixtu
                         FixtureState::Settings
                         | FixtureState::SettingsAppearance
                         | FixtureState::SettingsPlugins => "Settings",
+                        FixtureState::RoutinesList => "Routines",
+                        FixtureState::RoutineEditor => "Edit routine",
+                        FixtureState::RoutineRecording => "Teach a routine",
                         _ => "Nova",
                     })
                     .font(theme.typography.font(theme.typography.body_compact))
@@ -145,6 +152,9 @@ pub fn render_fixture(context: &egui::Context, theme: HomeBotTheme, state: Fixtu
             | FixtureState::Settings
             | FixtureState::SettingsAppearance
             | FixtureState::SettingsPlugins
+            | FixtureState::RoutinesList
+            | FixtureState::RoutineEditor
+            | FixtureState::RoutineRecording
     ) {
         TopBottomPanel::bottom("homebot_composer")
             .exact_height(theme.layout.composer_min_height + theme.spacing.xl)
@@ -176,6 +186,9 @@ pub fn render_fixture(context: &egui::Context, theme: HomeBotTheme, state: Fixtu
             FixtureState::Settings => settings_state(ui, theme, false),
             FixtureState::SettingsAppearance => settings_state(ui, theme, true),
             FixtureState::SettingsPlugins => plugin_settings_state(ui, theme),
+            FixtureState::RoutinesList => routine_surface(ui, theme, RoutineSurface::List),
+            FixtureState::RoutineEditor => routine_surface(ui, theme, RoutineSurface::Editor),
+            FixtureState::RoutineRecording => routine_surface(ui, theme, RoutineSurface::Recording),
         });
 }
 

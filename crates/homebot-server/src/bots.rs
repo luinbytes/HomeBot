@@ -411,6 +411,19 @@ impl From<StorageError> for ApiError {
             StorageError::DuplicatePluginName => {
                 Self::conflict("A plugin with that name already exists")
             }
+            StorageError::RoutineNotFound => Self::new(
+                StatusCode::NOT_FOUND,
+                ErrorCode::NotFound,
+                "Routine was not found",
+            ),
+            StorageError::DuplicateRoutineName => {
+                Self::conflict("A routine with that name already exists")
+            }
+            StorageError::RoutineRecordingNotFound => Self::new(
+                StatusCode::CONFLICT,
+                ErrorCode::Conflict,
+                "Routine recording was not found or is no longer active",
+            ),
             StorageError::ChatDomain(error) => Self::new(
                 StatusCode::UNPROCESSABLE_ENTITY,
                 ErrorCode::ValidationFailed,

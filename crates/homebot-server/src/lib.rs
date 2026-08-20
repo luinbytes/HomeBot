@@ -7,6 +7,7 @@ mod chats;
 mod groups;
 mod plugins;
 mod provider_turn;
+mod routines;
 mod secrets;
 
 use axum::{
@@ -143,6 +144,7 @@ impl AppState {
     }
 }
 
+#[allow(clippy::too_many_lines)]
 pub fn router(state: AppState) -> Router {
     let authenticated = Router::new()
         .route("/api/v1/version", get(version))
@@ -231,6 +233,48 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/v1/plugins/{plugin_id}/assignment",
             put(plugins::assign),
+        )
+        .route(
+            "/api/v1/routines",
+            get(routines::list).post(routines::create),
+        )
+        .route(
+            "/api/v1/routines/{routine_id}",
+            put(routines::update).delete(routines::delete),
+        )
+        .route(
+            "/api/v1/routines/{routine_id}/duplicate",
+            post(routines::duplicate),
+        )
+        .route(
+            "/api/v1/routines/{routine_id}/enable",
+            post(routines::enable),
+        )
+        .route(
+            "/api/v1/routines/{routine_id}/disable",
+            post(routines::disable),
+        )
+        .route("/api/v1/routines/{routine_id}/run", post(routines::run_now))
+        .route(
+            "/api/v1/routines/{routine_id}/dry-run",
+            post(routines::dry_run),
+        )
+        .route("/api/v1/routines/{routine_id}/runs", get(routines::runs))
+        .route(
+            "/api/v1/routine-recordings",
+            post(routines::start_recording),
+        )
+        .route(
+            "/api/v1/routine-recordings/{recording_id}/actions",
+            post(routines::append_recording),
+        )
+        .route(
+            "/api/v1/routine-recordings/{recording_id}/finish",
+            post(routines::finish_recording),
+        )
+        .route(
+            "/api/v1/routine-recordings/{recording_id}/cancel",
+            post(routines::cancel_recording),
         )
         .route_layer(middleware::from_fn_with_state(state.clone(), authenticate));
     Router::new()

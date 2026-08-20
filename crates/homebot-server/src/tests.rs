@@ -7,14 +7,17 @@ use axum::{
 };
 use futures_util::{SinkExt, StreamExt};
 use homebot_protocol::{
-    AddGroupParticipantRequest, ApprovalDecisionRequest, ArtifactSummary, Attachment, BotColor,
-    BotMutationRequest, BotPermissionProfile, BotProviderStatus, BotResponse, BotShape,
-    ChatTimelineResponse, CreateAttachmentRequest, CreateAttachmentResponse, CreateBotRequest,
-    CreateDirectChatRequest, CreateDirectChatResponse, CreateGroupChatRequest,
-    CreateGroupChatResponse, CreateLocalMcpPluginRequest, FinalizeAttachmentRequest,
-    GroupBotStatus, GroupTimelineResponse, HandoffGroupRequest, PluginConnectionState,
-    PluginMutationRequest, PluginSummary, SecretSummary, SendGroupMessageRequest,
-    SendMessageRequest, SendMessageResponse, UpdateBotRequest, UpdateGroupParticipantRequest,
+    AddGroupParticipantRequest, AppendRoutineRecordingRequest, ApprovalDecisionRequest,
+    ArtifactSummary, Attachment, BotColor, BotMutationRequest, BotPermissionProfile,
+    BotProviderStatus, BotResponse, BotShape, ChatTimelineResponse, CreateAttachmentRequest,
+    CreateAttachmentResponse, CreateBotRequest, CreateDirectChatRequest, CreateDirectChatResponse,
+    CreateGroupChatRequest, CreateGroupChatResponse, CreateLocalMcpPluginRequest,
+    DuplicateRoutineRequest, FinalizeAttachmentRequest, GroupBotStatus, GroupTimelineResponse,
+    HandoffGroupRequest, PluginConnectionState, PluginMutationRequest, PluginSummary,
+    RecordedAction, RecordedActor, RoutineRecordingSummary, RoutineRunSummary, RoutineStep,
+    RoutineStepStatus, RoutineSummary, RunRoutineRequest, SecretSummary, SendGroupMessageRequest,
+    SendMessageRequest, SendMessageResponse, StartRoutineRecordingRequest, UpdateBotRequest,
+    UpdateGroupParticipantRequest, UpdateRoutineRequest,
 };
 use homebot_providers::{
     ActivityKind, ActivityStatus as ProviderActivityStatus, ApprovalDecision, CompactRequest,
@@ -205,7 +208,7 @@ async fn plugin_registry_connects_local_mcp_and_persists_error_recovery_states()
     permissions.set_mode(0o700);
     std::fs::set_permissions(&server, permissions)?;
     let storage = Storage::open(&directory.path().join("homebot.db")).await?;
-    let app = router(AppState::new(storage, "correct-token"));
+    let app = router(AppState::new(storage.clone(), "correct-token"));
     let plugin_id = Uuid::now_v7();
     let create = CreateLocalMcpPluginRequest {
         request_id: Uuid::now_v7(),
@@ -268,6 +271,176 @@ async fn plugin_registry_connects_local_mcp_and_persists_error_recovery_states()
     assert_eq!(errored.connection_state, PluginConnectionState::Error);
     assert!(!errored.enabled);
     assert!(errored.tools.is_empty());
+    Ok(())
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn recorded_routine_edits_versions_dry_runs_and_replays_deterministically()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let storage = Storage::open(&directory.path().join("homebot.db")).await?;
+    let bot = storage
+        .create_bot(
+            Uuid::nil(),
+            homebot_domain::Bot::create("Nova", "Research")?,
+            1,
+        )
+        .await?;
+    let app = router(AppState::new(storage.clone(), "correct-token"));
+    let recording_id = Uuid::now_v7();
+    let start = StartRoutineRecordingRequest {
+        request_id: Uuid::now_v7(),
+        idempotency_key: recording_id,
+        bot_id: bot.id.0,
+        name: "Morning brief".to_owned(),
+        description: "Recorded once".to_owned(),
+    };
+    let response = app
+        .clone()
+        .oneshot(json_request("POST", "/api/v1/routine-recordings", &start))
+        .await?;
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let recording: RoutineRecordingSummary = response_json(response).await?;
+    assert!(recording.actions.is_empty());
+    let append = AppendRoutineRecordingRequest {
+        request_id: Uuid::now_v7(),
+        idempotency_key: Uuid::now_v7(),
+        action: RecordedAction {
+            actor: RecordedActor::User,
+            step: RoutineStep::BotPrompt {
+                bot_id: bot.id.0,
+                prompt_template: "Summarise the overnight updates".to_owned(),
+                requires_approval: false,
+            },
+        },
+    };
+    let response = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            &format!("/api/v1/routine-recordings/{recording_id}/actions"),
+            &append,
+        ))
+        .await?;
+    let recorded: RoutineRecordingSummary = response_json(response).await?;
+    assert_eq!(recorded.actions.len(), 1);
+    let routine_id = Uuid::now_v7();
+    let finish = BotMutationRequest {
+        request_id: Uuid::now_v7(),
+        idempotency_key: routine_id,
+    };
+    let response = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            &format!("/api/v1/routine-recordings/{recording_id}/finish"),
+            &finish,
+        ))
+        .await?;
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let draft: RoutineSummary = response_json(response).await?;
+    assert!(draft.draft);
+    let update = UpdateRoutineRequest {
+        request_id: Uuid::now_v7(),
+        idempotency_key: Uuid::now_v7(),
+        name: "Morning intelligence".to_owned(),
+        description: "Edited and published".to_owned(),
+        definition: draft.definition,
+        draft: false,
+    };
+    let response = app
+        .clone()
+        .oneshot(json_request(
+            "PUT",
+            &format!("/api/v1/routines/{routine_id}"),
+            &update,
+        ))
+        .await?;
+    let published: RoutineSummary = response_json(response).await?;
+    assert_eq!(published.version, 2);
+    let enable = PluginMutationRequest {
+        request_id: Uuid::now_v7(),
+        idempotency_key: Uuid::now_v7(),
+    };
+    let response = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            &format!("/api/v1/routines/{routine_id}/enable"),
+            &enable,
+        ))
+        .await?;
+    assert!(response_json::<RoutineSummary>(response).await?.enabled);
+    let dry = RunRoutineRequest {
+        request_id: Uuid::now_v7(),
+        idempotency_key: Uuid::now_v7(),
+        inputs: json!({}),
+    };
+    let response = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            &format!("/api/v1/routines/{routine_id}/dry-run"),
+            &dry,
+        ))
+        .await?;
+    let dry_run: RoutineRunSummary = response_json(response).await?;
+    assert!(
+        dry_run
+            .results
+            .iter()
+            .all(|step| step.status == RoutineStepStatus::Planned)
+    );
+    let manual = RunRoutineRequest {
+        request_id: Uuid::now_v7(),
+        idempotency_key: Uuid::now_v7(),
+        inputs: json!({}),
+    };
+    let response = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            &format!("/api/v1/routines/{routine_id}/run"),
+            &manual,
+        ))
+        .await?;
+    let run: RoutineRunSummary = response_json(response).await?;
+    assert_eq!(run.status, "succeeded");
+    assert_eq!(run.routine_version_id, published.active_version_id);
+    let chat = storage
+        .get_direct_chat_for_bot(Uuid::nil(), bot.id.0)
+        .await?;
+    let messages = storage.chat_messages(Uuid::nil(), chat.id).await?;
+    assert!(messages.iter().any(|message| message.parts.iter().any(|part| matches!(part, homebot_domain::chat::MessagePart::Text { text, .. } if text == "Summarise the overnight updates"))));
+    let duplicate = DuplicateRoutineRequest {
+        request_id: Uuid::now_v7(),
+        idempotency_key: Uuid::now_v7(),
+        name: "Morning intelligence copy".to_owned(),
+    };
+    let response = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            &format!("/api/v1/routines/{routine_id}/duplicate"),
+            &duplicate,
+        ))
+        .await?;
+    let copy: RoutineSummary = response_json(response).await?;
+    assert!(copy.draft && !copy.enabled);
+    let response = app
+        .oneshot(
+            Request::get(format!("/api/v1/routines/{routine_id}/runs"))
+                .header("authorization", "Bearer correct-token")
+                .body(Body::empty())?,
+        )
+        .await?;
+    assert_eq!(
+        response_json::<Vec<RoutineRunSummary>>(response)
+            .await?
+            .len(),
+        2
+    );
     Ok(())
 }
 

@@ -8,6 +8,7 @@ use homebot_domain::{
         MessageStatus, OwnershipHandoff, QueuedPrompt,
     },
 };
+use homebot_routines::{RecordedAction, RoutineDefinition, RoutineExecutionResult};
 use serde_json::Value;
 use sqlx::{
     Row, SqlitePool,
@@ -17,7 +18,7 @@ use sqlx::{
 use std::{collections::HashSet, path::Path, str::FromStr, time::Duration};
 use uuid::Uuid;
 
-pub const SCHEMA_VERSION: u32 = 9;
+pub const SCHEMA_VERSION: u32 = 10;
 static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
 
 #[derive(Debug, thiserror::Error)]
@@ -62,6 +63,12 @@ pub enum StorageError {
     PluginNotFound,
     #[error("A plugin with that name already exists")]
     DuplicatePluginName,
+    #[error("Routine was not found")]
+    RoutineNotFound,
+    #[error("A routine with that name already exists")]
+    DuplicateRoutineName,
+    #[error("Routine recording was not found or is no longer active")]
+    RoutineRecordingNotFound,
     #[error("database JSON is invalid: {0}")]
     Serialization(String),
 }
@@ -176,6 +183,57 @@ pub struct PluginConnectionUpdate<'a> {
     pub updated_at_ms: i64,
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct RoutineRecord {
+    pub id: Uuid,
+    pub owner_id: Uuid,
+    pub bot_id: Uuid,
+    pub name: String,
+    pub description: String,
+    pub enabled: bool,
+    pub draft: bool,
+    pub active_version_id: Uuid,
+    pub version: u32,
+    pub definition: RoutineDefinition,
+    pub created_at_ms: i64,
+    pub updated_at_ms: i64,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct RoutineRecordingRecord {
+    pub id: Uuid,
+    pub owner_id: Uuid,
+    pub bot_id: Uuid,
+    pub name: String,
+    pub description: String,
+    pub actions: Vec<RecordedAction>,
+    pub created_at_ms: i64,
+    pub updated_at_ms: i64,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct RoutineRunRecord {
+    pub id: Uuid,
+    pub owner_id: Uuid,
+    pub routine_id: Uuid,
+    pub routine_version_id: Uuid,
+    pub status: String,
+    pub dry_run: bool,
+    pub inputs: Value,
+    pub results: Option<Vec<RoutineExecutionResult>>,
+    pub error_message: Option<String>,
+    pub started_at_ms: i64,
+    pub finished_at_ms: Option<i64>,
+}
+
+pub struct RoutineUpdate<'a> {
+    pub name: &'a str,
+    pub description: &'a str,
+    pub definition: &'a RoutineDefinition,
+    pub draft: bool,
+    pub updated_at_ms: i64,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum AttachmentClaim {
     Claimed(AttachmentRecord),
@@ -184,6 +242,264 @@ pub enum AttachmentClaim {
 }
 
 impl Storage {
+    /// Lists owner-scoped routines at their active immutable versions.
+    ///
+    /// # Errors
+    /// Returns database, serialization, or integrity errors.
+    pub async fn list_routines(&self, owner_id: Uuid) -> Result<Vec<RoutineRecord>, StorageError> {
+        let rows = sqlx::query(
+            "SELECT r.id, r.owner_id, r.bot_id, r.name, r.description, r.enabled, r.draft,
+                    r.active_version_id, v.version, v.definition_json, r.created_at_ms, r.updated_at_ms
+             FROM routines r JOIN routine_versions v ON v.id = r.active_version_id
+             WHERE r.owner_id = ? AND r.bot_id IS NOT NULL ORDER BY r.name COLLATE NOCASE, r.id",
+        ).bind(owner_id.to_string()).fetch_all(&self.pool).await?;
+        rows.iter().map(routine_from_row).collect()
+    }
+
+    /// Loads one owner-scoped routine and active version.
+    ///
+    /// # Errors
+    /// Returns not-found, database, serialization, or integrity errors.
+    pub async fn routine(&self, owner_id: Uuid, id: Uuid) -> Result<RoutineRecord, StorageError> {
+        let row = sqlx::query(
+            "SELECT r.id, r.owner_id, r.bot_id, r.name, r.description, r.enabled, r.draft,
+                    r.active_version_id, v.version, v.definition_json, r.created_at_ms, r.updated_at_ms
+             FROM routines r JOIN routine_versions v ON v.id = r.active_version_id
+             WHERE r.owner_id = ? AND r.id = ? AND r.bot_id IS NOT NULL",
+        ).bind(owner_id.to_string()).bind(id.to_string()).fetch_optional(&self.pool).await?
+            .ok_or(StorageError::RoutineNotFound)?;
+        routine_from_row(&row)
+    }
+
+    /// Creates a routine and immutable version 1 atomically.
+    ///
+    /// # Errors
+    /// Returns missing-Bot, duplicate-name, serialization, or database errors.
+    pub async fn create_routine(&self, record: &RoutineRecord) -> Result<(), StorageError> {
+        let bot_count: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM bots WHERE owner_id = ? AND id = ?")
+                .bind(record.owner_id.to_string())
+                .bind(record.bot_id.to_string())
+                .fetch_one(&self.pool)
+                .await?;
+        if bot_count == 0 {
+            return Err(StorageError::BotNotFound);
+        }
+        let definition = serde_json::to_string(&record.definition)
+            .map_err(|error| StorageError::Serialization(error.to_string()))?;
+        let mut transaction = self.pool.begin().await?;
+        let inserted = sqlx::query(
+            "INSERT INTO routines (id, owner_id, bot_id, name, description, active_version_id, enabled, draft, created_at_ms, updated_at_ms)
+             SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE NOT EXISTS (
+               SELECT 1 FROM routines WHERE owner_id = ? AND lower(trim(name)) = lower(trim(?))
+             )",
+        ).bind(record.id.to_string()).bind(record.owner_id.to_string()).bind(record.bot_id.to_string())
+            .bind(&record.name).bind(&record.description).bind(record.active_version_id.to_string())
+            .bind(record.enabled).bind(record.draft).bind(record.created_at_ms).bind(record.updated_at_ms)
+            .bind(record.owner_id.to_string()).bind(&record.name).execute(&mut *transaction).await?;
+        if inserted.rows_affected() == 0 {
+            return Err(StorageError::DuplicateRoutineName);
+        }
+        sqlx::query("INSERT INTO routine_versions (id, routine_id, version, definition_json, created_at_ms) VALUES (?, ?, 1, ?, ?)")
+            .bind(record.active_version_id.to_string()).bind(record.id.to_string()).bind(definition)
+            .bind(record.created_at_ms).execute(&mut *transaction).await?;
+        transaction.commit().await?;
+        Ok(())
+    }
+
+    /// Creates a new immutable version while retaining historical definitions.
+    ///
+    /// # Errors
+    /// Returns not-found, duplicate-name, serialization, or database errors.
+    pub async fn update_routine(
+        &self,
+        owner_id: Uuid,
+        id: Uuid,
+        update: RoutineUpdate<'_>,
+    ) -> Result<RoutineRecord, StorageError> {
+        let current = self.routine(owner_id, id).await?;
+        let duplicate: i64 = sqlx::query_scalar("SELECT count(*) FROM routines WHERE owner_id = ? AND id != ? AND lower(trim(name)) = lower(trim(?))")
+            .bind(owner_id.to_string()).bind(id.to_string()).bind(update.name).fetch_one(&self.pool).await?;
+        if duplicate > 0 {
+            return Err(StorageError::DuplicateRoutineName);
+        }
+        let version = current
+            .version
+            .checked_add(1)
+            .ok_or_else(|| StorageError::Integrity("routine version overflow".to_owned()))?;
+        let version_id = Uuid::now_v7();
+        let encoded = serde_json::to_string(update.definition)
+            .map_err(|error| StorageError::Serialization(error.to_string()))?;
+        let mut transaction = self.pool.begin().await?;
+        sqlx::query("INSERT INTO routine_versions (id, routine_id, version, definition_json, created_at_ms) VALUES (?, ?, ?, ?, ?)")
+            .bind(version_id.to_string()).bind(id.to_string()).bind(i64::from(version)).bind(encoded)
+            .bind(update.updated_at_ms).execute(&mut *transaction).await?;
+        sqlx::query("UPDATE routines SET name = ?, description = ?, active_version_id = ?, draft = ?, updated_at_ms = ? WHERE owner_id = ? AND id = ?")
+            .bind(update.name).bind(update.description).bind(version_id.to_string()).bind(update.draft).bind(update.updated_at_ms)
+            .bind(owner_id.to_string()).bind(id.to_string()).execute(&mut *transaction).await?;
+        transaction.commit().await?;
+        self.routine(owner_id, id).await
+    }
+
+    /// Enables or disables an owner-scoped routine without changing its version.
+    ///
+    /// # Errors
+    /// Returns not-found or database errors.
+    pub async fn set_routine_enabled(
+        &self,
+        owner_id: Uuid,
+        id: Uuid,
+        enabled: bool,
+        updated_at_ms: i64,
+    ) -> Result<RoutineRecord, StorageError> {
+        let result = sqlx::query(
+            "UPDATE routines SET enabled = ?, updated_at_ms = ? WHERE owner_id = ? AND id = ?",
+        )
+        .bind(enabled)
+        .bind(updated_at_ms)
+        .bind(owner_id.to_string())
+        .bind(id.to_string())
+        .execute(&self.pool)
+        .await?;
+        if result.rows_affected() == 0 {
+            return Err(StorageError::RoutineNotFound);
+        }
+        self.routine(owner_id, id).await
+    }
+
+    /// Deletes an owner-scoped routine and all versions/runs.
+    ///
+    /// # Errors
+    /// Returns not-found or database errors.
+    pub async fn delete_routine(&self, owner_id: Uuid, id: Uuid) -> Result<(), StorageError> {
+        let result = sqlx::query("DELETE FROM routines WHERE owner_id = ? AND id = ?")
+            .bind(owner_id.to_string())
+            .bind(id.to_string())
+            .execute(&self.pool)
+            .await?;
+        if result.rows_affected() == 0 {
+            return Err(StorageError::RoutineNotFound);
+        }
+        Ok(())
+    }
+
+    /// Starts a durable demonstration recording.
+    ///
+    /// # Errors
+    /// Returns missing-Bot, serialization, or database errors.
+    pub async fn create_routine_recording(
+        &self,
+        record: &RoutineRecordingRecord,
+    ) -> Result<(), StorageError> {
+        let bot_count: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM bots WHERE owner_id = ? AND id = ?")
+                .bind(record.owner_id.to_string())
+                .bind(record.bot_id.to_string())
+                .fetch_one(&self.pool)
+                .await?;
+        if bot_count == 0 {
+            return Err(StorageError::BotNotFound);
+        }
+        sqlx::query("INSERT INTO routine_recordings (id, owner_id, bot_id, name, description, actions_json, status, created_at_ms, updated_at_ms) VALUES (?, ?, ?, ?, ?, '[]', 'recording', ?, ?)")
+            .bind(record.id.to_string()).bind(record.owner_id.to_string()).bind(record.bot_id.to_string())
+            .bind(&record.name).bind(&record.description).bind(record.created_at_ms).bind(record.updated_at_ms)
+            .execute(&self.pool).await?;
+        Ok(())
+    }
+
+    /// Appends one structured action to an active recording.
+    ///
+    /// # Errors
+    /// Returns not-found, serialization, or database errors.
+    pub async fn append_routine_recording_action(
+        &self,
+        owner_id: Uuid,
+        id: Uuid,
+        action: &RecordedAction,
+        updated_at_ms: i64,
+    ) -> Result<RoutineRecordingRecord, StorageError> {
+        let mut recording = self.routine_recording(owner_id, id).await?;
+        if recording.actions.len() >= 256 {
+            return Err(StorageError::Integrity(
+                "routine recording step limit reached".to_owned(),
+            ));
+        }
+        recording.actions.push(action.clone());
+        let actions = serde_json::to_string(&recording.actions)
+            .map_err(|error| StorageError::Serialization(error.to_string()))?;
+        sqlx::query("UPDATE routine_recordings SET actions_json = ?, updated_at_ms = ? WHERE owner_id = ? AND id = ? AND status = 'recording'")
+            .bind(actions).bind(updated_at_ms).bind(owner_id.to_string()).bind(id.to_string()).execute(&self.pool).await?;
+        self.routine_recording(owner_id, id).await
+    }
+
+    /// Loads an active recording.
+    ///
+    /// # Errors
+    /// Returns not-found, serialization, database, or integrity errors.
+    pub async fn routine_recording(
+        &self,
+        owner_id: Uuid,
+        id: Uuid,
+    ) -> Result<RoutineRecordingRecord, StorageError> {
+        let row = sqlx::query("SELECT id, owner_id, bot_id, name, description, actions_json, created_at_ms, updated_at_ms FROM routine_recordings WHERE owner_id = ? AND id = ? AND status = 'recording'")
+            .bind(owner_id.to_string()).bind(id.to_string()).fetch_optional(&self.pool).await?
+            .ok_or(StorageError::RoutineRecordingNotFound)?;
+        routine_recording_from_row(&row)
+    }
+
+    /// Finishes or cancels a recording so it cannot accept more actions.
+    ///
+    /// # Errors
+    /// Returns not-found or database errors.
+    pub async fn close_routine_recording(
+        &self,
+        owner_id: Uuid,
+        id: Uuid,
+        finished: bool,
+        updated_at_ms: i64,
+    ) -> Result<RoutineRecordingRecord, StorageError> {
+        let recording = self.routine_recording(owner_id, id).await?;
+        let status = if finished { "finished" } else { "cancelled" };
+        let result = sqlx::query("UPDATE routine_recordings SET status = ?, updated_at_ms = ? WHERE owner_id = ? AND id = ? AND status = 'recording'")
+            .bind(status).bind(updated_at_ms).bind(owner_id.to_string()).bind(id.to_string()).execute(&self.pool).await?;
+        if result.rows_affected() == 0 {
+            return Err(StorageError::RoutineRecordingNotFound);
+        }
+        Ok(recording)
+    }
+
+    /// Persists a manual or dry-run result bound to the exact active version.
+    ///
+    /// # Errors
+    /// Returns serialization or database errors.
+    pub async fn create_routine_run(&self, record: &RoutineRunRecord) -> Result<(), StorageError> {
+        let results = record
+            .results
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()
+            .map_err(|error| StorageError::Serialization(error.to_string()))?;
+        sqlx::query("INSERT INTO routine_runs (id, owner_id, routine_id, routine_version_id, status, trigger_json, dry_run, input_json, result_json, error_message, started_at_ms, finished_at_ms) VALUES (?, ?, ?, ?, ?, '{\"kind\":\"manual\"}', ?, ?, ?, ?, ?, ?)")
+            .bind(record.id.to_string()).bind(record.owner_id.to_string()).bind(record.routine_id.to_string())
+            .bind(record.routine_version_id.to_string()).bind(&record.status).bind(record.dry_run)
+            .bind(record.inputs.to_string()).bind(results).bind(&record.error_message).bind(record.started_at_ms).bind(record.finished_at_ms)
+            .execute(&self.pool).await?;
+        Ok(())
+    }
+
+    /// Lists recent manual/dry runs with redacted structured results.
+    ///
+    /// # Errors
+    /// Returns database, serialization, or integrity errors.
+    pub async fn routine_runs(
+        &self,
+        owner_id: Uuid,
+        routine_id: Uuid,
+    ) -> Result<Vec<RoutineRunRecord>, StorageError> {
+        let rows = sqlx::query("SELECT id, owner_id, routine_id, routine_version_id, status, dry_run, input_json, result_json, error_message, started_at_ms, finished_at_ms FROM routine_runs WHERE owner_id = ? AND routine_id = ? ORDER BY started_at_ms DESC, id LIMIT 100")
+            .bind(owner_id.to_string()).bind(routine_id.to_string()).fetch_all(&self.pool).await?;
+        rows.iter().map(routine_run_from_row).collect()
+    }
     /// Lists owner-scoped plugin registry records.
     ///
     /// # Errors
@@ -2956,6 +3272,67 @@ fn plugin_tool_from_row(row: &sqlx::sqlite::SqliteRow) -> Result<PluginToolRecor
     })
 }
 
+fn routine_from_row(row: &sqlx::sqlite::SqliteRow) -> Result<RoutineRecord, StorageError> {
+    let definition_json: String = row.try_get("definition_json")?;
+    let version: i64 = row.try_get("version")?;
+    Ok(RoutineRecord {
+        id: parse_uuid(row.try_get("id")?)?,
+        owner_id: parse_uuid(row.try_get("owner_id")?)?,
+        bot_id: parse_uuid(row.try_get("bot_id")?)?,
+        name: row.try_get("name")?,
+        description: row.try_get("description")?,
+        enabled: row.try_get("enabled")?,
+        draft: row.try_get("draft")?,
+        active_version_id: parse_uuid(row.try_get("active_version_id")?)?,
+        version: u32::try_from(version)
+            .map_err(|_| StorageError::Integrity("invalid routine version".to_owned()))?,
+        definition: serde_json::from_str(&definition_json)
+            .map_err(|error| StorageError::Serialization(error.to_string()))?,
+        created_at_ms: row.try_get("created_at_ms")?,
+        updated_at_ms: row.try_get("updated_at_ms")?,
+    })
+}
+
+fn routine_recording_from_row(
+    row: &sqlx::sqlite::SqliteRow,
+) -> Result<RoutineRecordingRecord, StorageError> {
+    let actions_json: String = row.try_get("actions_json")?;
+    Ok(RoutineRecordingRecord {
+        id: parse_uuid(row.try_get("id")?)?,
+        owner_id: parse_uuid(row.try_get("owner_id")?)?,
+        bot_id: parse_uuid(row.try_get("bot_id")?)?,
+        name: row.try_get("name")?,
+        description: row.try_get("description")?,
+        actions: serde_json::from_str(&actions_json)
+            .map_err(|error| StorageError::Serialization(error.to_string()))?,
+        created_at_ms: row.try_get("created_at_ms")?,
+        updated_at_ms: row.try_get("updated_at_ms")?,
+    })
+}
+
+fn routine_run_from_row(row: &sqlx::sqlite::SqliteRow) -> Result<RoutineRunRecord, StorageError> {
+    let input_json: String = row.try_get("input_json")?;
+    let result_json: Option<String> = row.try_get("result_json")?;
+    Ok(RoutineRunRecord {
+        id: parse_uuid(row.try_get("id")?)?,
+        owner_id: parse_uuid(row.try_get("owner_id")?)?,
+        routine_id: parse_uuid(row.try_get("routine_id")?)?,
+        routine_version_id: parse_uuid(row.try_get("routine_version_id")?)?,
+        status: row.try_get("status")?,
+        dry_run: row.try_get("dry_run")?,
+        inputs: serde_json::from_str(&input_json)
+            .map_err(|error| StorageError::Serialization(error.to_string()))?,
+        results: result_json
+            .as_deref()
+            .map(serde_json::from_str)
+            .transpose()
+            .map_err(|error| StorageError::Serialization(error.to_string()))?,
+        error_message: row.try_get("error_message")?,
+        started_at_ms: row.try_get("started_at_ms")?,
+        finished_at_ms: row.try_get("finished_at_ms")?,
+    })
+}
+
 fn parse_uuid(value: &str) -> Result<Uuid, StorageError> {
     Uuid::parse_str(value)
         .map_err(|_| StorageError::Integrity("database contains an invalid UUID".to_owned()))
@@ -3018,6 +3395,103 @@ mod tests {
             storage.plugin(owner, plugin_id).await,
             Err(StorageError::PluginNotFound)
         ));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn routine_versions_recordings_and_runs_are_restart_durable() -> Result<(), StorageError>
+    {
+        let directory = tempfile::tempdir()?;
+        let database = directory.path().join("homebot.db");
+        let storage = Storage::open(&database).await?;
+        let owner = Uuid::now_v7();
+        let bot = storage
+            .create_bot(owner, Bot::create("Nova", "Research")?, 1)
+            .await?;
+        let definition = homebot_routines::RoutineDefinition {
+            inputs: Vec::new(),
+            steps: vec![homebot_routines::RoutineStep::BotPrompt {
+                bot_id: bot.id.0,
+                prompt_template: "Summarise".to_owned(),
+                requires_approval: false,
+            }],
+            expected_outputs: Vec::new(),
+        };
+        let record = RoutineRecord {
+            id: Uuid::now_v7(),
+            owner_id: owner,
+            bot_id: bot.id.0,
+            name: "Daily brief".to_owned(),
+            description: String::new(),
+            enabled: false,
+            draft: true,
+            active_version_id: Uuid::now_v7(),
+            version: 1,
+            definition: definition.clone(),
+            created_at_ms: 2,
+            updated_at_ms: 2,
+        };
+        storage.create_routine(&record).await?;
+        let edited = storage
+            .update_routine(
+                owner,
+                record.id,
+                RoutineUpdate {
+                    name: "Morning brief",
+                    description: "Edited",
+                    definition: &definition,
+                    draft: false,
+                    updated_at_ms: 3,
+                },
+            )
+            .await?;
+        assert_eq!(edited.version, 2);
+        let versions: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM routine_versions WHERE routine_id = ?")
+                .bind(record.id.to_string())
+                .fetch_one(storage.pool())
+                .await?;
+        assert_eq!(versions, 2);
+        let recording = RoutineRecordingRecord {
+            id: Uuid::now_v7(),
+            owner_id: owner,
+            bot_id: bot.id.0,
+            name: "Recorded".to_owned(),
+            description: String::new(),
+            actions: Vec::new(),
+            created_at_ms: 4,
+            updated_at_ms: 4,
+        };
+        storage.create_routine_recording(&recording).await?;
+        let action = homebot_routines::RecordedAction {
+            actor: homebot_routines::RecordedActor::User,
+            step: definition.steps[0].clone(),
+        };
+        assert_eq!(
+            storage
+                .append_routine_recording_action(owner, recording.id, &action, 5)
+                .await?
+                .actions,
+            vec![action]
+        );
+        let run = RoutineRunRecord {
+            id: Uuid::now_v7(),
+            owner_id: owner,
+            routine_id: record.id,
+            routine_version_id: edited.active_version_id,
+            status: "dry_run_succeeded".to_owned(),
+            dry_run: true,
+            inputs: json!({}),
+            results: Some(vec![]),
+            error_message: None,
+            started_at_ms: 6,
+            finished_at_ms: Some(7),
+        };
+        storage.create_routine_run(&run).await?;
+        drop(storage);
+        let reopened = Storage::open(&database).await?;
+        assert_eq!(reopened.routine(owner, record.id).await?.version, 2);
+        assert_eq!(reopened.routine_runs(owner, record.id).await?, vec![run]);
         Ok(())
     }
 
@@ -3122,6 +3596,51 @@ mod tests {
                 .fetch_all(storage.pool())
                 .await?;
         assert!(!columns.iter().any(|column| column == "value"));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn version_nine_routine_upgrade_preserves_legacy_orphans_safely()
+    -> Result<(), StorageError> {
+        let directory = tempfile::tempdir()?;
+        let database = directory.path().join("homebot-v9.db");
+        let options =
+            SqliteConnectOptions::from_str(database.to_str().ok_or(StorageError::InvalidPath)?)?
+                .create_if_missing(true)
+                .foreign_keys(true);
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(options)
+            .await?;
+        for migration in [
+            include_str!("../migrations/0001_initial.sql"),
+            include_str!("../migrations/0002_event_retention.sql"),
+            include_str!("../migrations/0003_attachments.sql"),
+            include_str!("../migrations/0004_bot_lifecycle.sql"),
+            include_str!("../migrations/0005_direct_chat.sql"),
+            include_str!("../migrations/0006_group_coordination.sql"),
+            include_str!("../migrations/0007_activity_artifacts.sql"),
+            include_str!("../migrations/0008_secret_references.sql"),
+            include_str!("../migrations/0009_plugins.sql"),
+        ] {
+            sqlx::raw_sql(migration).execute(&pool).await?;
+        }
+        let routine_id = Uuid::now_v7();
+        let version_id = Uuid::now_v7();
+        sqlx::query("INSERT INTO routines (id, name, active_version_id, enabled, created_at_ms, updated_at_ms) VALUES (?, 'Legacy', ?, 1, 1, 1)")
+            .bind(routine_id.to_string()).bind(version_id.to_string()).execute(&pool).await?;
+        sqlx::query("INSERT INTO routine_versions (id, routine_id, version, definition_json, created_at_ms) VALUES (?, ?, 1, '{}', 1)")
+            .bind(version_id.to_string()).bind(routine_id.to_string()).execute(&pool).await?;
+        sqlx::raw_sql(include_str!("../migrations/0010_routines.sql"))
+            .execute(&pool)
+            .await?;
+        let retained: i64 = sqlx::query_scalar("SELECT count(*) FROM routines WHERE id = ?")
+            .bind(routine_id.to_string())
+            .fetch_one(&pool)
+            .await?;
+        assert_eq!(retained, 1);
+        let storage = Storage { pool };
+        assert!(storage.list_routines(Uuid::nil()).await?.is_empty());
         Ok(())
     }
 

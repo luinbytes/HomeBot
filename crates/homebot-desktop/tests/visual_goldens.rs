@@ -82,4 +82,19 @@ fn desktop_shell_visual_goldens() {
         HomeBotTheme::light(),
         FixtureState::SettingsPlugins,
     );
+    snapshot(
+        "desktop_routines_list_light",
+        HomeBotTheme::light(),
+        FixtureState::RoutinesList,
+    );
+    snapshot(
+        "desktop_routine_editor_dark",
+        HomeBotTheme::dark(),
+        FixtureState::RoutineEditor,
+    );
+    snapshot(
+        "desktop_routine_recording_light",
+        HomeBotTheme::light(),
+        FixtureState::RoutineRecording,
+    );
 }

@@ -1,5 +1,9 @@
 //! Versioned, provider-neutral contracts shared by every `HomeBot` client.
 
+pub use homebot_routines::{
+    ExpectedOutput, RecordedAction, RecordedActor, RoutineDefinition, RoutineExecutionResult,
+    RoutineInput, RoutineInputKind, RoutineStep, RoutineStepStatus,
+};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -115,6 +119,18 @@ pub enum ServerEventBody {
     },
     PluginRemoved {
         plugin_id: Uuid,
+    },
+    RoutineChanged {
+        routine: RoutineSummary,
+    },
+    RoutineRemoved {
+        routine_id: Uuid,
+    },
+    RoutineRecordingChanged {
+        recording: RoutineRecordingSummary,
+    },
+    RoutineRunChanged {
+        run: RoutineRunSummary,
     },
     CommandAccepted {
         request_id: Uuid,
@@ -818,6 +834,117 @@ pub struct PluginAssignmentRequest {
     pub enabled: bool,
 }
 
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RoutineSummary {
+    pub id: Uuid,
+    pub bot_id: Uuid,
+    pub name: String,
+    pub description: String,
+    pub enabled: bool,
+    pub draft: bool,
+    pub active_version_id: Uuid,
+    pub version: u32,
+    pub definition: RoutineDefinition,
+    pub created_at_unix_ms: u64,
+    pub updated_at_unix_ms: u64,
+}
+
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CreateRoutineRequest {
+    pub request_id: Uuid,
+    pub idempotency_key: Uuid,
+    pub bot_id: Uuid,
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    pub definition: RoutineDefinition,
+    #[serde(default = "default_true")]
+    pub draft: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct UpdateRoutineRequest {
+    pub request_id: Uuid,
+    pub idempotency_key: Uuid,
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    pub definition: RoutineDefinition,
+    pub draft: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct DuplicateRoutineRequest {
+    pub request_id: Uuid,
+    pub idempotency_key: Uuid,
+    pub name: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct StartRoutineRecordingRequest {
+    pub request_id: Uuid,
+    pub idempotency_key: Uuid,
+    pub bot_id: Uuid,
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+}
+
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AppendRoutineRecordingRequest {
+    pub request_id: Uuid,
+    pub idempotency_key: Uuid,
+    pub action: RecordedAction,
+}
+
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RunRoutineRequest {
+    pub request_id: Uuid,
+    pub idempotency_key: Uuid,
+    #[serde(default = "empty_object")]
+    pub inputs: Value,
+}
+
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RoutineRecordingSummary {
+    pub id: Uuid,
+    pub bot_id: Uuid,
+    pub name: String,
+    pub description: String,
+    pub actions: Vec<RecordedAction>,
+    pub created_at_unix_ms: u64,
+    pub updated_at_unix_ms: u64,
+}
+
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RoutineRunSummary {
+    pub id: Uuid,
+    pub routine_id: Uuid,
+    pub routine_version_id: Uuid,
+    pub status: String,
+    pub dry_run: bool,
+    pub results: Vec<RoutineExecutionResult>,
+    pub error_message: Option<String>,
+    pub started_at_unix_ms: u64,
+    pub finished_at_unix_ms: Option<u64>,
+}
+
+const fn default_true() -> bool {
+    true
+}
+fn empty_object() -> Value {
+    Value::Object(serde_json::Map::new())
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct CreateAttachmentRequest {
@@ -868,6 +995,15 @@ pub struct ProtocolV1Schema {
     pub plugin_mutation_request: PluginMutationRequest,
     pub plugin_assignment_request: PluginAssignmentRequest,
     pub plugin: PluginSummary,
+    pub create_routine_request: CreateRoutineRequest,
+    pub update_routine_request: UpdateRoutineRequest,
+    pub duplicate_routine_request: DuplicateRoutineRequest,
+    pub start_routine_recording_request: StartRoutineRecordingRequest,
+    pub append_routine_recording_request: AppendRoutineRecordingRequest,
+    pub run_routine_request: RunRoutineRequest,
+    pub routine: RoutineSummary,
+    pub routine_recording: RoutineRecordingSummary,
+    pub routine_run: RoutineRunSummary,
     pub create_attachment_request: CreateAttachmentRequest,
     pub create_attachment_response: CreateAttachmentResponse,
     pub finalize_attachment_request: FinalizeAttachmentRequest,

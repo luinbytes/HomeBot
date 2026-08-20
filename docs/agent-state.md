@@ -7,9 +7,9 @@ This file is operational state for coding agents. It is not user-facing product 
 ## Current state
 
 - Current milestone: M1, Local Runtime Foundation
-- Current Linear issue: 6C7-38 ProviderAdapter runtime and process supervision
+- Current Linear issue: 6C7-39 Codex CLI adapter via structured App Server protocol
 - Current Git branch: `feat/m0-contracts`
-- Latest verified remote commit: `ec4a7fbf0d61c426706273db636c26fce7eb5361`
+- Latest verified remote commit: `97482ca0fc7f4ff8adabaea29e3686ce4bbb44e0`
 - Public repository: `https://github.com/luinbytes/HomeBot`
 - Repository owner and commit identity: `luinbytes <42706009+luinbytes@users.noreply.github.com>`
 
@@ -30,7 +30,8 @@ Current blockers:
 - Rust is installed in isolated task paths under `/tmp/homebot-rustup` and `/tmp/homebot-cargo`.
 - Exact current-app pixel captures remain deliberately gated to 6C7-42.
 - 6C7-37 is Done. GitHub Actions run 32352700967 passed all six Linux, macOS Intel, macOS arm64, quality, dependency-policy, and audit jobs.
-- 6C7-38 is In Progress. Provider-neutral contracts, adapter/operation routing, bounded event receivers, cancellation/compaction/recovery hooks, and cleared-environment child supervision with redacted bounded diagnostics now pass focused tests. Full workspace and remote CI verification remains.
+- 6C7-38 is Done. GitHub Actions run 32354047604 passed the full six-job matrix.
+- 6C7-39 is In Progress. The current environment has no `codex` binary, so the mandatory end-to-end smoke test must skip with an explicit reason here. Official App Server documentation confirms stdio JSONL is the default structured transport and the WebSocket transport is experimental/unsupported.
 
 ## Completed work
 
@@ -45,12 +46,13 @@ Current blockers:
 - Rust workspace and CI quality gates completed; Linear 6C7-35 is Done.
 - SQLite migrations, WAL persistence, event outbox, backup/restore, and recovery tests completed; Linear 6C7-36 is Done.
 - Authenticated HTTP/WebSocket transport, verified attachments, reconnect/replay, cancellation, heartbeat, idempotency, and bounded slow-client handling completed; Linear 6C7-37 is Done.
+- ProviderAdapter lifecycle/runtime and bounded child-process supervision completed; Linear 6C7-38 is Done.
 
 ## Immediate next work
 
-1. Run full workspace quality gates for the 6C7-38 provider runtime and fix cross-crate or cross-platform failures.
-2. Commit/push the provider runtime, verify the complete GitHub Actions matrix, and close 6C7-38 only after the remote postconditions pass.
-3. Refresh the dependency graph and immediately begin the next unblocked provider adapter issue.
+1. Implement the Codex stdio JSONL client lifecycle: initialize, thread start/resume, turn start, notifications, server requests, and interruption.
+2. Normalize Codex content, tool/activity, approval, models/capabilities, auth, usage, and errors into `ProviderAdapter` types with fixture tests.
+3. Support explicit binary paths and independent adapter instances for multiple provider profiles; add a skipped-with-reason smoke test when Codex is unavailable.
 
 ## Verification state
 

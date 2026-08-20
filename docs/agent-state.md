@@ -6,11 +6,11 @@ This file is operational state for coding agents. It is not user-facing product 
 
 ## Current state
 
-- Current milestone: M2 corrective integration, while M3 remains active.
-- Current Linear issue: 6C7-73, authenticated desktop/server integration and local runtime supervision (`In Progress`).
+- Current milestone: M3, Skills, Plugins, Routines & Secrets. M2 is verified complete after corrective integration.
+- Current Linear issue: 6C7-53, routine scheduler, event triggers and run history (`In Progress`).
 - Current Git branch: `main`.
-- Latest verified remote commit: `82a2d11b45481a623e75a30141df87ee625ca3c2`.
-- Latest verified GitHub Actions run: `32409841146`, all nine jobs passed.
+- Latest verified remote commit: `d8666ddf906c34acdaca8119a4e6c43c96306d71`.
+- Latest verified GitHub Actions run: `32412350360`, all nine jobs passed.
 - Public repository: `https://github.com/luinbytes/HomeBot`.
 - Required commit identity: `luinbytes <42706009+luinbytes@users.noreply.github.com>`.
 
@@ -29,23 +29,24 @@ Architecture decisions currently frozen:
 Current blockers:
 
 - No external blocker. Neither Codex nor Claude is installed/authenticated in this execution environment, so real provider smoke tests explicitly skip while protocol-faithful fixtures pass.
-- M2 epic 6C7-41 is reopened. Urgent corrective issue 6C7-73 must wire `HomeBotApp` to authenticated HTTP/WebSocket state and bundled-server supervision before M2 can return to Done.
+- No active M2 blocker. Corrective issue 6C7-73 and epic 6C7-41 are verified Done.
 - `egui` 0.32.3 transitively uses unmaintained `ttf-parser` 0.25.1. RUSTSEC-2026-0192 reports no known vulnerability or safe upgrade; review remains mandatory in 6C7-69.
 
 ## Completed work
 
 - M0 epic 6C7-30: baseline, parity inventory, protocol contract, and security model.
 - M1 epic 6C7-34: Rust/CI foundation, SQLite/outbox/recovery, authenticated HTTP/WebSocket transport, provider runtime, Codex, Claude/OpenAI-compatible/community adapters, and local filesystem/PTY/browser capabilities.
-- M2 component work: egui visual system, native shell, Bot lifecycle, direct chats, three-Bot groups/coordination, normalized activity/artifact surfaces, and settings/native notifications. Epic 6C7-41 is not complete until 6C7-73 passes.
+- M2 epic 6C7-41: egui visual system, native shell, Bot lifecycle, direct chats, three-Bot groups/coordination, normalized activity/artifact surfaces, settings/native notifications, and the authenticated integrated application/runtime lifecycle.
 - 6C7-50, local MCP/plugin registry, exact client recovery states, health/discovery, enablement/removal and per-Bot assignment.
 - 6C7-52, durable routine create/edit/versioning, structured recording conversion, deterministic Bot/MCP replay, dry run, Run now, approval preservation, restart persistence, durable failures and server-driven desktop projections.
-- Most recent completed issue: 6C7-52.
+- 6C7-73, real `HomeBotApp` authenticated transport, local authoritative-server supervision, snapshot/replay reconnect, HTTP mutation routing and restart/failure verification. M2 epic 6C7-41 is Done again with corrective evidence.
+- Most recent completed issue: 6C7-73.
 
 ## Immediate next work
 
-1. Commit and push the completed 6C7-73 transport/runtime integration, then verify all remote CI jobs.
-2. Record acceptance evidence in Linear and close 6C7-73 only after remote CI passes; re-close M2 epic 6C7-41 only after reconciling every child and the integrated-app postcondition.
-3. Refresh the dependency graph and immediately start the next highest-priority unblocked M3 issue.
+1. Design 6C7-53's durable schedule/trigger state and migration, preserving exact routine versions and redacted input metadata.
+2. Implement headless one-shot/recurring execution, timezone/DST semantics, missed-run policy, webhook/plugin deduplication, concurrency, retries/backoff and cancellation.
+3. Expose authenticated schedule/trigger/run-history protocol and add restart, duplicate delivery, DST and overlap tests before the full gate.
 
 ## Verification state
 
@@ -67,12 +68,12 @@ Verified locally for the active issue:
 - Cargo-deny 0.20.2 reports advisories, bans, licenses, and sources all OK with only the existing documented warnings.
 - 6C7-73 integration tests prove clean loopback supervision, authenticated version/hello/snapshot startup, real Bot/chat/message and attachment APIs, restart persistence, cursor resume without duplicate events, graceful WebSocket shutdown, and distinct authentication/version/unavailable failures. Existing server coverage proves stale-cursor snapshot fallback.
 
-6C7-52 completion evidence is recorded in Linear and the issue is Done.
+6C7-73 and reopened M2 epic 6C7-41 completion evidence is recorded in Linear; both are Done. 6C7-53 is In Progress.
 
 ## Known failures and incomplete implementation
 
 - Android app, skills, schedules/triggers, VCS/worktrees/checkpoints, device pairing/Tailscale, packaging, and release artifacts remain incomplete roadmap work.
-- M2 is reopened and 6C7-73 is In Progress; the native app still lacks its production authenticated transport and bundled-server lifecycle until this issue lands.
+- 6C7-53 scheduler/trigger persistence and execution are not implemented yet.
 - Real authenticated Codex/Claude round trips are unavailable in this environment. OpenAI-compatible and CDP behavior use protocol-faithful local fixtures.
 - No release artifact exists. Do not describe HomeBot as installable or v1-ready.
 

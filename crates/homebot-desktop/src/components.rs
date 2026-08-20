@@ -58,7 +58,12 @@ pub fn avatar(ui: &mut Ui, theme: HomeBotTheme, bot: BotIdentity<'_>, small: boo
     );
 }
 
-pub fn roster_row(ui: &mut Ui, theme: HomeBotTheme, bot: BotIdentity<'_>, selected: bool) {
+pub fn roster_row(
+    ui: &mut Ui,
+    theme: HomeBotTheme,
+    bot: BotIdentity<'_>,
+    selected: bool,
+) -> egui::Response {
     let fill = if selected {
         theme.palette.surface_selected
     } else {
@@ -100,7 +105,9 @@ pub fn roster_row(ui: &mut Ui, theme: HomeBotTheme, bot: BotIdentity<'_>, select
                     });
                 }
             });
-        });
+        })
+        .response
+        .interact(Sense::click())
 }
 
 pub fn section_label(ui: &mut Ui, theme: HomeBotTheme, text: &str) {

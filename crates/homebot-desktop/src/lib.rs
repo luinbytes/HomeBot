@@ -1,3 +1,4 @@
+pub mod app;
 pub mod bot_roster;
 pub mod components;
 pub mod showcase;

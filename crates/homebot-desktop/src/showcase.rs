@@ -75,9 +75,9 @@ pub fn render_fixture(context: &egui::Context, theme: HomeBotTheme, state: Fixtu
             ui.add_space(theme.spacing.xl);
             section_label(ui, theme, "Bots");
             ui.add_space(theme.spacing.sm);
-            roster_row(ui, theme, nova(theme), state != FixtureState::Empty);
-            roster_row(ui, theme, patch(theme), false);
-            roster_row(ui, theme, scout(theme), false);
+            let _ = roster_row(ui, theme, nova(theme), state != FixtureState::Empty);
+            let _ = roster_row(ui, theme, patch(theme), false);
+            let _ = roster_row(ui, theme, scout(theme), false);
             ui.with_layout(Layout::bottom_up(Align::LEFT), |ui| {
                 ui.separator();
                 ui.label(

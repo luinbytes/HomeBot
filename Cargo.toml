@@ -25,6 +25,7 @@ axum = { version = "0.8", features = ["json", "ws"] }
 base64 = "0.22"
 cap-std = "4.0"
 egui = "0.32.3"
+eframe = { version = "0.32.3", default-features = false, features = ["accesskit", "default_fonts", "glow", "wayland", "x11"] }
 futures-util = "0.3"
 homebot-domain = { version = "=0.0.1", path = "crates/homebot-domain" }
 homebot-protocol = { version = "=0.0.1", path = "crates/homebot-protocol" }

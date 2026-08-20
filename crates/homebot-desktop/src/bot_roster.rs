@@ -84,6 +84,16 @@ pub enum EditorError {
     DuplicateName,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum BotClientCommand {
+    Create(BotEditorDraft),
+    Update(BotEditorDraft),
+    Archive(Uuid),
+    Restore(Uuid),
+    MarkRead(Uuid),
+    RetryConnection,
+}
+
 #[derive(Clone, Debug)]
 pub struct BotRosterModel {
     pub bots: Vec<BotSummary>,
@@ -91,6 +101,7 @@ pub struct BotRosterModel {
     pub connection: ConnectionState,
     pub editor: Option<BotEditorDraft>,
     pub show_archived: bool,
+    pending_commands: Vec<BotClientCommand>,
 }
 
 impl Default for BotRosterModel {
@@ -101,6 +112,7 @@ impl Default for BotRosterModel {
             connection: ConnectionState::Connecting,
             editor: None,
             show_archived: false,
+            pending_commands: Vec::new(),
         }
     }
 }
@@ -124,6 +136,55 @@ impl BotRosterModel {
             self.bots.push(changed);
         }
         self.bots.sort_by_key(|bot| bot.name.to_lowercase());
+    }
+
+    pub fn begin_create(&mut self) {
+        self.editor = Some(BotEditorDraft::default());
+    }
+
+    pub fn begin_edit(&mut self, bot_id: Uuid) {
+        self.editor = self
+            .bots
+            .iter()
+            .find(|bot| bot.id == bot_id)
+            .map(BotEditorDraft::for_bot);
+    }
+
+    /// Validates and queues the current editor mutation for the server client.
+    ///
+    /// # Errors
+    ///
+    /// Returns a local validation error without queueing a mutation.
+    pub fn submit_editor(&mut self) -> Result<(), EditorError> {
+        let Some(draft) = self.editor.clone() else {
+            return Ok(());
+        };
+        draft.validate(&self.bots)?;
+        self.pending_commands.push(if draft.bot_id.is_some() {
+            BotClientCommand::Update(draft)
+        } else {
+            BotClientCommand::Create(draft)
+        });
+        self.editor = None;
+        Ok(())
+    }
+
+    pub fn queue_archive(&mut self, bot_id: Uuid, archived: bool) {
+        self.pending_commands.push(if archived {
+            BotClientCommand::Restore(bot_id)
+        } else {
+            BotClientCommand::Archive(bot_id)
+        });
+    }
+
+    pub fn queue_mark_read(&mut self, bot_id: Uuid) {
+        self.pending_commands
+            .push(BotClientCommand::MarkRead(bot_id));
+    }
+
+    #[must_use]
+    pub fn take_commands(&mut self) -> Vec<BotClientCommand> {
+        std::mem::take(&mut self.pending_commands)
     }
 
     #[must_use]
@@ -183,5 +244,30 @@ mod tests {
         assert!(model.visible_bots().is_empty());
         model.show_archived = true;
         assert_eq!(model.visible_bots().len(), 1);
+    }
+
+    #[test]
+    fn lifecycle_interactions_queue_server_commands_without_local_authority() {
+        let existing = bot(Uuid::now_v7(), "Nova");
+        let mut model = BotRosterModel::default();
+        model.apply_snapshot(vec![existing.clone()]);
+        model.begin_create();
+        if let Some(draft) = &mut model.editor {
+            draft.name = "Patch".to_owned();
+            draft.title = "Code".to_owned();
+        }
+        assert!(model.submit_editor().is_ok());
+        model.begin_edit(existing.id);
+        assert!(model.submit_editor().is_ok());
+        model.queue_archive(existing.id, false);
+        model.queue_archive(existing.id, true);
+        model.queue_mark_read(existing.id);
+        let commands = model.take_commands();
+        assert!(matches!(commands[0], BotClientCommand::Create(_)));
+        assert!(matches!(commands[1], BotClientCommand::Update(_)));
+        assert_eq!(commands[2], BotClientCommand::Archive(existing.id));
+        assert_eq!(commands[3], BotClientCommand::Restore(existing.id));
+        assert_eq!(commands[4], BotClientCommand::MarkRead(existing.id));
+        assert_eq!(model.bots, vec![existing]);
     }
 }

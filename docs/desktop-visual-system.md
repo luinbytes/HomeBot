@@ -20,11 +20,14 @@ Components consume semantic values instead of choosing raw colors or dimensions.
 
 ## Deterministic goldens
 
-The visual harness renders three initial reference states at 1120 × 760 logical points and one pixel per point:
+The visual harness renders six reference states at 1120 × 760 logical points and one pixel per point:
 
 - `desktop_empty_light`
 - `desktop_chat_light`
 - `desktop_approval_dark`
+- `desktop_bot_editor_light`
+- `desktop_disconnected_dark`
+- `desktop_provider_unavailable_light`
 
 Goldens are stored under `crates/homebot-desktop/tests/snapshots`. The harness uses egui's normal tessellation with a HomeBot-owned CPU triangle renderer. Fixed nearest-neighbor texture sampling and premultiplied-alpha blending remove GPU, driver, Metal, Vulkan, Wayland and X11 variance. The exact same checked-in image is therefore compared on Linux and macOS.
 

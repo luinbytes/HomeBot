@@ -1,5 +1,6 @@
 //! Durable `SQLite` persistence and resumable event outbox.
 
+use homebot_domain::{Bot, BotAttention, BotId, DomainError};
 use serde_json::Value;
 use sqlx::{
     Row, SqlitePool,
@@ -9,7 +10,7 @@ use sqlx::{
 use std::{path::Path, str::FromStr, time::Duration};
 use uuid::Uuid;
 
-pub const SCHEMA_VERSION: u32 = 3;
+pub const SCHEMA_VERSION: u32 = 4;
 static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
 
 #[derive(Debug, thiserror::Error)]
@@ -24,6 +25,12 @@ pub enum StorageError {
     Io(#[from] std::io::Error),
     #[error("database path is not valid UTF-8")]
     InvalidPath,
+    #[error("domain validation failed: {0}")]
+    Domain(#[from] DomainError),
+    #[error("Bot was not found")]
+    BotNotFound,
+    #[error("A Bot with that name already exists")]
+    DuplicateBotName,
 }
 
 #[derive(Clone, Debug)]
@@ -103,6 +110,219 @@ impl Storage {
     #[must_use]
     pub fn pool(&self) -> &SqlitePool {
         &self.pool
+    }
+
+    /// Lists the owner's active or complete Bot roster.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for database or integrity failures.
+    pub async fn list_bots(
+        &self,
+        owner_id: Uuid,
+        include_archived: bool,
+    ) -> Result<Vec<Bot>, StorageError> {
+        let rows = sqlx::query(
+            "SELECT * FROM bots WHERE owner_id = ? AND (? OR archived_at_ms IS NULL)
+             ORDER BY archived_at_ms IS NOT NULL, name COLLATE NOCASE, id",
+        )
+        .bind(owner_id.to_string())
+        .bind(include_archived)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter().map(bot_from_row).collect()
+    }
+
+    /// Loads one owner-scoped Bot.
+    ///
+    /// # Errors
+    ///
+    /// Returns `BotNotFound` or a database/integrity failure.
+    pub async fn get_bot(&self, owner_id: Uuid, bot_id: Uuid) -> Result<Bot, StorageError> {
+        let row = sqlx::query("SELECT * FROM bots WHERE owner_id = ? AND id = ?")
+            .bind(owner_id.to_string())
+            .bind(bot_id.to_string())
+            .fetch_optional(&self.pool)
+            .await?
+            .ok_or(StorageError::BotNotFound)?;
+        bot_from_row(&row)
+    }
+
+    /// Persists a validated Bot while enforcing owner-scoped name uniqueness.
+    ///
+    /// # Errors
+    ///
+    /// Returns `DuplicateBotName` or a database failure.
+    pub async fn create_bot(
+        &self,
+        owner_id: Uuid,
+        mut bot: Bot,
+        now_ms: i64,
+    ) -> Result<Bot, StorageError> {
+        bot.created_at_ms = now_ms;
+        bot.updated_at_ms = now_ms;
+        let result = sqlx::query(
+            "INSERT INTO bots (
+                id, owner_id, name, title, description, provider_profile_id, shape, color,
+                permission_profile, archived_at_ms, unread_count, attention, created_at_ms, updated_at_ms
+             )
+             SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+             WHERE NOT EXISTS (
+                SELECT 1 FROM bots WHERE owner_id = ? AND lower(trim(name)) = lower(trim(?))
+             )",
+        )
+        .bind(bot.id.0.to_string())
+        .bind(owner_id.to_string())
+        .bind(&bot.name)
+        .bind(&bot.title)
+        .bind(&bot.description)
+        .bind(bot.provider_profile_id.map(|id| id.to_string()))
+        .bind(bot.shape.as_str())
+        .bind(bot.color.as_str())
+        .bind(bot.permission_profile.as_str())
+        .bind(bot.archived_at_ms)
+        .bind(bot.unread_count)
+        .bind(bot.attention.as_str())
+        .bind(now_ms)
+        .bind(now_ms)
+        .bind(owner_id.to_string())
+        .bind(&bot.name)
+        .execute(&self.pool)
+        .await?;
+        if result.rows_affected() == 0 {
+            return Err(StorageError::DuplicateBotName);
+        }
+        Ok(bot)
+    }
+
+    /// Persists mutable Bot settings.
+    ///
+    /// # Errors
+    ///
+    /// Returns not-found, duplicate-name, validation, or database errors.
+    pub async fn update_bot(
+        &self,
+        owner_id: Uuid,
+        mut bot: Bot,
+        now_ms: i64,
+    ) -> Result<Bot, StorageError> {
+        bot.updated_at_ms = now_ms;
+        let result = sqlx::query(
+            "UPDATE bots SET name = ?, title = ?, description = ?, provider_profile_id = ?,
+                shape = ?, color = ?, permission_profile = ?, updated_at_ms = ?
+             WHERE owner_id = ? AND id = ? AND NOT EXISTS (
+                SELECT 1 FROM bots duplicate
+                WHERE duplicate.owner_id = ? AND duplicate.id <> ?
+                  AND lower(trim(duplicate.name)) = lower(trim(?))
+             )",
+        )
+        .bind(&bot.name)
+        .bind(&bot.title)
+        .bind(&bot.description)
+        .bind(bot.provider_profile_id.map(|id| id.to_string()))
+        .bind(bot.shape.as_str())
+        .bind(bot.color.as_str())
+        .bind(bot.permission_profile.as_str())
+        .bind(now_ms)
+        .bind(owner_id.to_string())
+        .bind(bot.id.0.to_string())
+        .bind(owner_id.to_string())
+        .bind(bot.id.0.to_string())
+        .bind(&bot.name)
+        .execute(&self.pool)
+        .await?;
+        if result.rows_affected() == 0 {
+            if self.get_bot(owner_id, bot.id.0).await.is_ok() {
+                return Err(StorageError::DuplicateBotName);
+            }
+            return Err(StorageError::BotNotFound);
+        }
+        Ok(bot)
+    }
+
+    /// Applies an explicit archive or restore transition.
+    ///
+    /// # Errors
+    ///
+    /// Returns not-found, invalid-transition, or database errors.
+    pub async fn set_bot_archived(
+        &self,
+        owner_id: Uuid,
+        bot_id: Uuid,
+        archived: bool,
+        now_ms: i64,
+    ) -> Result<Bot, StorageError> {
+        let mut bot = self.get_bot(owner_id, bot_id).await?;
+        if archived {
+            bot.archive(now_ms)?;
+        } else {
+            bot.restore(now_ms)?;
+        }
+        sqlx::query(
+            "UPDATE bots SET archived_at_ms = ?, updated_at_ms = ? WHERE owner_id = ? AND id = ?",
+        )
+        .bind(bot.archived_at_ms)
+        .bind(now_ms)
+        .bind(owner_id.to_string())
+        .bind(bot_id.to_string())
+        .execute(&self.pool)
+        .await?;
+        Ok(bot)
+    }
+
+    /// Clears an existing Bot's unread count.
+    ///
+    /// # Errors
+    ///
+    /// Returns not-found or database errors.
+    pub async fn mark_bot_read(
+        &self,
+        owner_id: Uuid,
+        bot_id: Uuid,
+        now_ms: i64,
+    ) -> Result<Bot, StorageError> {
+        let result = sqlx::query(
+            "UPDATE bots SET unread_count = 0, updated_at_ms = ? WHERE owner_id = ? AND id = ?",
+        )
+        .bind(now_ms)
+        .bind(owner_id.to_string())
+        .bind(bot_id.to_string())
+        .execute(&self.pool)
+        .await?;
+        if result.rows_affected() == 0 {
+            return Err(StorageError::BotNotFound);
+        }
+        self.get_bot(owner_id, bot_id).await
+    }
+
+    /// Updates server-owned unread and attention state.
+    ///
+    /// # Errors
+    ///
+    /// Returns not-found or database errors.
+    pub async fn set_bot_attention(
+        &self,
+        owner_id: Uuid,
+        bot_id: Uuid,
+        unread_count: u32,
+        attention: BotAttention,
+        now_ms: i64,
+    ) -> Result<Bot, StorageError> {
+        let result = sqlx::query(
+            "UPDATE bots SET unread_count = ?, attention = ?, updated_at_ms = ?
+             WHERE owner_id = ? AND id = ?",
+        )
+        .bind(unread_count)
+        .bind(attention.as_str())
+        .bind(now_ms)
+        .bind(owner_id.to_string())
+        .bind(bot_id.to_string())
+        .execute(&self.pool)
+        .await?;
+        if result.rows_affected() == 0 {
+            return Err(StorageError::BotNotFound);
+        }
+        self.get_bot(owner_id, bot_id).await
     }
 
     /// Runs `SQLite` structural and foreign-key checks without attempting repair.
@@ -471,6 +691,32 @@ fn row_to_event(row: &sqlx::sqlite::SqliteRow) -> Result<OutboxEvent, StorageErr
     })
 }
 
+fn bot_from_row(row: &sqlx::sqlite::SqliteRow) -> Result<Bot, StorageError> {
+    let id: String = row.try_get("id")?;
+    let provider_profile_id: Option<String> = row.try_get("provider_profile_id")?;
+    let unread_count: i64 = row.try_get("unread_count")?;
+    let shape: String = row.try_get("shape")?;
+    let color: String = row.try_get("color")?;
+    let permission_profile: String = row.try_get("permission_profile")?;
+    let attention: String = row.try_get("attention")?;
+    Ok(Bot {
+        id: BotId(parse_uuid(&id)?),
+        name: row.try_get("name")?,
+        title: row.try_get("title")?,
+        description: row.try_get("description")?,
+        shape: shape.parse()?,
+        color: color.parse()?,
+        provider_profile_id: provider_profile_id.as_deref().map(parse_uuid).transpose()?,
+        permission_profile: permission_profile.parse()?,
+        archived_at_ms: row.try_get("archived_at_ms")?,
+        unread_count: u32::try_from(unread_count)
+            .map_err(|_| StorageError::Integrity("invalid Bot unread count".to_owned()))?,
+        attention: attention.parse()?,
+        created_at_ms: row.try_get("created_at_ms")?,
+        updated_at_ms: row.try_get("updated_at_ms")?,
+    })
+}
+
 async fn fetch_attachment<'e, E>(
     executor: E,
     attachment_id: &str,
@@ -515,6 +761,64 @@ fn parse_uuid(value: &str) -> Result<Uuid, StorageError> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[tokio::test]
+    async fn bot_lifecycle_is_owner_scoped_unique_and_durable() -> Result<(), StorageError> {
+        let directory = tempfile::tempdir()?;
+        let database = directory.path().join("homebot.db");
+        let owner = Uuid::now_v7();
+        let other_owner = Uuid::now_v7();
+        let storage = Storage::open(&database).await?;
+        let mut nova = Bot::create("Nova", "Research")?;
+        nova.description = "Finds useful context".to_owned();
+        let nova = storage.create_bot(owner, nova, 10).await?;
+        assert!(matches!(
+            storage
+                .create_bot(owner, Bot::create(" nova ", "Duplicate")?, 11)
+                .await,
+            Err(StorageError::DuplicateBotName)
+        ));
+        assert!(
+            storage
+                .create_bot(other_owner, Bot::create("Nova", "Separate owner")?, 11)
+                .await
+                .is_ok()
+        );
+
+        let mut edited = nova.clone();
+        edited.update_identity(
+            "Nova",
+            "Lead researcher",
+            "Updated",
+            homebot_domain::BotShape::Hexagon,
+            homebot_domain::BotColor::Blue,
+        )?;
+        let edited = storage.update_bot(owner, edited, 12).await?;
+        assert_eq!(edited.shape, homebot_domain::BotShape::Hexagon);
+        let archived = storage.set_bot_archived(owner, nova.id.0, true, 13).await?;
+        assert_eq!(archived.archived_at_ms, Some(13));
+        assert!(storage.list_bots(owner, false).await?.is_empty());
+        assert_eq!(storage.list_bots(owner, true).await?.len(), 1);
+
+        storage.pool.close().await;
+        let reopened = Storage::open(&database).await?;
+        let restored = reopened
+            .set_bot_archived(owner, nova.id.0, false, 14)
+            .await?;
+        assert_eq!(restored.title, "Lead researcher");
+        let attention = reopened
+            .set_bot_attention(owner, nova.id.0, 3, BotAttention::NeedsApproval, 15)
+            .await?;
+        assert_eq!(attention.unread_count, 3);
+        assert_eq!(
+            reopened
+                .mark_bot_read(owner, nova.id.0, 16)
+                .await?
+                .unread_count,
+            0
+        );
+        Ok(())
+    }
 
     #[tokio::test]
     async fn clean_install_restart_outbox_and_backup_are_durable() -> Result<(), StorageError> {

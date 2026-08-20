@@ -37,4 +37,19 @@ fn desktop_shell_visual_goldens() {
         HomeBotTheme::dark(),
         FixtureState::Approval,
     );
+    snapshot(
+        "desktop_bot_editor_light",
+        HomeBotTheme::light(),
+        FixtureState::BotEditor,
+    );
+    snapshot(
+        "desktop_disconnected_dark",
+        HomeBotTheme::dark(),
+        FixtureState::Disconnected,
+    );
+    snapshot(
+        "desktop_provider_unavailable_light",
+        HomeBotTheme::light(),
+        FixtureState::ProviderUnavailable,
+    );
 }

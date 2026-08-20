@@ -7,6 +7,12 @@
     "attachment": {
       "$ref": "#/$defs/Attachment"
     },
+    "bot_mutation_request": {
+      "$ref": "#/$defs/BotMutationRequest"
+    },
+    "bot_response": {
+      "$ref": "#/$defs/BotResponse"
+    },
     "client_message": {
       "$ref": "#/$defs/ClientMessage"
     },
@@ -16,6 +22,9 @@
     "create_attachment_response": {
       "$ref": "#/$defs/CreateAttachmentResponse"
     },
+    "create_bot_request": {
+      "$ref": "#/$defs/CreateBotRequest"
+    },
     "error": {
       "$ref": "#/$defs/ErrorEnvelope"
     },
@@ -24,6 +33,9 @@
     },
     "server_event": {
       "$ref": "#/$defs/ServerEvent"
+    },
+    "update_bot_request": {
+      "$ref": "#/$defs/UpdateBotRequest"
     }
   },
   "required": [
@@ -33,7 +45,11 @@
     "create_attachment_request",
     "create_attachment_response",
     "finalize_attachment_request",
-    "attachment"
+    "attachment",
+    "create_bot_request",
+    "update_bot_request",
+    "bot_mutation_request",
+    "bot_response"
   ],
   "$defs": {
     "Attachment": {
@@ -67,9 +83,117 @@
         "sha256"
       ]
     },
+    "BotAdvancedSettings": {
+      "type": "object",
+      "properties": {
+        "permission_profile": {
+          "$ref": "#/$defs/BotPermissionProfile"
+        },
+        "provider_profile_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "permission_profile"
+      ]
+    },
+    "BotAttention": {
+      "type": "string",
+      "enum": [
+        "none",
+        "working",
+        "needs_approval",
+        "failed"
+      ]
+    },
+    "BotColor": {
+      "type": "string",
+      "enum": [
+        "violet",
+        "blue",
+        "green",
+        "orange",
+        "rose",
+        "slate"
+      ]
+    },
+    "BotMutationRequest": {
+      "type": "object",
+      "properties": {
+        "idempotency_key": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "request_id": {
+          "type": "string",
+          "format": "uuid"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "request_id",
+        "idempotency_key"
+      ]
+    },
+    "BotPermissionProfile": {
+      "type": "string",
+      "enum": [
+        "read_only",
+        "ask_before_changes",
+        "trusted"
+      ]
+    },
+    "BotProviderStatus": {
+      "type": "string",
+      "enum": [
+        "not_configured",
+        "ready",
+        "unavailable"
+      ]
+    },
+    "BotResponse": {
+      "type": "object",
+      "properties": {
+        "bot": {
+          "$ref": "#/$defs/BotSummary"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "bot"
+      ]
+    },
+    "BotShape": {
+      "type": "string",
+      "enum": [
+        "circle",
+        "rounded_square",
+        "hexagon"
+      ]
+    },
     "BotSummary": {
       "type": "object",
       "properties": {
+        "advanced": {
+          "$ref": "#/$defs/BotAdvancedSettings"
+        },
+        "archived": {
+          "type": "boolean"
+        },
+        "attention": {
+          "$ref": "#/$defs/BotAttention"
+        },
+        "color": {
+          "$ref": "#/$defs/BotColor"
+        },
+        "description": {
+          "type": "string"
+        },
         "id": {
           "type": "string",
           "format": "uuid"
@@ -77,15 +201,34 @@
         "name": {
           "type": "string"
         },
+        "provider": {
+          "$ref": "#/$defs/BotProviderStatus"
+        },
+        "shape": {
+          "$ref": "#/$defs/BotShape"
+        },
         "title": {
           "type": "string"
+        },
+        "unread_count": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
         }
       },
       "additionalProperties": false,
       "required": [
         "id",
         "name",
-        "title"
+        "title",
+        "description",
+        "shape",
+        "color",
+        "archived",
+        "unread_count",
+        "attention",
+        "provider",
+        "advanced"
       ]
     },
     "ChatSummary": {
@@ -317,6 +460,55 @@
         "attachment_id",
         "upload_url",
         "expires_at_unix_ms"
+      ]
+    },
+    "CreateBotRequest": {
+      "type": "object",
+      "properties": {
+        "color": {
+          "$ref": "#/$defs/BotColor"
+        },
+        "description": {
+          "type": "string",
+          "default": ""
+        },
+        "idempotency_key": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "name": {
+          "type": "string"
+        },
+        "permission_profile": {
+          "$ref": "#/$defs/BotPermissionProfile"
+        },
+        "provider_profile_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid"
+        },
+        "request_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "shape": {
+          "$ref": "#/$defs/BotShape"
+        },
+        "title": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "request_id",
+        "idempotency_key",
+        "name",
+        "title",
+        "shape",
+        "color",
+        "permission_profile"
       ]
     },
     "ErrorCode": {
@@ -681,6 +873,55 @@
       "required": [
         "bots",
         "chats"
+      ]
+    },
+    "UpdateBotRequest": {
+      "type": "object",
+      "properties": {
+        "color": {
+          "$ref": "#/$defs/BotColor"
+        },
+        "description": {
+          "type": "string",
+          "default": ""
+        },
+        "idempotency_key": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "name": {
+          "type": "string"
+        },
+        "permission_profile": {
+          "$ref": "#/$defs/BotPermissionProfile"
+        },
+        "provider_profile_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid"
+        },
+        "request_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "shape": {
+          "$ref": "#/$defs/BotShape"
+        },
+        "title": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "request_id",
+        "idempotency_key",
+        "name",
+        "title",
+        "shape",
+        "color",
+        "permission_profile"
       ]
     }
   }

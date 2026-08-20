@@ -13,6 +13,9 @@ pub enum FixtureState {
     Empty,
     DirectChat,
     Approval,
+    BotEditor,
+    Disconnected,
+    ProviderUnavailable,
 }
 
 fn nova(theme: HomeBotTheme) -> BotIdentity<'static> {
@@ -96,10 +99,10 @@ pub fn render_fixture(context: &egui::Context, theme: HomeBotTheme, state: Fixtu
         .show(context, |ui| {
             ui.horizontal(|ui| {
                 ui.label(
-                    RichText::new(if state == FixtureState::Empty {
-                        "Bots"
-                    } else {
-                        "Nova"
+                    RichText::new(match state {
+                        FixtureState::Empty => "Bots",
+                        FixtureState::BotEditor => "New Bot",
+                        _ => "Nova",
                     })
                     .font(theme.typography.font(theme.typography.body_compact))
                     .color(theme.palette.text_primary)
@@ -111,7 +114,7 @@ pub fn render_fixture(context: &egui::Context, theme: HomeBotTheme, state: Fixtu
             });
         });
 
-    if state != FixtureState::Empty {
+    if !matches!(state, FixtureState::Empty | FixtureState::BotEditor) {
         TopBottomPanel::bottom("homebot_composer")
             .exact_height(theme.layout.composer_min_height + theme.spacing.xl)
             .frame(
@@ -133,6 +136,9 @@ pub fn render_fixture(context: &egui::Context, theme: HomeBotTheme, state: Fixtu
             FixtureState::Empty => empty_state(ui, theme),
             FixtureState::DirectChat => chat_state(ui, theme, false),
             FixtureState::Approval => chat_state(ui, theme, true),
+            FixtureState::BotEditor => bot_editor(ui, theme),
+            FixtureState::Disconnected => disconnected_state(ui, theme),
+            FixtureState::ProviderUnavailable => provider_unavailable(ui, theme),
         });
 }
 
@@ -190,6 +196,112 @@ fn chat_state(ui: &mut egui::Ui, theme: HomeBotTheme, approval: bool) {
     });
 }
 
+fn bot_editor(ui: &mut egui::Ui, theme: HomeBotTheme) {
+    ui.vertical_centered(|ui| {
+        ui.set_max_width(520.0);
+        ui.add_space(theme.spacing.xxl);
+        ui.label(
+            RichText::new("Create a Bot")
+                .font(theme.typography.font(theme.typography.title))
+                .color(theme.palette.text_primary)
+                .strong(),
+        );
+        ui.label(
+            RichText::new("Give your teammate a name and a clear role.")
+                .font(theme.typography.font(theme.typography.body))
+                .color(theme.palette.text_secondary),
+        );
+        ui.add_space(theme.spacing.xl);
+        for (label, value) in [
+            ("Name", "Nova"),
+            ("Title", "Research and planning"),
+            (
+                "Description",
+                "Finds context and turns it into useful plans.",
+            ),
+        ] {
+            ui.label(
+                RichText::new(label)
+                    .font(theme.typography.font(theme.typography.caption))
+                    .color(theme.palette.text_secondary)
+                    .strong(),
+            );
+            Frame::NONE
+                .fill(theme.palette.surface)
+                .stroke(Stroke::new(theme.layout.hairline, theme.palette.border))
+                .corner_radius(egui::CornerRadius::same(theme.radii.sm))
+                .inner_margin(egui::Margin::same(theme.insets.md))
+                .show(ui, |ui| {
+                    ui.label(
+                        RichText::new(value)
+                            .font(theme.typography.font(theme.typography.body))
+                            .color(theme.palette.text_primary),
+                    );
+                });
+            ui.add_space(theme.spacing.md);
+        }
+        ui.horizontal(|ui| {
+            ui.label("Shape  ◉   ◼   ⬢");
+            ui.label("Color  ●  ●  ●  ●");
+        });
+        ui.add_space(theme.spacing.lg);
+        ui.collapsing("Advanced settings", |ui| {
+            ui.label("Provider profile");
+            ui.label("Permissions · Ask before changes");
+        });
+        ui.add_space(theme.spacing.xl);
+        ui.horizontal(|ui| {
+            let _ = ui.button("Cancel");
+            let _ = ui.button("Create Bot");
+        });
+    });
+}
+
+fn disconnected_state(ui: &mut egui::Ui, theme: HomeBotTheme) {
+    ui.vertical_centered(|ui| {
+        ui.add_space(theme.layout.empty_state_top_padding);
+        ui.label(
+            RichText::new("HomeBot is reconnecting")
+                .font(theme.typography.font(theme.typography.title))
+                .color(theme.palette.text_primary)
+                .strong(),
+        );
+        ui.label(
+            RichText::new("Your Bots and chats are safe on the server.")
+                .font(theme.typography.font(theme.typography.body))
+                .color(theme.palette.text_secondary),
+        );
+        ui.add_space(theme.spacing.lg);
+        let _ = ui.button("Try again");
+    });
+}
+
+fn provider_unavailable(ui: &mut egui::Ui, theme: HomeBotTheme) {
+    ui.vertical_centered(|ui| {
+        ui.set_max_width(theme.layout.content_max_width);
+        ui.add_space(theme.spacing.xl);
+        Frame::NONE
+            .fill(theme.palette.accent_soft)
+            .stroke(Stroke::new(theme.layout.hairline, theme.palette.warning))
+            .corner_radius(egui::CornerRadius::same(theme.radii.md))
+            .inner_margin(egui::Margin::same(theme.insets.lg))
+            .show(ui, |ui| {
+                ui.label(
+                    RichText::new("Nova’s provider is unavailable")
+                        .font(theme.typography.font(theme.typography.heading))
+                        .color(theme.palette.text_primary)
+                        .strong(),
+                );
+                ui.label(
+                    RichText::new("Choose another provider in Advanced settings or reconnect the current one.")
+                        .font(theme.typography.font(theme.typography.body_compact))
+                        .color(theme.palette.text_secondary),
+                );
+                let _ = ui.button("Open Bot settings");
+            });
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -201,6 +313,9 @@ mod tests {
                 FixtureState::Empty,
                 FixtureState::DirectChat,
                 FixtureState::Approval,
+                FixtureState::BotEditor,
+                FixtureState::Disconnected,
+                FixtureState::ProviderUnavailable,
             ] {
                 let context = egui::Context::default();
                 let _ = context.run(egui::RawInput::default(), |context| {

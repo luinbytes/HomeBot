@@ -36,6 +36,12 @@ Required common codes include `unauthenticated`, `forbidden`, `approval_required
 
 Attachments are uploaded over authenticated HTTP with size/type limits, streaming digest verification, an idempotency key, and an explicit finalise step. WebSocket messages refer to completed attachment IDs. Partial uploads expire and cannot be consumed.
 
+## Bot lifecycle
+
+The authenticated Bot collection exposes list, create, update, archive, restore and mark-read operations under /api/v1/bots. Create and update bodies carry the user-facing identity plus advanced provider-profile and permission settings. Responses normalize provider health and include unread, attention and archive state. Successful changes emit durable bot-changed events and appear in subsequent reconnect snapshots.
+
+Bot mutation idempotency hashes include the operation and target Bot as well as the request body. This prevents a key reused across different routes from being mistaken for a replay.
+
 ## Heartbeats and backpressure
 
 The server sends nonce-bearing pings. A client responds with pong before the advertised timeout. Slow clients have a bounded queue; the server closes them with a resumable cursor instead of allowing unbounded memory growth. Streamed content can be coalesced only when doing so preserves the final canonical message parts.

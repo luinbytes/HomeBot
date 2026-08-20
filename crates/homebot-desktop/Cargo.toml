@@ -8,6 +8,8 @@ rust-version.workspace = true
 
 [dependencies]
 egui.workspace = true
+homebot-protocol.workspace = true
+uuid.workspace = true
 
 [dev-dependencies]
 egui_kittest = { version = "0.32.3", features = ["snapshot"] }

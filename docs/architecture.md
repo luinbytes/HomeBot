@@ -1,6 +1,6 @@
 # Architecture
 
-Status: M1 local runtime foundation, 20 August 2026.
+Status: M2 desktop product foundation, 20 August 2026.
 
 ## Product boundary
 
@@ -40,6 +40,8 @@ Dependencies point inward toward `homebot-domain` and `homebot-protocol`. Domain
 A `Bot` has a HomeBot-owned stable ID, identity, instructions, memory policy, provider profile reference, permissions, skills, and plugins. A direct chat or group chat owns HomeBot transcript history. Backend conversation IDs are mappings keyed by chat and provider profile. Provider switching retains Bot identity and transcript but creates or resumes the appropriate backend mapping.
 
 Group coordination is an explicit server state machine with a bounded hop count, concurrency budget, one visible current owner where applicable, and an emergency stop. Bot-to-Bot messages are durable message records, not invisible in-process calls.
+
+Bot lifecycle is owner-scoped and server-authoritative. The domain validates identity fields and explicit archive/restore transitions. SQLite persists visual identity, advanced provider/permission references, unread count and normalized attention. Desktop keeps only a replaceable roster projection. See [bots.md](bots.md).
 
 ## Persistence
 

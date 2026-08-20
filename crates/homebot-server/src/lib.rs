@@ -1,6 +1,7 @@
 //! Authoritative authenticated HTTP and WebSocket transport.
 
 mod attachments;
+mod bots;
 
 use axum::{
     Json, Router,
@@ -111,6 +112,11 @@ pub fn router(state: AppState) -> Router {
     let authenticated = Router::new()
         .route("/api/v1/version", get(version))
         .route("/api/v1/events", get(events_socket))
+        .route("/api/v1/bots", get(bots::list).post(bots::create))
+        .route("/api/v1/bots/{bot_id}", put(bots::update))
+        .route("/api/v1/bots/{bot_id}/archive", post(bots::archive))
+        .route("/api/v1/bots/{bot_id}/restore", post(bots::restore))
+        .route("/api/v1/bots/{bot_id}/read", post(bots::mark_read))
         .route("/api/v1/attachments", post(attachments::create_attachment))
         .route(
             "/api/v1/attachments/{attachment_id}/content",
@@ -371,13 +377,29 @@ async fn initial_sync(socket: &mut WebSocket, state: &AppState) -> Option<u64> {
         event_id: Uuid::now_v7(),
         body: ServerEventBody::Snapshot {
             boundary_sequence: boundary,
-            snapshot: Snapshot::default(),
+            snapshot: current_snapshot(state).await,
         },
     };
     if send_json(socket, &snapshot).await.is_err() {
         return None;
     }
     Some(boundary)
+}
+
+async fn current_snapshot(state: &AppState) -> Snapshot {
+    let bots = state
+        .storage
+        .list_bots(state.owner_id, true)
+        .await
+        .unwrap_or_default();
+    let mut summaries = Vec::with_capacity(bots.len());
+    for bot in bots {
+        summaries.push(bots::summary(state, bot).await);
+    }
+    Snapshot {
+        bots: summaries,
+        chats: Vec::new(),
+    }
 }
 
 async fn send_json_sink<S>(sink: &mut S, value: &impl serde::Serialize) -> Result<(), ()>

@@ -877,7 +877,9 @@ version = "0.0.1"
 dependencies = [
  "egui",
  "egui_kittest",
+ "homebot-protocol",
  "image",
+ "uuid",
 ]
 
 [[package]]
@@ -924,11 +926,13 @@ dependencies = [
  "anyhow",
  "axum",
  "futures-util",
+ "homebot-domain",
  "homebot-protocol",
  "homebot-storage",
  "serde",
  "serde_json",
  "sha2",
+ "sqlx",
  "subtle",
  "tempfile",
  "tokio",

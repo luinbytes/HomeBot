@@ -1,10 +1,15 @@
 //! Server transport integration tests.
 
 use super::*;
-use axum::{body::Body, http::Request};
+use axum::{
+    body::{Body, to_bytes},
+    http::Request,
+};
 use futures_util::{SinkExt, StreamExt};
 use homebot_protocol::{
-    Attachment, CreateAttachmentRequest, CreateAttachmentResponse, FinalizeAttachmentRequest,
+    Attachment, BotColor, BotMutationRequest, BotPermissionProfile, BotProviderStatus, BotResponse,
+    BotShape, CreateAttachmentRequest, CreateAttachmentResponse, CreateBotRequest,
+    FinalizeAttachmentRequest, UpdateBotRequest,
 };
 use tokio::task::JoinHandle;
 use tokio_tungstenite::{connect_async, tungstenite::client::IntoClientRequest};
@@ -60,6 +65,169 @@ async fn authenticated_socket(
         ))
         .await?;
     Ok(socket)
+}
+
+fn json_request(method: &str, uri: &str, body: &impl serde::Serialize) -> Request<Body> {
+    Request::builder()
+        .method(method)
+        .uri(uri)
+        .header("authorization", "Bearer correct-token")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            serde_json::to_vec(body).unwrap_or_else(|error| panic!("{error}")),
+        ))
+        .unwrap_or_else(|error| panic!("{error}"))
+}
+
+async fn response_json<T: serde::de::DeserializeOwned>(
+    response: Response,
+) -> Result<T, Box<dyn std::error::Error>> {
+    Ok(serde_json::from_slice(
+        &to_bytes(response.into_body(), usize::MAX).await?,
+    )?)
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn bot_lifecycle_validates_persists_streams_and_reports_provider_health()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let database = directory.path().join("homebot.db");
+    let storage = Storage::open(&database).await?;
+    let app = router(AppState::new(storage.clone(), "correct-token"));
+    let key = Uuid::now_v7();
+    let create = CreateBotRequest {
+        request_id: Uuid::now_v7(),
+        idempotency_key: key,
+        name: " Nova ".to_owned(),
+        title: "Research".to_owned(),
+        description: "Find useful context".to_owned(),
+        shape: BotShape::Hexagon,
+        color: BotColor::Blue,
+        provider_profile_id: Some(Uuid::now_v7()),
+        permission_profile: BotPermissionProfile::AskBeforeChanges,
+    };
+    let response = app
+        .clone()
+        .oneshot(json_request("POST", "/api/v1/bots", &create))
+        .await?;
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let created: BotResponse = response_json(response).await?;
+    assert_eq!(created.bot.name, "Nova");
+    assert_eq!(created.bot.provider, BotProviderStatus::Unavailable);
+    assert_eq!(created.bot.id, key);
+
+    let replay = app
+        .clone()
+        .oneshot(json_request("POST", "/api/v1/bots", &create))
+        .await?;
+    assert_eq!(replay.status(), StatusCode::OK);
+    assert_eq!(response_json::<BotResponse>(replay).await?.bot.id, key);
+
+    let duplicate = CreateBotRequest {
+        request_id: Uuid::now_v7(),
+        idempotency_key: Uuid::now_v7(),
+        name: "nova".to_owned(),
+        ..create.clone()
+    };
+    let response = app
+        .clone()
+        .oneshot(json_request("POST", "/api/v1/bots", &duplicate))
+        .await?;
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+
+    let update = UpdateBotRequest {
+        request_id: Uuid::now_v7(),
+        idempotency_key: Uuid::now_v7(),
+        name: "Nova".to_owned(),
+        title: "Lead researcher".to_owned(),
+        description: "Updated".to_owned(),
+        shape: BotShape::Circle,
+        color: BotColor::Green,
+        provider_profile_id: None,
+        permission_profile: BotPermissionProfile::ReadOnly,
+    };
+    let response = app
+        .clone()
+        .oneshot(json_request("PUT", &format!("/api/v1/bots/{key}"), &update))
+        .await?;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response_json::<BotResponse>(response).await?.bot.title,
+        "Lead researcher"
+    );
+
+    let archive = BotMutationRequest {
+        request_id: Uuid::now_v7(),
+        idempotency_key: Uuid::now_v7(),
+    };
+    let response = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            &format!("/api/v1/bots/{key}/archive"),
+            &archive,
+        ))
+        .await?;
+    assert!(response_json::<BotResponse>(response).await?.bot.archived);
+    let response = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            &format!("/api/v1/bots/{key}/restore"),
+            &BotMutationRequest {
+                request_id: Uuid::now_v7(),
+                idempotency_key: Uuid::now_v7(),
+            },
+        ))
+        .await?;
+    assert!(!response_json::<BotResponse>(response).await?.bot.archived);
+
+    storage
+        .set_bot_attention(
+            Uuid::nil(),
+            key,
+            2,
+            homebot_domain::BotAttention::NeedsApproval,
+            100,
+        )
+        .await?;
+    let response = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            &format!("/api/v1/bots/{key}/read"),
+            &BotMutationRequest {
+                request_id: Uuid::now_v7(),
+                idempotency_key: Uuid::now_v7(),
+            },
+        ))
+        .await?;
+    assert_eq!(
+        response_json::<BotResponse>(response)
+            .await?
+            .bot
+            .unread_count,
+        0
+    );
+
+    let listed = app
+        .oneshot(
+            Request::get("/api/v1/bots")
+                .header("authorization", "Bearer correct-token")
+                .body(Body::empty())?,
+        )
+        .await?;
+    assert_eq!(
+        response_json::<Vec<homebot_protocol::BotSummary>>(listed)
+            .await?
+            .len(),
+        1
+    );
+    storage.pool().close().await;
+    let reopened = Storage::open(&database).await?;
+    assert_eq!(reopened.list_bots(Uuid::nil(), true).await?.len(), 1);
+    Ok(())
 }
 
 #[tokio::test]

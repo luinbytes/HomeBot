@@ -119,6 +119,108 @@ pub struct BotSummary {
     pub id: Uuid,
     pub name: String,
     pub title: String,
+    pub description: String,
+    pub shape: BotShape,
+    pub color: BotColor,
+    pub archived: bool,
+    pub unread_count: u32,
+    pub attention: BotAttention,
+    pub provider: BotProviderStatus,
+    pub advanced: BotAdvancedSettings,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BotShape {
+    Circle,
+    RoundedSquare,
+    Hexagon,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BotColor {
+    Violet,
+    Blue,
+    Green,
+    Orange,
+    Rose,
+    Slate,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BotAttention {
+    None,
+    Working,
+    NeedsApproval,
+    Failed,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BotProviderStatus {
+    NotConfigured,
+    Ready,
+    Unavailable,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct BotAdvancedSettings {
+    pub provider_profile_id: Option<Uuid>,
+    pub permission_profile: BotPermissionProfile,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BotPermissionProfile {
+    ReadOnly,
+    AskBeforeChanges,
+    Trusted,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CreateBotRequest {
+    pub request_id: Uuid,
+    pub idempotency_key: Uuid,
+    pub name: String,
+    pub title: String,
+    #[serde(default)]
+    pub description: String,
+    pub shape: BotShape,
+    pub color: BotColor,
+    pub provider_profile_id: Option<Uuid>,
+    pub permission_profile: BotPermissionProfile,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct UpdateBotRequest {
+    pub request_id: Uuid,
+    pub idempotency_key: Uuid,
+    pub name: String,
+    pub title: String,
+    #[serde(default)]
+    pub description: String,
+    pub shape: BotShape,
+    pub color: BotColor,
+    pub provider_profile_id: Option<Uuid>,
+    pub permission_profile: BotPermissionProfile,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct BotMutationRequest {
+    pub request_id: Uuid,
+    pub idempotency_key: Uuid,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct BotResponse {
+    pub bot: BotSummary,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
@@ -206,6 +308,10 @@ pub struct ProtocolV1Schema {
     pub create_attachment_response: CreateAttachmentResponse,
     pub finalize_attachment_request: FinalizeAttachmentRequest,
     pub attachment: Attachment,
+    pub create_bot_request: CreateBotRequest,
+    pub update_bot_request: UpdateBotRequest,
+    pub bot_mutation_request: BotMutationRequest,
+    pub bot_response: BotResponse,
 }
 
 /// Checks whether a client protocol is in the supported inclusive range.

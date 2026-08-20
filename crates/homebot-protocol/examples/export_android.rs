@@ -51,6 +51,59 @@ data class ErrorEnvelope(
 )
 
 @Serializable
+data class BotAdvancedSettings(
+    val provider_profile_id: String? = null,
+    val permission_profile: String,
+)
+
+@Serializable
+data class BotSummary(
+    val id: String,
+    val name: String,
+    val title: String,
+    val description: String,
+    val shape: String,
+    val color: String,
+    val archived: Boolean,
+    val unread_count: Int,
+    val attention: String,
+    val provider: String,
+    val advanced: BotAdvancedSettings,
+)
+
+@Serializable
+data class CreateBotRequest(
+    val request_id: String,
+    val idempotency_key: String,
+    val name: String,
+    val title: String,
+    val description: String = "",
+    val shape: String,
+    val color: String,
+    val provider_profile_id: String? = null,
+    val permission_profile: String,
+)
+
+@Serializable
+data class UpdateBotRequest(
+    val request_id: String,
+    val idempotency_key: String,
+    val name: String,
+    val title: String,
+    val description: String = "",
+    val shape: String,
+    val color: String,
+    val provider_profile_id: String? = null,
+    val permission_profile: String,
+)
+
+@Serializable
+data class BotMutationRequest(val request_id: String, val idempotency_key: String)
+
+@Serializable
+data class BotResponse(val bot: BotSummary)
+
+@Serializable
 data class CreateAttachmentRequest(val request_id: String, val idempotency_key: String, val filename: String, val media_type: String, val size_bytes: Long, val sha256: String)
 
 @Serializable

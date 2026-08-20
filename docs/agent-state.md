@@ -35,7 +35,7 @@ Current blockers:
 - 6C7-37 is Done. GitHub Actions run 32352700967 passed all six Linux, macOS Intel, macOS arm64, quality, dependency-policy, and audit jobs.
 - 6C7-38 is Done. GitHub Actions run 32354047604 passed the full six-job matrix.
 - 6C7-39 is Done. GitHub Actions run 32355805077 passed the full six-job matrix. The current environment has no `codex` binary, so the real-binary smoke test skips with an explicit reason; fake executable App Server fixtures verify structured start, resume, streaming, approval, and interruption round trips.
-- 6C7-40 is In Progress. The Claude, OpenAI-compatible BYOK and generic process adapters are implemented locally and pass the full local quality gate. The next postcondition is to publish the coherent commit and verify the complete remote CI matrix before closing the issue.
+- 6C7-40 is In Progress. The Claude, OpenAI-compatible BYOK and generic process adapters are published at `d43d662`. The full local quality gate passes. GitHub Actions run 32357798823 exposed one dependency-policy failure because reqwest's Mozilla-maintained `webpki-roots` data package uses the permissive CDLA-Permissive-2.0 license, which was not yet in the explicit allowlist. The exact next action is to publish the reviewed allowlist addition and verify the replacement CI run before closing the issue.
 
 ## Completed work
 
@@ -55,7 +55,7 @@ Current blockers:
 
 ## Immediate next work
 
-1. Publish the completed 6C7-40 adapter implementation to `main` and verify every GitHub Actions job succeeds.
+1. Publish the CDLA-Permissive-2.0 dependency-policy allowlist fix and verify every replacement GitHub Actions job succeeds.
 2. Add verification evidence to 6C7-40 and mark it Done only after remote CI passes.
 3. Refresh the dependency graph and begin 6C7-72, the local computer capability layer, if it remains the highest-priority unblocked issue.
 

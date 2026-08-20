@@ -46,9 +46,13 @@ Default bind is `127.0.0.1`. LAN and Tailscale require explicit configuration. P
 
 ## Secrets
 
-Secret values are created and resolved through a credential-store abstraction. They never appear in SQLite, normal chat, activity details, routine history, analytics, crash reports, CLI arguments, process listings, or ordinary environment inheritance. A secret-aware tool receives the minimum value at execution time and redacts exact and encoded canaries from captured output.
+Secret values are created and resolved through `homebot-secrets`. Production builds use macOS Keychain or a Linux Secret Service-compatible store; every blocking OS call runs outside async executor threads. SQLite stores only owner, opaque locator, label, and timestamps. Values never appear in SQLite, normal chat, activity details, routine history, outbox events, crash reports, CLI arguments, process listings, or ordinary environment inheritance. Secret-bearing Rust request/input types have redacted or absent `Debug` implementations, and short-lived resolved allocations zero memory on drop.
 
 Provider profiles store `SecretReference` identifiers, not credentials. The provider runtime resolves a short-lived redacted value only while constructing an authorized request and zeroes that allocation on drop. Remote BYOK endpoints require HTTPS; cleartext HTTP is accepted only for explicit loopback addresses, and HTTP redirects are disabled for credential-bearing requests.
+
+Credential-store `locked`, `unavailable`, and `missing` conditions remain distinct and fail closed. HomeBot never falls back to plaintext files, SQLite, generic provider context, or environment variables. Metadata migration from schema v7 assigns existing opaque references to the local owner without fabricating, copying, or attempting to recover a value. See [secrets.md](secrets.md).
+
+`SecretToolService` constructs a server-owned `SecretUse` capability request bound to authenticated operation context, opaque secret UUID, and a validated purpose identifier. Default policy requires approval; approvals are digest-bound, expiring, and single-use. A general tool cannot obtain an authorization proof or call the vault through the tool surface.
 
 The local computer layer opens workspace roots as `cap-std` capability directories, rejects absolute/parent paths and symlink components, and bounds reads, writes and listings. PTY commands use an explicit executable and structured arguments, clear inherited environment state, admit only configured keys, and enforce input, output and runtime limits with kill-and-reap cancellation. Browser control and target WebSockets must be loopback, profile directories stay beneath the server-owned profile root, redirects are disabled, protocol messages are bounded, and navigation rejects non-HTTP schemes and embedded credentials.
 

@@ -189,6 +189,19 @@ data class ApprovalDecisionRequest(val request_id: String, val idempotency_key: 
 data class QueuedPromptSummary(val id: String, val chat_id: String, val content: String, val attachment_ids: List<String>, val position: Int, val created_at_ms: Long)
 
 @Serializable
+data class SecretSummary(val id: String, val label: String, val status: String, val created_at_unix_ms: Long, val updated_at_unix_ms: Long)
+
+@Serializable
+class CreateSecretRequest(val request_id: String, val idempotency_key: String, val label: String, val value: String) {
+    override fun toString(): String = "CreateSecretRequest(request_id=$request_id, idempotency_key=$idempotency_key, label=$label, value=[REDACTED])"
+}
+
+@Serializable
+class UpdateSecretRequest(val request_id: String, val label: String? = null, val value: String? = null) {
+    override fun toString(): String = "UpdateSecretRequest(request_id=$request_id, label=$label, value=[REDACTED])"
+}
+
+@Serializable
 data class CreateDirectChatRequest(val request_id: String, val idempotency_key: String, val bot_id: String)
 
 @Serializable

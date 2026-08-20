@@ -11,6 +11,7 @@ async-trait.workspace = true
 base64.workspace = true
 cap-std.workspace = true
 futures-util.workspace = true
+homebot-secrets.workspace = true
 portable-pty.workspace = true
 reqwest.workspace = true
 serde.workspace = true

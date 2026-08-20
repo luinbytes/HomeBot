@@ -104,6 +104,12 @@ pub enum ServerEventBody {
     QueuedPromptChanged {
         prompt: QueuedPromptSummary,
     },
+    SecretChanged {
+        secret: SecretSummary,
+    },
+    SecretRemoved {
+        secret_id: Uuid,
+    },
     CommandAccepted {
         request_id: Uuid,
         operation_id: Uuid,
@@ -685,10 +691,50 @@ pub enum ErrorCode {
     ValidationFailed,
     RateLimited,
     ProviderUnavailable,
+    SecretStoreLocked,
+    SecretStoreUnavailable,
     OperationCancelled,
     ResumeUnavailable,
     ProtocolVersionUnsupported,
     Internal,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SecretStatus {
+    Ready,
+    Locked,
+    Unavailable,
+    Missing,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SecretSummary {
+    pub id: Uuid,
+    pub label: String,
+    pub status: SecretStatus,
+    pub created_at_unix_ms: u64,
+    pub updated_at_unix_ms: u64,
+}
+
+/// Secret-bearing request. Deliberately does not implement `Debug` or `Serialize`.
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CreateSecretRequest {
+    pub request_id: Uuid,
+    pub idempotency_key: Uuid,
+    pub label: String,
+    pub value: String,
+}
+
+/// Secret-bearing request. Deliberately does not implement `Debug` or `Serialize`.
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct UpdateSecretRequest {
+    pub request_id: Uuid,
+    pub label: Option<String>,
+    pub value: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
@@ -734,6 +780,9 @@ pub struct ProtocolV1Schema {
     pub client_message: ClientMessage,
     pub server_event: ServerEvent,
     pub error: ErrorEnvelope,
+    pub create_secret_request: CreateSecretRequest,
+    pub update_secret_request: UpdateSecretRequest,
+    pub secret: SecretSummary,
     pub create_attachment_request: CreateAttachmentRequest,
     pub create_attachment_response: CreateAttachmentResponse,
     pub finalize_attachment_request: FinalizeAttachmentRequest,

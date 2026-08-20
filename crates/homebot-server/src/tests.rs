@@ -12,8 +12,8 @@ use homebot_protocol::{
     ChatTimelineResponse, CreateAttachmentRequest, CreateAttachmentResponse, CreateBotRequest,
     CreateDirectChatRequest, CreateDirectChatResponse, CreateGroupChatRequest,
     CreateGroupChatResponse, FinalizeAttachmentRequest, GroupBotStatus, GroupTimelineResponse,
-    HandoffGroupRequest, SendGroupMessageRequest, SendMessageRequest, SendMessageResponse,
-    UpdateBotRequest, UpdateGroupParticipantRequest,
+    HandoffGroupRequest, SecretSummary, SendGroupMessageRequest, SendMessageRequest,
+    SendMessageResponse, UpdateBotRequest, UpdateGroupParticipantRequest,
 };
 use homebot_providers::{
     ActivityKind, ActivityStatus as ProviderActivityStatus, ApprovalDecision, CompactRequest,
@@ -21,6 +21,7 @@ use homebot_providers::{
     ProviderDescriptor, ProviderError, ProviderEvent, ProviderHealth, ProviderModel, ProviderRun,
     ProviderRuntime, ResumeRequest, StartRequest,
 };
+use homebot_secrets::{MemorySecretVault, SecretStatus, SecretVault, locator_for};
 use std::{collections::HashMap, sync::Arc, time::Duration};
 use tokio::sync::{Mutex, mpsc, watch};
 use tokio::task::JoinHandle;
@@ -1126,6 +1127,116 @@ async fn protected_routes_deny_missing_and_invalid_tokens_server_side()
             .await?;
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
+    Ok(())
+}
+
+#[tokio::test]
+async fn secret_crud_uses_only_os_vault_values_and_reports_locked_state()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let database = directory.path().join("homebot.db");
+    let storage = Storage::open(&database).await?;
+    let vault = Arc::new(MemorySecretVault::default());
+    let app =
+        router(AppState::new(storage.clone(), "correct-token").with_secret_vault(vault.clone()));
+    let secret_id = Uuid::now_v7();
+    let canary = "homebot-secret-canary-29419";
+    let created = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/secrets",
+            &serde_json::json!({
+                "request_id": Uuid::now_v7(),
+                "idempotency_key": secret_id,
+                "label": "OpenAI work",
+                "value": canary,
+            }),
+        ))
+        .await?;
+    assert_eq!(created.status(), StatusCode::CREATED);
+    let created = response_json::<SecretSummary>(created).await?;
+    assert_eq!(created.id, secret_id);
+    assert_eq!(created.status, homebot_protocol::SecretStatus::Ready);
+
+    let listed = app
+        .clone()
+        .oneshot(
+            Request::get("/api/v1/secrets")
+                .header("authorization", "Bearer correct-token")
+                .body(Body::empty())?,
+        )
+        .await?;
+    let listed_bytes = to_bytes(listed.into_body(), usize::MAX).await?;
+    assert!(
+        !listed_bytes
+            .windows(canary.len())
+            .any(|value| value == canary.as_bytes())
+    );
+    let listed: Vec<SecretSummary> = serde_json::from_slice(&listed_bytes)?;
+    assert_eq!(listed, vec![created]);
+
+    let persisted_text: Vec<String> = sqlx::query_scalar(
+        "SELECT coalesce(content_json, '') FROM message_parts
+         UNION ALL SELECT coalesce(detail_json, '') FROM execution_activities
+         UNION ALL SELECT coalesce(payload_json, '') FROM event_outbox",
+    )
+    .fetch_all(storage.pool())
+    .await?;
+    assert!(persisted_text.iter().all(|value| !value.contains(canary)));
+    let columns: Vec<String> =
+        sqlx::query_scalar("SELECT name FROM pragma_table_info('secret_references')")
+            .fetch_all(storage.pool())
+            .await?;
+    assert!(
+        !columns
+            .iter()
+            .any(|column| column == "value" || column == "secret")
+    );
+
+    vault.force_status(Some(SecretStatus::Locked)).await;
+    let locked = app
+        .clone()
+        .oneshot(json_request(
+            "PUT",
+            &format!("/api/v1/secrets/{secret_id}"),
+            &serde_json::json!({"request_id": Uuid::now_v7(), "value": "replacement"}),
+        ))
+        .await?;
+    assert_eq!(locked.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let error = response_json::<ErrorEnvelope>(locked).await?;
+    assert_eq!(error.code, ErrorCode::SecretStoreLocked);
+
+    vault.force_status(None).await;
+    let updated = app
+        .clone()
+        .oneshot(json_request(
+            "PUT",
+            &format!("/api/v1/secrets/{secret_id}"),
+            &serde_json::json!({
+                "request_id": Uuid::now_v7(),
+                "label": "OpenAI personal",
+                "value": "replacement",
+            }),
+        ))
+        .await?;
+    assert_eq!(
+        response_json::<SecretSummary>(updated).await?.label,
+        "OpenAI personal"
+    );
+
+    let deleted = app
+        .oneshot(
+            Request::delete(format!("/api/v1/secrets/{secret_id}"))
+                .header("authorization", "Bearer correct-token")
+                .body(Body::empty())?,
+        )
+        .await?;
+    assert_eq!(deleted.status(), StatusCode::NO_CONTENT);
+    assert_eq!(
+        vault.status(&locator_for(secret_id)).await,
+        SecretStatus::Missing
+    );
     Ok(())
 }
 

@@ -17,7 +17,7 @@ use sqlx::{
 use std::{collections::HashSet, path::Path, str::FromStr, time::Duration};
 use uuid::Uuid;
 
-pub const SCHEMA_VERSION: u32 = 7;
+pub const SCHEMA_VERSION: u32 = 8;
 static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
 
 #[derive(Debug, thiserror::Error)]
@@ -54,6 +54,10 @@ pub enum StorageError {
     InvalidOwnershipHandoff,
     #[error("An attachment is unavailable")]
     AttachmentUnavailable,
+    #[error("Secret reference was not found")]
+    SecretNotFound,
+    #[error("A secret with that label already exists")]
+    DuplicateSecretLabel,
     #[error("database JSON is invalid: {0}")]
     Serialization(String),
 }
@@ -125,6 +129,16 @@ pub struct ProviderRoute {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SecretReferenceRecord {
+    pub id: Uuid,
+    pub owner_id: Uuid,
+    pub locator: String,
+    pub label: String,
+    pub created_at_ms: i64,
+    pub updated_at_ms: i64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum AttachmentClaim {
     Claimed(AttachmentRecord),
     Replayed(AttachmentRecord),
@@ -158,6 +172,141 @@ impl Storage {
     #[must_use]
     pub fn pool(&self) -> &SqlitePool {
         &self.pool
+    }
+
+    /// Lists owner-scoped secret metadata. Values never enter `SQLite`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database or integrity error.
+    pub async fn list_secret_references(
+        &self,
+        owner_id: Uuid,
+    ) -> Result<Vec<SecretReferenceRecord>, StorageError> {
+        let rows = sqlx::query(
+            "SELECT id, owner_id, locator, label, created_at_ms, updated_at_ms
+             FROM secret_references WHERE owner_id = ? ORDER BY label COLLATE NOCASE, id",
+        )
+        .bind(owner_id.to_string())
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter().map(secret_reference_from_row).collect()
+    }
+
+    /// Loads owner-scoped secret metadata without resolving its value.
+    ///
+    /// # Errors
+    ///
+    /// Returns `SecretNotFound` or a database/integrity error.
+    pub async fn secret_reference(
+        &self,
+        owner_id: Uuid,
+        id: Uuid,
+    ) -> Result<SecretReferenceRecord, StorageError> {
+        let row = sqlx::query(
+            "SELECT id, owner_id, locator, label, created_at_ms, updated_at_ms
+             FROM secret_references WHERE owner_id = ? AND id = ?",
+        )
+        .bind(owner_id.to_string())
+        .bind(id.to_string())
+        .fetch_optional(&self.pool)
+        .await?
+        .ok_or(StorageError::SecretNotFound)?;
+        secret_reference_from_row(&row)
+    }
+
+    /// Persists only an opaque locator and display metadata.
+    ///
+    /// # Errors
+    ///
+    /// Returns `DuplicateSecretLabel` or a database error.
+    pub async fn create_secret_reference(
+        &self,
+        record: &SecretReferenceRecord,
+    ) -> Result<(), StorageError> {
+        let result = sqlx::query(
+            "INSERT INTO secret_references
+             (id, owner_id, provider, locator, label, created_at_ms, updated_at_ms)
+             SELECT ?, ?, 'os_keyring', ?, ?, ?, ?
+             WHERE NOT EXISTS (
+               SELECT 1 FROM secret_references
+               WHERE owner_id = ? AND lower(trim(label)) = lower(trim(?))
+             )",
+        )
+        .bind(record.id.to_string())
+        .bind(record.owner_id.to_string())
+        .bind(&record.locator)
+        .bind(&record.label)
+        .bind(record.created_at_ms)
+        .bind(record.updated_at_ms)
+        .bind(record.owner_id.to_string())
+        .bind(&record.label)
+        .execute(&self.pool)
+        .await?;
+        if result.rows_affected() == 0 {
+            return Err(StorageError::DuplicateSecretLabel);
+        }
+        Ok(())
+    }
+
+    /// Updates secret display metadata; the value stays in the OS credential store.
+    ///
+    /// # Errors
+    ///
+    /// Returns a not-found, duplicate-label, or database error.
+    pub async fn update_secret_reference(
+        &self,
+        owner_id: Uuid,
+        id: Uuid,
+        label: &str,
+        now_ms: i64,
+    ) -> Result<SecretReferenceRecord, StorageError> {
+        let result = sqlx::query(
+            "UPDATE secret_references SET label = ?, updated_at_ms = ?
+             WHERE owner_id = ? AND id = ?
+             AND NOT EXISTS (
+               SELECT 1 FROM secret_references other
+               WHERE other.owner_id = ? AND other.id <> ?
+                 AND lower(trim(other.label)) = lower(trim(?))
+             )",
+        )
+        .bind(label)
+        .bind(now_ms)
+        .bind(owner_id.to_string())
+        .bind(id.to_string())
+        .bind(owner_id.to_string())
+        .bind(id.to_string())
+        .bind(label)
+        .execute(&self.pool)
+        .await?;
+        if result.rows_affected() == 0 {
+            if self.secret_reference(owner_id, id).await.is_ok() {
+                return Err(StorageError::DuplicateSecretLabel);
+            }
+            return Err(StorageError::SecretNotFound);
+        }
+        self.secret_reference(owner_id, id).await
+    }
+
+    /// Deletes only metadata after the caller has deleted the OS credential.
+    ///
+    /// # Errors
+    ///
+    /// Returns `SecretNotFound` or a database error.
+    pub async fn delete_secret_reference(
+        &self,
+        owner_id: Uuid,
+        id: Uuid,
+    ) -> Result<(), StorageError> {
+        let result = sqlx::query("DELETE FROM secret_references WHERE owner_id = ? AND id = ?")
+            .bind(owner_id.to_string())
+            .bind(id.to_string())
+            .execute(&self.pool)
+            .await?;
+        if result.rows_affected() == 0 {
+            return Err(StorageError::SecretNotFound);
+        }
+        Ok(())
     }
 
     /// Lists the owner's active or complete Bot roster.
@@ -2548,6 +2697,19 @@ fn artifact_from_row(row: &sqlx::sqlite::SqliteRow) -> Result<ArtifactRecord, St
     })
 }
 
+fn secret_reference_from_row(
+    row: &sqlx::sqlite::SqliteRow,
+) -> Result<SecretReferenceRecord, StorageError> {
+    Ok(SecretReferenceRecord {
+        id: parse_uuid(row.try_get("id")?)?,
+        owner_id: parse_uuid(row.try_get("owner_id")?)?,
+        locator: row.try_get("locator")?,
+        label: row.try_get("label")?,
+        created_at_ms: row.try_get("created_at_ms")?,
+        updated_at_ms: row.try_get("updated_at_ms")?,
+    })
+}
+
 fn parse_uuid(value: &str) -> Result<Uuid, StorageError> {
     Uuid::parse_str(value)
         .map_err(|_| StorageError::Integrity("database contains an invalid UUID".to_owned()))
@@ -2558,6 +2720,110 @@ mod tests {
     use super::*;
     use homebot_domain::chat::{ActivityStatus, ApprovalStatus};
     use serde_json::json;
+
+    #[tokio::test]
+    async fn secret_references_are_owner_scoped_and_never_store_values() -> Result<(), StorageError>
+    {
+        let directory = tempfile::tempdir()?;
+        let database = directory.path().join("homebot.db");
+        let storage = Storage::open(&database).await?;
+        let owner = Uuid::now_v7();
+        let other_owner = Uuid::now_v7();
+        let record = SecretReferenceRecord {
+            id: Uuid::now_v7(),
+            owner_id: owner,
+            locator: format!("homebot:{}", Uuid::now_v7()),
+            label: "OpenAI work".to_owned(),
+            created_at_ms: 1,
+            updated_at_ms: 1,
+        };
+        storage.create_secret_reference(&record).await?;
+        assert_eq!(
+            storage.list_secret_references(owner).await?,
+            vec![record.clone()]
+        );
+        assert!(
+            storage
+                .list_secret_references(other_owner)
+                .await?
+                .is_empty()
+        );
+        assert!(matches!(
+            storage
+                .create_secret_reference(&SecretReferenceRecord {
+                    id: Uuid::now_v7(),
+                    ..record.clone()
+                })
+                .await,
+            Err(StorageError::DuplicateSecretLabel)
+        ));
+        let updated = storage
+            .update_secret_reference(owner, record.id, "OpenAI personal", 2)
+            .await?;
+        assert_eq!(updated.label, "OpenAI personal");
+
+        let bytes = std::fs::read(&database)?;
+        assert!(
+            !bytes
+                .windows(b"canary-secret-value".len())
+                .any(|window| window == b"canary-secret-value")
+        );
+
+        storage.delete_secret_reference(owner, record.id).await?;
+        assert!(matches!(
+            storage.secret_reference(owner, record.id).await,
+            Err(StorageError::SecretNotFound)
+        ));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn version_seven_secret_metadata_upgrades_without_inventing_values()
+    -> Result<(), StorageError> {
+        let directory = tempfile::tempdir()?;
+        let database = directory.path().join("homebot-v7.db");
+        let options =
+            SqliteConnectOptions::from_str(database.to_str().ok_or(StorageError::InvalidPath)?)?
+                .create_if_missing(true)
+                .foreign_keys(true);
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(options)
+            .await?;
+        for migration in [
+            include_str!("../migrations/0001_initial.sql"),
+            include_str!("../migrations/0002_event_retention.sql"),
+            include_str!("../migrations/0003_attachments.sql"),
+            include_str!("../migrations/0004_bot_lifecycle.sql"),
+            include_str!("../migrations/0005_direct_chat.sql"),
+            include_str!("../migrations/0006_group_coordination.sql"),
+            include_str!("../migrations/0007_activity_artifacts.sql"),
+        ] {
+            sqlx::raw_sql(migration).execute(&pool).await?;
+        }
+        let id = Uuid::now_v7();
+        sqlx::query(
+            "INSERT INTO secret_references (id, provider, locator, label, created_at_ms)
+             VALUES (?, 'os_keyring', ?, 'Migrated key', 7)",
+        )
+        .bind(id.to_string())
+        .bind(format!("homebot:{id}"))
+        .execute(&pool)
+        .await?;
+        sqlx::raw_sql(include_str!("../migrations/0008_secret_references.sql"))
+            .execute(&pool)
+            .await?;
+        let storage = Storage { pool };
+        let migrated = storage.secret_reference(Uuid::nil(), id).await?;
+        assert_eq!(migrated.label, "Migrated key");
+        assert_eq!(migrated.updated_at_ms, 0);
+        let columns: Vec<String> =
+            sqlx::query_scalar("SELECT name FROM pragma_table_info('secret_references')")
+                .fetch_all(storage.pool())
+                .await?;
+        assert!(!columns.iter().any(|column| column == "value"));
+        Ok(())
+    }
 
     #[tokio::test]
     async fn bot_lifecycle_is_owner_scoped_unique_and_durable() -> Result<(), StorageError> {

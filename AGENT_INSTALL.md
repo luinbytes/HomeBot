@@ -49,10 +49,10 @@ brew install git rustup-init
 rustup-init -y --profile minimal --default-toolchain stable
 ```
 
-Arch/Omarchy:
+Arch/Omarchy (install a Secret Service provider such as GNOME Keyring for BYOK secrets):
 
 ```bash
-sudo pacman -S --needed base-devel git rustup
+sudo pacman -S --needed base-devel git rustup gnome-keyring
 rustup default stable
 rustup component add clippy rustfmt
 ```
@@ -104,7 +104,7 @@ Expected JSON shape:
 
 Also verify the process remains alive after the request and the listener is loopback-only using `lsof -nP -iTCP:7123 -sTCP:LISTEN` on macOS or `ss -ltnp '( sport = :7123 )'` on Linux. A command exit code without these postconditions is not success.
 
-SQLite migrations, authenticated desktop connection, provider health, Bot creation, pairing, and message round trip do not exist in the current scaffold. Therefore an agent MUST report those checks as unavailable and MUST NOT claim a functional HomeBot installation.
+SQLite migrations and the authenticated Bot/chat transport are implemented and covered by tests. The standalone server still lacks a supported bootstrap command for creating its first device token/Bot, and real provider health/message verification depends on installed authenticated provider CLIs or a configured BYOK profile. Pairing is not implemented. Therefore an agent MUST report those end-to-end installation checks as unavailable and MUST NOT claim a functional v1 installation.
 
 ## 6. Provider checks
 
@@ -115,7 +115,7 @@ command -v codex || true
 command -v claude || true
 ```
 
-Do not print provider configuration or tokens. Codex, Claude Code, and OpenAI-compatible provider round trips become mandatory after their adapters land. Never place BYOK values in command-line arguments, repository files, SQLite, logs, or this verification transcript.
+Do not print provider configuration or tokens. Codex, Claude Code, and OpenAI-compatible adapters are implemented, but this environment may only run their protocol-faithful fixtures. Never place BYOK values in command-line arguments, repository files, SQLite, logs, or this verification transcript. On Linux, verify a Secret Service without displaying entries using `busctl --user status org.freedesktop.secrets >/dev/null`; a missing or locked service is a fail-closed provider blocker, not a reason to use plaintext storage.
 
 ## 7. Networking and Android pairing
 

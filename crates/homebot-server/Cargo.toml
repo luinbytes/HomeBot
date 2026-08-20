@@ -13,6 +13,7 @@ futures-util.workspace = true
 homebot-protocol.workspace = true
 homebot-domain.workspace = true
 homebot-providers.workspace = true
+homebot-secrets.workspace = true
 homebot-storage = { version = "=0.0.1", path = "../homebot-storage" }
 serde.workspace = true
 serde_json.workspace = true

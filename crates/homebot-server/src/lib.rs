@@ -6,6 +6,7 @@ mod bots;
 mod chats;
 mod groups;
 mod provider_turn;
+mod secrets;
 
 use axum::{
     Json, Router,
@@ -24,6 +25,7 @@ use homebot_protocol::{
     ServerEventBody, Snapshot,
 };
 use homebot_providers::{ProviderAdapterId, ProviderRuntime};
+use homebot_secrets::{OsSecretVault, SecretVault};
 use homebot_storage::{IdempotencyClaim, ReplayWindow, Storage};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -52,7 +54,7 @@ struct ChatOperation {
     message: Uuid,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct AppState {
     storage: Storage,
     bearer_digest: [u8; 32],
@@ -65,6 +67,7 @@ pub struct AppState {
     command_delay: std::time::Duration,
     operations: Arc<Mutex<HashMap<Uuid, Arc<OperationControl>>>>,
     provider_runtime: Arc<ProviderRuntime>,
+    secret_vault: Arc<dyn SecretVault>,
     chat_operations: Arc<Mutex<HashMap<Uuid, ChatOperation>>>,
     live_events: broadcast::Sender<ServerEvent>,
 }
@@ -85,6 +88,7 @@ impl AppState {
             command_delay: COMMAND_DELAY,
             operations: Arc::new(Mutex::new(HashMap::new())),
             provider_runtime: Arc::new(ProviderRuntime::new()),
+            secret_vault: Arc::new(OsSecretVault::new()),
             chat_operations: Arc::new(Mutex::new(HashMap::new())),
             live_events,
         }
@@ -98,6 +102,12 @@ impl AppState {
     #[must_use]
     pub fn with_provider_runtime(mut self, provider_runtime: Arc<ProviderRuntime>) -> Self {
         self.provider_runtime = provider_runtime;
+        self
+    }
+
+    #[must_use]
+    pub fn with_secret_vault(mut self, secret_vault: Arc<dyn SecretVault>) -> Self {
+        self.secret_vault = secret_vault;
         self
     }
 
@@ -195,6 +205,11 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/v1/artifacts/{artifact_id}/content",
             get(artifacts::content),
+        )
+        .route("/api/v1/secrets", get(secrets::list).post(secrets::create))
+        .route(
+            "/api/v1/secrets/{secret_id}",
+            put(secrets::update).delete(secrets::delete),
         )
         .route_layer(middleware::from_fn_with_state(state.clone(), authenticate));
     Router::new()

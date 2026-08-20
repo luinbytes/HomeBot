@@ -322,6 +322,14 @@ impl ApiError {
         )
     }
 
+    pub(super) fn validation(message: &str) -> Self {
+        Self::new(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            ErrorCode::ValidationFailed,
+            message,
+        )
+    }
+
     fn new(status: StatusCode, code: ErrorCode, message: &str) -> Self {
         Self {
             status,
@@ -387,6 +395,14 @@ impl From<StorageError> for ApiError {
                 ErrorCode::ValidationFailed,
                 "An attachment is unavailable",
             ),
+            StorageError::SecretNotFound => Self::new(
+                StatusCode::NOT_FOUND,
+                ErrorCode::NotFound,
+                "Secret was not found",
+            ),
+            StorageError::DuplicateSecretLabel => {
+                Self::conflict("A secret with that label already exists")
+            }
             StorageError::ChatDomain(error) => Self::new(
                 StatusCode::UNPROCESSABLE_ENTITY,
                 ErrorCode::ValidationFailed,
@@ -394,6 +410,34 @@ impl From<StorageError> for ApiError {
             ),
             StorageError::Domain(error) => error.into(),
             _ => Self::internal(),
+        }
+    }
+}
+
+impl From<homebot_secrets::SecretStoreError> for ApiError {
+    fn from(error: homebot_secrets::SecretStoreError) -> Self {
+        match error {
+            homebot_secrets::SecretStoreError::Locked => Self::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                ErrorCode::SecretStoreLocked,
+                "Unlock the operating-system credential store and try again",
+            ),
+            homebot_secrets::SecretStoreError::Unavailable => Self::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                ErrorCode::SecretStoreUnavailable,
+                "The operating-system credential store is unavailable",
+            ),
+            homebot_secrets::SecretStoreError::NotFound => Self::new(
+                StatusCode::NOT_FOUND,
+                ErrorCode::NotFound,
+                "Secret value was not found in the operating-system credential store",
+            ),
+            homebot_secrets::SecretStoreError::InvalidReference => Self::new(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                ErrorCode::ValidationFailed,
+                "Secret reference is invalid",
+            ),
+            homebot_secrets::SecretStoreError::OperationFailed => Self::internal(),
         }
     }
 }

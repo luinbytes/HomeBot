@@ -39,6 +39,7 @@ The Rust server is authoritative. It owns Bot/chat state, providers, permissions
 | `homebot-storage` | SQLite migrations, repositories, outbox, and recovery |
 | `homebot-server` | Authenticated HTTP/WebSocket API and headless process |
 | `homebot-providers` | Codex, Claude Code, BYOK, and community adapter boundary |
+| `homebot-secrets` | macOS Keychain/Linux Secret Service storage and redacted provider injection |
 | `homebot-tools` | Server-enforced filesystem, PTY, browser, plugin, and secret capabilities |
 | `homebot-vcs` | Workspaces, worktrees, checkpoints, diffs, and safe source control |
 | `homebot-desktop` | Native egui client and local-server supervision |
@@ -46,7 +47,7 @@ The Rust server is authoritative. It owns Bot/chat state, providers, permissions
 
 Bots own stable HomeBot identity and app-managed history. A provider profile maps a Bot/chat to backend-specific conversations; switching providers does not replace the Bot.
 
-Large artifacts live in a content-addressed application data directory. SQLite is the durable source of truth for application state and an outbox provides sequenced, resumable events. Secret values are never stored in normal SQLite rows; the database holds opaque references to OS-backed credential storage.
+Large artifacts live in a content-addressed application data directory. SQLite is the durable source of truth for application state and an outbox provides sequenced, resumable events. Secret values are never stored in normal SQLite rows; the database holds opaque references to macOS Keychain or a Linux Secret Service-compatible store. See [secret storage](docs/secrets.md).
 
 Remote clients pair with a short-lived, single-use credential and receive a named, revocable device session. HomeBot binds to loopback by default. Private-network access such as Tailscale is the recommended remote path.
 
@@ -59,6 +60,7 @@ Read the deeper contracts:
 - [Group chats and coordination](docs/group-chats.md)
 - [Activity and artifact surfaces](docs/activity-surfaces.md)
 - [Providers](docs/providers.md)
+- [Secret storage](docs/secrets.md)
 - [Local computer capabilities](docs/tools.md)
 - [Security and threat model](docs/security.md)
 - [Android](docs/android.md)

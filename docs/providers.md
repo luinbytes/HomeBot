@@ -34,7 +34,7 @@ Profiles select an explicit executable, working directory and allowlisted enviro
 
 ## OpenAI-compatible BYOK
 
-An OpenAI-compatible profile contains an endpoint, API style, model and opaque `SecretReference`. It never contains the credential value. `ProviderSecretResolver` resolves that reference only immediately before an HTTP request; `ResolvedSecret` redacts debug output and zeroes its allocation on drop. SQLite and provider configuration therefore persist only the opaque reference. OS-backed implementations of the resolver land with the secret-store roadmap issue.
+An OpenAI-compatible profile contains an endpoint, API style, model and opaque `SecretReference`. It never contains the credential value. `VaultProviderSecretResolver` resolves that reference from macOS Keychain or Linux Secret Service only immediately before an HTTP request; `ResolvedSecret` redacts debug output and zeroes its allocation on drop. SQLite and provider configuration therefore persist only the opaque reference. Locked or unavailable credential stores fail closed as authentication unavailable and never fall back to a file or environment value.
 
 Responses API profiles support streamed text, reasoning/tool activity, usage, cancellation and `previous_response_id` continuation. Chat Completions profiles support streamed text, usage and cancellation; they intentionally reject provider-native resume until the server transcript-replay layer supplies full message history. Model discovery uses `GET /models`. Remote endpoints require HTTPS, while explicit loopback endpoints may use HTTP for local Ollama, LM Studio and similar servers. Redirects are disabled so bearer credentials cannot be forwarded unexpectedly.
 

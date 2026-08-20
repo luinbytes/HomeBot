@@ -1,6 +1,6 @@
 # Architecture
 
-Status: M2 desktop product foundation, 20 August 2026.
+Status: M3 automation and extension foundation, 20 August 2026.
 
 ## Product boundary
 
@@ -51,7 +51,7 @@ SQLite runs in WAL mode and is the source of truth for structured product state.
 
 `homebot-storage` opens SQLite with foreign keys, a bounded busy timeout, WAL journalling, and startup integrity checks. Startup fails closed on migration, quick-check, or foreign-key failures. Backups use SQLite's consistent `VACUUM INTO` operation, and restore refuses to overwrite an existing destination.
 
-Large attachments and generated artifacts live outside SQLite in a content-addressed data directory. Database rows store ownership, media type, size, digest, and lifecycle metadata. Secret rows contain opaque credential-store references only.
+Large attachments and generated artifacts live outside SQLite in a content-addressed data directory. Database rows store ownership, media type, size, digest, and lifecycle metadata. Secret rows contain owner-scoped opaque credential-store references only. `homebot-secrets` performs blocking macOS Keychain/Linux Secret Service calls on Tokio's blocking pool and returns zeroizing, redacted leases only through explicit secret-aware adapters.
 
 ## Failure model
 
@@ -61,7 +61,6 @@ Provider, MCP, browser, terminal, and Git failures are isolated from the server 
 
 ## Decisions still requiring implementation evidence
 
-- exact OS credential-store crate and Linux locked-session behaviour
 - content-addressed artifact garbage collection policy
 - supported compatibility-window duration after v1
 - egui native chrome exceptions and golden rendering hosts

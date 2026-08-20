@@ -1,0 +1,25 @@
+[package]
+name = "homebot-secrets"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+homebot-providers.workspace = true
+keyring.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+uuid.workspace = true
+zeroize.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+keyring = { workspace = true, features = ["apple-native"] }
+
+[target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
+keyring = { workspace = true, features = ["sync-secret-service", "crypto-rust", "vendored"] }
+
+[lints]
+workspace = true

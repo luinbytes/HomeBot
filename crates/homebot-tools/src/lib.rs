@@ -9,6 +9,7 @@ mod browser;
 mod contracts;
 mod filesystem;
 mod policy;
+mod secret;
 mod terminal;
 
 pub use activity::{ActivitySink, NoopActivitySink, RecordingActivitySink};
@@ -19,4 +20,5 @@ pub use contracts::{
 };
 pub use filesystem::{DirectoryEntry, FilesystemLimits, ScopedFilesystem};
 pub use policy::{ApprovalDecision, ApprovalTicket, PolicyEffect, PolicyEngine, PolicyRule};
+pub use secret::SecretToolService;
 pub use terminal::{TerminalChunk, TerminalCommand, TerminalLimits, TerminalRun, TerminalService};

@@ -40,6 +40,9 @@
     "create_direct_chat_response": {
       "$ref": "#/$defs/CreateDirectChatResponse"
     },
+    "create_secret_request": {
+      "$ref": "#/$defs/CreateSecretRequest"
+    },
     "error": {
       "$ref": "#/$defs/ErrorEnvelope"
     },
@@ -48,6 +51,9 @@
     },
     "message_mutation_request": {
       "$ref": "#/$defs/MessageMutationRequest"
+    },
+    "secret": {
+      "$ref": "#/$defs/SecretSummary"
     },
     "send_message_request": {
       "$ref": "#/$defs/SendMessageRequest"
@@ -60,12 +66,18 @@
     },
     "update_bot_request": {
       "$ref": "#/$defs/UpdateBotRequest"
+    },
+    "update_secret_request": {
+      "$ref": "#/$defs/UpdateSecretRequest"
     }
   },
   "required": [
     "client_message",
     "server_event",
     "error",
+    "create_secret_request",
+    "update_secret_request",
+    "secret",
     "create_attachment_request",
     "create_attachment_response",
     "finalize_attachment_request",
@@ -1049,6 +1061,33 @@
         "chat"
       ]
     },
+    "CreateSecretRequest": {
+      "description": "Secret-bearing request. Deliberately does not implement `Debug` or `Serialize`.",
+      "type": "object",
+      "properties": {
+        "idempotency_key": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "label": {
+          "type": "string"
+        },
+        "request_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "value": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "request_id",
+        "idempotency_key",
+        "label",
+        "value"
+      ]
+    },
     "ErrorCode": {
       "type": "string",
       "enum": [
@@ -1060,6 +1099,8 @@
         "validation_failed",
         "rate_limited",
         "provider_unavailable",
+        "secret_store_locked",
+        "secret_store_unavailable",
         "operation_cancelled",
         "resume_unavailable",
         "protocol_version_unsupported",
@@ -1552,6 +1593,48 @@
         "high"
       ]
     },
+    "SecretStatus": {
+      "type": "string",
+      "enum": [
+        "ready",
+        "locked",
+        "unavailable",
+        "missing"
+      ]
+    },
+    "SecretSummary": {
+      "type": "object",
+      "properties": {
+        "created_at_unix_ms": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "label": {
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/$defs/SecretStatus"
+        },
+        "updated_at_unix_ms": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "label",
+        "status",
+        "created_at_unix_ms",
+        "updated_at_unix_ms"
+      ]
+    },
     "SendMessageRequest": {
       "type": "object",
       "properties": {
@@ -1908,6 +1991,39 @@
           "properties": {
             "kind": {
               "type": "string",
+              "const": "secret_changed"
+            },
+            "secret": {
+              "$ref": "#/$defs/SecretSummary"
+            }
+          },
+          "required": [
+            "kind",
+            "secret"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "secret_removed"
+            },
+            "secret_id": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          "required": [
+            "kind",
+            "secret_id"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
               "const": "command_accepted"
             },
             "operation_id": {
@@ -2097,6 +2213,32 @@
         "shape",
         "color",
         "permission_profile"
+      ]
+    },
+    "UpdateSecretRequest": {
+      "description": "Secret-bearing request. Deliberately does not implement `Debug` or `Serialize`.",
+      "type": "object",
+      "properties": {
+        "label": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "request_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "value": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "request_id"
       ]
     }
   }

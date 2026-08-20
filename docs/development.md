@@ -10,6 +10,8 @@ From the repository root, run:
 
 This is the same formatting, clippy, workspace test, JSON Schema drift, and Android binding drift sequence enforced by CI.
 
+CI uses GitHub's current `macos-15-intel` label for x86_64 compilation and `macos-14` for Apple Silicon. Retired macOS runner labels must not be retained merely because their jobs remain queued.
+
 Use Rust stable from `rust-toolchain.toml`. Run `cargo fmt --all --check`, `cargo clippy --workspace --all-targets --all-features -- -D warnings`, and `cargo test --workspace --all-features` before committing.
 
 Fixtures belong under `tests/fixtures` or the owning crate. Persistent changes require migration-upgrade fixtures. Protocol changes require schema and golden fixture updates. Visible client changes require deterministic screenshots. Security boundaries require a negative test that proves denial at the server.

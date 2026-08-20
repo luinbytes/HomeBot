@@ -7,10 +7,10 @@ This file is operational state for coding agents. It is not user-facing product 
 ## Current state
 
 - Current milestone: M0, Product & Architecture Baseline
-- Current Linear issue: 6C7-35 Rust workspace and CI quality gates
+- Current Linear issues: 6C7-35 CI verification and 6C7-36 SQLite persistence
 - Parallel scaffold issue: 6C7-35 remains In Progress but cannot close until compilation and CI are verified
 - Current Git branch: `feat/m0-contracts`
-- Latest verified remote commit: `40269eb0917f9df1c9cc7f3756a5d0b9b5d0de2c`
+- Latest verified remote commit: `4166431264c166ad2545c9bef0c625ec08f08d28`
 - Public repository: `https://github.com/luinbytes/HomeBot`
 - Repository owner and commit identity: `luinbytes <42706009+luinbytes@users.noreply.github.com>`
 
@@ -31,7 +31,8 @@ Current blockers:
 - Rust is installed in isolated task paths under `/tmp/homebot-rustup` and `/tmp/homebot-cargo`.
 - GitHub Actions runs 1 and 2 are queued; CI success is unverified.
 - Exact current-app pixel captures remain deliberately gated to 6C7-42.
-- GitHub Actions at `6f2fc4f` verified Rust quality and Linux/macOS arm64 compilation, but dependency policy failed because internal workspace paths had no explicit versions. The fix is in progress.
+- GitHub Actions at `4166431` verified Rust quality, Linux, macOS arm64, dependency audit, and dependency policy. The macOS Intel job exposed a retired `macos-13` label; the working tree now uses GitHub's documented `macos-15-intel` label.
+- 6C7-36 now has an initial transactional migration, WAL/integrity-safe storage open, monotonic outbox, replay, backup, restore, restart, corruption, and concurrency tests in the working tree.
 
 ## Completed work
 
@@ -46,10 +47,10 @@ Current blockers:
 
 ## Immediate next work
 
-1. Push the explicit internal dependency versions and reproducible CI drift checks for 6C7-35.
-2. Verify every GitHub Actions job, including macOS Intel and dependency gates.
-3. Mark 6C7-35 Done only after the new run is green.
-4. Refresh Linear and start 6C7-36, SQLite persistence, migrations, and event outbox.
+1. Verify the queued macOS Intel job and close 6C7-35 when the entire run is green.
+2. Complete 6C7-36 migration failure/upgrade fixtures and storage documentation.
+3. Run full workspace quality checks, commit, push, and update Linear.
+4. Refresh the M1 dependency graph and begin the next unblocked issue.
 
 ## Verification state
 
@@ -69,7 +70,7 @@ Verified:
 
 Not yet verified:
 
-- A fully green GitHub Actions run; the current dependency-policy failure has a local fix awaiting push.
+- A fully green GitHub Actions run; only macOS Intel remains queued at the latest checkpoint.
 - Android application build; the generated protocol source is not compiled until the M4 Gradle module lands.
 - Any end-user HomeBot behaviour beyond static contract inspection.
 

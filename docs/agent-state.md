@@ -7,10 +7,10 @@ This file is operational state for coding agents. It is not user-facing product 
 ## Current state
 
 - Current milestone: M4, T3 Code Developer Superpowers. M2 and M3 are verified complete.
-- Current Linear issue: 6C7-56, turn checkpoints, exact diffs and safe revert (`In Progress`).
+- Current Linear issue: 6C7-57, source-control, commit and PR workflow surfaces (`In Progress`).
 - Current Git branch: `main`.
-- Latest verified implementation commit: `5226162ebd69edb5f46bb256a0542332b84a410f` (exact tree for 6C7-55; implementation began in `01a241a`).
-- Latest verified GitHub Actions run: `32422748219`, all nine jobs passed.
+- Latest verified implementation commit: `20412a03c61a2671a6bc42fa2ec04f9a710c9004` (6C7-56; exact tree `229c7d8761f1b3c408bf8be534c6815ff53ce085`).
+- Latest verified GitHub Actions run: `32425371202`, all nine jobs passed.
 - Public repository: `https://github.com/luinbytes/HomeBot`.
 - Required commit identity: `luinbytes <42706009+luinbytes@users.noreply.github.com>`.
 
@@ -26,6 +26,7 @@ Architecture decisions currently frozen:
 - Local MCP plugins use a provider-neutral adapter boundary and constrained direct-executable stdio lifecycle. Plugin results are explicitly untrusted data; connection and Bot assignment never grant tool capability authority.
 - Filesystem authority uses `cap-std`; terminal authority uses bounded `portable-pty`; browser authority uses loopback-only CDP.
 - Repository registrations and per-chat primary/isolated workspace associations are SQLite authority. `homebot-vcs` invokes a fixed Git executable without a shell, never mutates the primary checkout, and removes only clean canonical children of the server-managed worktree root.
+- Coding turns use alternate-index hidden-ref checkpoints. Restore captures a safety checkpoint, preserves the real branch/index, refuses ignored-content overwrite conflicts, and explicitly forks incompatible provider conversation mappings.
 
 Current blockers:
 
@@ -45,25 +46,26 @@ Current blockers:
 - 6C7-49, provider-neutral versioned Skills, authenticated library/import/export/assignment, deterministic provider assembly, exact historical message versions, desktop projection and Android/schema contract.
 - M3 epic 6C7-48: plugins/MCP, OS-backed secrets, routine recording/replay, schedules/triggers/history, and reusable Skills.
 - 6C7-55, owner-scoped repository registration, primary/isolated per-chat workspaces, deterministic branches, guarded cleanup, authenticated protocol/events, desktop transport/projection and Android/schema parity.
-- Most recent completed issue: 6C7-55.
+- 6C7-56, hidden-ref before/after turn checkpoints, exact binary-capable per-turn/full-chat diffs, safe restore, provider-conversation fork reconciliation, authenticated desktop/server contracts and Android/schema parity.
+- Most recent completed issue: 6C7-56.
 
 ## Immediate next work
 
-1. Implement hidden-ref pre/post turn checkpoints for 6C7-56 without modifying the user's index or primary working tree.
-2. Define exact per-turn and full-chat diff/changed-file summaries, including binary files, untracked files and renames against dirty baselines.
-3. Implement guarded restore to a completed checkpoint plus durable provider-conversation reconciliation/fork metadata, authenticated server APIs/events, SQLite migration, desktop/Android projections and hostile fixtures.
+1. Define one normalized server-owned VCS status/diff/branch/remote/PR contract for 6C7-57 and mechanically export it to Android.
+2. Implement shell-free status, staged/unstaged diff, commit and branch operations with detached-HEAD, dirty-baseline and merge-conflict fixtures.
+3. Put remote push and PR-affecting actions behind server-side structured approval policy, normalize no-remote/auth failures, then wire the authenticated desktop transport/projection.
 
 ## Verification state
 
 Verified at the latest remote baseline:
 
-- GitHub Actions run 32409841146 passed all nine jobs: formatting/clippy/114 tests, dependency policy/audit, Linux, macOS Intel, macOS Apple Silicon, and 15 cross-platform visual goldens for commit `82a2d11b`.
-- The remote commit author and committer resolve to GitHub account `luinbytes`.
+- GitHub Actions run `32425371202` passed all nine jobs for commit `20412a0`: formatting, strict clippy, 142 Rust tests, dependency policy/audit, Linux, macOS Intel, macOS Apple Silicon, and 15 cross-platform visual fixtures.
+- Remote tree `229c7d8761f1b3c408bf8be534c6815ff53ce085` exactly matches the locally verified implementation tree. The remote author and committer resolve to GitHub account `luinbytes`.
 - 6C7-50's authenticated integration fixture proves Connect -> Waiting -> Connected discovery, then malformed MCP health -> Error with disablement and cleared tools; the child environment is cleared and MCP results remain explicitly untrusted.
 
-Verified locally for the active issue:
+Verified locally at the current baseline:
 
-- `./scripts/check.sh` passes on Rust 1.98.0: formatting, strict clippy, the complete workspace suite with 137 tests, protocol/schema drift checks, generated Android binding drift checks, and all 15 exact desktop visual fixtures.
+- `./scripts/check.sh` passes on Rust 1.98.0: formatting, strict clippy, the complete workspace suite with 142 tests, protocol/schema drift checks, generated Android binding drift checks, and all 15 exact desktop visual fixtures.
 - Targeted routine/plugin/storage/server/desktop suites also pass independently.
 - The routine verification patch proves durable version 2 edits, recording conversion, dry-run side-effect freedom, real manual Bot dispatch, MCP `tools/call`, approval stops, safe durable failures, editable recovery after invalid finish, restart persistence and server-event-only desktop projection updates.
 - Secret-specific coverage passes: three vault tests, two policy-gated secret-tool tests, one authenticated API canary test, and two storage/migration tests.
@@ -77,12 +79,14 @@ Verified locally for the active issue:
 - GitHub Actions run `32419854283` passed all nine jobs for 6C7-49 commit `323660a`: Rust quality, dependency audit/policy, Linux, macOS Intel/Apple Silicon builds, and all three visual-golden platforms.
 - 6C7-55 fixtures prove dirty/untracked primary preservation, primary and isolated associations, deterministic branches, detached HEAD, hostile-ref denial, clean removal, dirty/out-of-root cleanup denial, duplicate conflicts, unavailable-path projection, restart durability and v12→v13 migration. A real desktop-supervised server fixture registers, attaches and detaches a repository through authenticated APIs.
 - GitHub Actions run `32422748219` passed all nine jobs for exact remote tree `61f0efa`: Rust quality, dependency audit/policy, Linux and both macOS builds, and all three visual-golden platforms. Both remote commits resolve to GitHub account `luinbytes` as author and committer.
+- 6C7-56's full gate passes with 142 Rust tests and all 15 visual fixtures. Real-Git/server coverage proves dirty/staged/untracked/binary/rename capture, index preservation, exact diffs, ignored-content conflict denial, safety restore, idempotent audit persistence, and provider-conversation fork reconciliation.
+- GitHub Actions run `32425371202` passed all nine jobs for public commit `20412a0` and exact remote tree `229c7d8`: Rust quality, dependency audit/policy, Linux and both macOS builds, and all three visual-golden platforms. Author and committer resolve to GitHub account `luinbytes`.
 
-6C7-73 and reopened M2 epic 6C7-41 completion evidence is recorded in Linear; both are Done. M3 epic 6C7-48 and 6C7-55 are verified Done. M4 epic 6C7-54 and 6C7-56 are In Progress.
+6C7-73 and reopened M2 epic 6C7-41 completion evidence is recorded in Linear; both are Done. M3 epic 6C7-48, 6C7-55 and 6C7-56 are verified Done. M4 epic 6C7-54 and 6C7-57 are In Progress.
 
 ## Known failures and incomplete implementation
 
-- Android app, checkpoints/diffs/revert and later source-control workflows, device pairing/Tailscale, packaging, and release artifacts remain incomplete roadmap work.
+- Android app, source-control workflows, device pairing/Tailscale, packaging, and release artifacts remain incomplete roadmap work.
 - Real authenticated Codex/Claude round trips are unavailable in this environment. OpenAI-compatible and CDP behavior use protocol-faithful local fixtures.
 - No release artifact exists. Do not describe HomeBot as installable or v1-ready.
 

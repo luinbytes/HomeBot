@@ -3,7 +3,7 @@
 use std::{
     collections::{BTreeMap, VecDeque},
     ffi::{OsStr, OsString},
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::Stdio,
     time::Duration,
 };
@@ -14,6 +14,9 @@ use tokio::{
     time::Instant,
 };
 use uuid::Uuid;
+
+const SPAWN_ATTEMPTS: usize = 8;
+const SPAWN_RETRY_DELAY: Duration = Duration::from_millis(2);
 
 #[derive(Clone, Debug)]
 pub struct ProcessLimits {
@@ -187,16 +190,7 @@ impl SupervisedProcess {
         if let Some(directory) = current_dir {
             command.current_dir(directory);
         }
-        let mut child = command
-            .spawn()
-            .map_err(|source| ProviderProcessError::Spawn {
-                program: program
-                    .file_name()
-                    .and_then(OsStr::to_str)
-                    .unwrap_or("provider")
-                    .to_owned(),
-                source,
-            })?;
+        let mut child = spawn_child(&mut command, &program)?;
         let stdin = child.stdin.take();
         let stdout = child.stdout.take();
         let stderr = child
@@ -295,6 +289,31 @@ impl SupervisedProcess {
             stderr_truncated: diagnostics.truncated,
         })
     }
+}
+
+fn spawn_child(command: &mut Command, program: &Path) -> Result<Child, ProviderProcessError> {
+    for attempt in 1..=SPAWN_ATTEMPTS {
+        match command.spawn() {
+            Ok(child) => return Ok(child),
+            Err(source)
+                if source.kind() == std::io::ErrorKind::ExecutableFileBusy
+                    && attempt < SPAWN_ATTEMPTS =>
+            {
+                std::thread::sleep(SPAWN_RETRY_DELAY);
+            }
+            Err(source) => {
+                return Err(ProviderProcessError::Spawn {
+                    program: program
+                        .file_name()
+                        .and_then(OsStr::to_str)
+                        .unwrap_or("provider")
+                        .to_owned(),
+                    source,
+                });
+            }
+        }
+    }
+    unreachable!("spawn loop always returns on its final attempt")
 }
 
 impl Drop for SupervisedProcess {

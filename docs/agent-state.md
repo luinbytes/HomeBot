@@ -40,7 +40,7 @@ Current blockers:
 - 6C7-39 is Done. GitHub Actions run 32355805077 passed the full six-job matrix. The current environment has no `codex` binary, so the real-binary smoke test skips with an explicit reason; fake executable App Server fixtures verify structured start, resume, streaming, approval, and interruption round trips.
 - 6C7-40 is Done. GitHub Actions run 32358033480 passed the full six-job matrix after the dependency policy explicitly admitted webpki-roots' permissive CDLA-Permissive-2.0 license.
 - M1 is complete. 6C7-72 and epic 6C7-34 are Done after GitHub Actions run 32361115615 passed all six jobs.
-- 6C7-42 is In Progress. Its reusable egui token/component layer, three deterministic screenshot goldens and platform-independent CPU renderer are complete locally. The exact next action is to publish the coherent change, verify the expanded Linux/macOS CI matrix, add evidence to Linear and close the issue only after every job passes.
+- 6C7-42 is In Progress. Its reusable egui token/component layer, three deterministic screenshot goldens and platform-independent CPU renderer are published in `b9a7d40`. The first expanded CI run exposed a pre-existing Linux `ETXTBSY` race when rapidly created provider fixture executables start. A bounded production spawn retry and deterministic regression test now pass locally; the exact next action is to publish that fix and verify the complete remote matrix before closing 6C7-42.
 - egui 0.32.3 transitively uses unmaintained `ttf-parser` 0.25.1. RUSTSEC-2026-0192 reports no known vulnerability and no safe upgrade; the exact advisory is documented and temporarily ignored, with mandatory review in 6C7-69.
 
 ## Completed work
@@ -64,7 +64,7 @@ Current blockers:
 
 ## Immediate next work
 
-1. Publish the complete 6C7-42 visual foundation and checked-in goldens to `main` under the `luinbytes` identity.
+1. Publish the bounded provider executable-busy retry discovered by the 6C7-42 remote matrix.
 2. Verify the full workspace, dependency policy/audit, three platform builds and Linux/macOS visual jobs remotely, then close 6C7-42 with evidence.
 3. Immediately start 6C7-43 Bot roster, identity editor and lifecycle work.
 
@@ -87,7 +87,7 @@ Verified:
 - `./scripts/check.sh` passes locally with formatting, workspace clippy, 51 Rust tests, protocol schema drift and generated Android binding drift checks.
 - `homebot-providers` has 22 passing tests. Codex coverage includes JSONL fixture normalization, profile isolation and redaction, explicit binary discovery, auth/error and interruption normalization, fake App Server start/resume, streaming, approval resolution, cancellation, and an explicit real-binary skip when Codex is absent. Claude fixtures verify normalized init/content/tool/usage/result records, resume-oriented CLI arguments, streaming and cancellation. OpenAI-compatible tests verify request-time bearer resolution, model discovery, streamed Responses events, HTTPS/loopback policy, redaction and cancellation. Generic process tests verify its JSONL contract, bounded normalized streaming, redaction and cancellation.
 - `homebot-tools` has 12 unit and 3 hostile-input integration tests covering actor-scoped deny/allow policy, single-use/expiring/digest-bound approvals, policy revision invalidation, content substitution, traversal, symlinks, atomic and bounded filesystem operations, real PTY output/input lifecycle, duplicate IDs, filtered environment, cancellation, timeout, output limits, loopback-only browser control, profile confinement and normalized CDP actions.
-- The full workspace now has 70 passing Rust tests, including three pixel-exact CPU-rendered desktop goldens. Local cargo-deny 0.20.2 reports advisories, bans, licenses and sources all OK with the documented exact unmaintained-font-parser exception.
+- The full workspace now has 71 passing Rust tests, including three pixel-exact CPU-rendered desktop goldens and a deterministic transient executable-busy regression. The full 23-test provider suite also passed 100 consecutive stress iterations. Local cargo-deny 0.20.2 reports advisories, bans, licenses and sources all OK with the documented exact unmaintained-font-parser exception.
 
 Not yet verified:
 
@@ -99,7 +99,7 @@ Not yet verified:
 
 - `homebot-server` covers every stated 6C7-37 transport behaviour locally and in the passing remote matrix.
 - The first-class Codex and Claude adapters cannot perform real authenticated provider messages in this environment because neither CLI binary is installed. Their structured protocol fixtures pass. The OpenAI-compatible adapter is verified against a local protocol-faithful HTTP/SSE fixture, not a user credential. The local computer capability layer is implemented but no real Chrome process is installed in this environment, so CDP behavior is verified against a protocol-faithful loopback fixture. Desktop egui, Android, routines, plugins, VCS, pairing, and packaging are not implemented.
-- The desktop visual foundation is implemented locally but not yet verified by the expanded remote macOS/Linux visual matrix.
+- GitHub Actions run 32363108340 passed dependency policy, all three platform builds and Linux/Apple Silicon visual goldens, but Rust quality hit a transient Linux `ETXTBSY` while starting a provider fixture. The bounded retry fix is complete locally and awaits remote verification. Do not close 6C7-42 until the replacement run is fully green.
 - No release artifact exists. Do not describe the project as installable or v1-ready.
 
 ## Environment notes

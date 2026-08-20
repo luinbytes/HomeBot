@@ -325,6 +325,38 @@ async fn supervisor_prefers_clean_stdin_shutdown_then_enforces_deadline()
     Ok(())
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn supervisor_retries_transient_executable_file_busy()
+-> Result<(), Box<dyn std::error::Error>> {
+    use std::{fs::OpenOptions, io::Write, os::unix::fs::PermissionsExt, thread};
+
+    let directory = tempfile::tempdir()?;
+    let executable = directory.path().join("transiently-busy-provider");
+    let mut file = OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(&executable)?;
+    file.write_all(b"#!/bin/sh\nexit 0\n")?;
+    file.sync_all()?;
+    drop(file);
+    let mut permissions = std::fs::metadata(&executable)?.permissions();
+    permissions.set_mode(0o700);
+    std::fs::set_permissions(&executable, permissions)?;
+
+    let busy_handle = OpenOptions::new().write(true).open(&executable)?;
+    let release = thread::spawn(move || {
+        thread::sleep(Duration::from_millis(5));
+        drop(busy_handle);
+    });
+    let process = SupervisedProcess::spawn(ProcessSpec::new(&executable))?;
+    release
+        .join()
+        .map_err(|_| std::io::Error::other("busy-file release thread panicked"))?;
+    assert!(process.wait().await?.succeeded());
+    Ok(())
+}
+
 #[test]
 fn process_debug_output_never_contains_environment_or_redaction_values()
 -> Result<(), ProviderContractError> {

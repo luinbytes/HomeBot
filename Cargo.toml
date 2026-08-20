@@ -39,6 +39,7 @@ homebot-providers = { version = "=0.0.1", path = "crates/homebot-providers" }
 homebot-plugins = { version = "=0.0.1", path = "crates/homebot-plugins" }
 homebot-routines = { version = "=0.0.1", path = "crates/homebot-routines" }
 homebot-skills = { version = "=0.0.1", path = "crates/homebot-skills" }
+homebot-vcs = { version = "=0.0.1", path = "crates/homebot-vcs" }
 homebot-secrets = { version = "=0.0.1", path = "crates/homebot-secrets" }
 keyring = { version = "=3.6.3", default-features = false }
 notify-rust = "4.18.0"

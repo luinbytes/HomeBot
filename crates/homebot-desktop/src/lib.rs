@@ -11,6 +11,7 @@ pub mod skills;
 pub mod timeline;
 pub mod tokens;
 pub mod transport;
+pub mod workspaces;
 
 pub use showcase::{FixtureState, render_fixture};
 pub use tokens::{HomeBotTheme, ThemeMode};

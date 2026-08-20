@@ -6,6 +6,7 @@ pub use homebot_routines::{
     RoutineStep, RoutineStepStatus, RoutineTriggerDefinition, RoutineTriggerSource,
 };
 pub use homebot_skills::{SkillContext, SkillDefinition, SkillToolReference};
+pub use homebot_vcs::{WorkingTreeCondition, WorkspaceMode};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -128,6 +129,15 @@ pub enum ServerEventBody {
     SkillRemoved {
         skill_id: Uuid,
     },
+    RepositoryWorkspaceChanged {
+        workspace: RepositoryWorkspaceSummary,
+    },
+    ChatWorkspaceChanged {
+        workspace: ChatWorkspaceSummary,
+    },
+    ChatWorkspaceRemoved {
+        chat_id: Uuid,
+    },
     RoutineChanged {
         routine: RoutineSummary,
     },
@@ -188,6 +198,10 @@ pub struct Snapshot {
     pub group_chats: Vec<GroupChatSummary>,
     #[serde(default)]
     pub skills: Vec<SkillSummary>,
+    #[serde(default)]
+    pub repository_workspaces: Vec<RepositoryWorkspaceSummary>,
+    #[serde(default)]
+    pub chat_workspaces: Vec<ChatWorkspaceSummary>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
@@ -947,6 +961,64 @@ pub struct ImportSkillRequest {
     pub conflict_policy: SkillImportConflictPolicy,
 }
 
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RepositoryWorkspaceSummary {
+    pub id: Uuid,
+    pub name: String,
+    pub root_path: String,
+    pub current_branch: Option<String>,
+    pub condition: WorkingTreeCondition,
+    pub created_at_unix_ms: u64,
+    pub updated_at_unix_ms: u64,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ChatWorkspaceSummary {
+    pub chat_id: Uuid,
+    pub workspace_id: Uuid,
+    pub mode: WorkspaceMode,
+    pub effective_path: String,
+    pub branch_name: Option<String>,
+    pub base_ref: Option<String>,
+    pub condition: WorkingTreeCondition,
+    pub updated_at_unix_ms: u64,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CreateRepositoryWorkspaceRequest {
+    pub request_id: Uuid,
+    pub idempotency_key: Uuid,
+    pub root_path: String,
+    pub name: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AttachChatWorkspaceRequest {
+    pub request_id: Uuid,
+    pub idempotency_key: Uuid,
+    pub workspace_id: Uuid,
+    pub mode: WorkspaceMode,
+    pub base_ref: Option<String>,
+    pub branch_name: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct DetachChatWorkspaceRequest {
+    pub request_id: Uuid,
+    pub idempotency_key: Uuid,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkspaceBranchesResponse {
+    pub branches: Vec<String>,
+}
+
 #[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct RoutineSummary {
@@ -1175,6 +1247,12 @@ pub struct ProtocolV1Schema {
     pub skill_bundle: SkillBundle,
     pub skill: SkillSummary,
     pub applied_skill: AppliedSkillSummary,
+    pub create_repository_workspace_request: CreateRepositoryWorkspaceRequest,
+    pub attach_chat_workspace_request: AttachChatWorkspaceRequest,
+    pub detach_chat_workspace_request: DetachChatWorkspaceRequest,
+    pub repository_workspace: RepositoryWorkspaceSummary,
+    pub chat_workspace: ChatWorkspaceSummary,
+    pub workspace_branches: WorkspaceBranchesResponse,
     pub create_routine_request: CreateRoutineRequest,
     pub update_routine_request: UpdateRoutineRequest,
     pub duplicate_routine_request: DuplicateRoutineRequest,

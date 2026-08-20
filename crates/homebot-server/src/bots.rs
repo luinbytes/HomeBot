@@ -330,6 +330,14 @@ impl ApiError {
         )
     }
 
+    pub(super) fn unavailable(message: &str) -> Self {
+        Self::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            ErrorCode::ProviderUnavailable,
+            message,
+        )
+    }
+
     fn new(status: StatusCode, code: ErrorCode, message: &str) -> Self {
         Self {
             status,
@@ -418,6 +426,17 @@ impl From<StorageError> for ApiError {
             ),
             StorageError::DuplicateSkillName => {
                 Self::conflict("A Skill with that name already exists")
+            }
+            StorageError::WorkspaceNotFound => Self::new(
+                StatusCode::NOT_FOUND,
+                ErrorCode::NotFound,
+                "Workspace was not found",
+            ),
+            StorageError::DuplicateWorkspacePath => {
+                Self::conflict("This repository is already registered")
+            }
+            StorageError::DuplicateChatWorkspace => {
+                Self::conflict("This chat already has a workspace")
             }
             StorageError::RoutineNotFound => Self::new(
                 StatusCode::NOT_FOUND,

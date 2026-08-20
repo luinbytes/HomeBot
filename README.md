@@ -32,6 +32,8 @@ Supported v1 targets are macOS x86_64 and arm64, Linux x86_64 with Arch/Omarchy 
 
 The Rust server is authoritative. It owns Bot/chat state, providers, permissions, tools, routines, plugins, secrets, browser and terminal execution, Git operations, and persistence. Desktop and Android are clients of the same versioned HTTP and WebSocket protocol. The desktop app may supervise a bundled local server, but never bypasses its contracts.
 
+Coding chats can attach an existing repository directly or use a deterministic isolated Git worktree. HomeBot preserves dirty primary trees and refuses to remove an isolated worktree containing uncommitted work. See [Repository workspaces](docs/workspaces.md).
+
 | Area | Responsibility |
 | --- | --- |
 | `homebot-domain` | Provider-independent Bots, chats, activities, approvals, and routines |
@@ -62,6 +64,7 @@ Read the deeper contracts:
 - [Providers](docs/providers.md)
 - [Secret storage](docs/secrets.md)
 - [Local computer capabilities](docs/tools.md)
+- [Repository workspaces](docs/workspaces.md)
 - [Security and threat model](docs/security.md)
 - [Android](docs/android.md)
 - [Routines](docs/routines.md)

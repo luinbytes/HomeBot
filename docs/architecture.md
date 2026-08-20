@@ -38,6 +38,8 @@ Dependencies point inward toward `homebot-domain` and `homebot-protocol`. Domain
 
 `homebot-tools` owns the local-computer authority boundary. Its policy engine evaluates authenticated owner/device, Bot, chat, workspace, capability, canonical target and action before any side effect. Filesystem operations use a capability directory, terminal operations use a supervised real PTY with a cleared environment, and browser operations use a loopback-only CDP session whose profile remains on the server. See [tools.md](tools.md).
 
+`homebot-vcs` owns shell-free repository inspection and isolated Git-worktree lifecycle. SQLite stores owner-scoped repository registrations and optional per-chat associations; live Git condition is inspected rather than guessed from stored metadata. The server alone creates or removes deterministic managed worktrees, never mutates the primary checkout, and refuses cleanup when a worktree is dirty or outside its canonical managed root. See [workspaces.md](workspaces.md).
+
 ## Identity and conversations
 
 A `Bot` has a HomeBot-owned stable ID, identity, instructions, memory policy, provider profile reference, permissions, skills, and plugins. A direct chat or group chat owns HomeBot transcript history. Backend conversation IDs are mappings keyed by chat and provider profile. Provider switching retains Bot identity and transcript but creates or resumes the appropriate backend mapping.

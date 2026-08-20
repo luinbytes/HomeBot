@@ -1926,6 +1926,7 @@ dependencies = [
  "homebot-domain",
  "homebot-routines",
  "homebot-skills",
+ "homebot-vcs",
  "schemars",
  "serde",
  "serde_json",
@@ -1993,6 +1994,7 @@ dependencies = [
  "homebot-secrets",
  "homebot-skills",
  "homebot-storage",
+ "homebot-vcs",
  "serde",
  "serde_json",
  "sha2",
@@ -2025,6 +2027,7 @@ dependencies = [
  "homebot-domain",
  "homebot-routines",
  "homebot-skills",
+ "homebot-vcs",
  "serde_json",
  "sqlx",
  "tempfile",
@@ -2058,6 +2061,14 @@ dependencies = [
 [[package]]
 name = "homebot-vcs"
 version = "0.0.1"
+dependencies = [
+ "schemars",
+ "serde",
+ "tempfile",
+ "thiserror 2.0.20",
+ "tokio",
+ "uuid",
+]
 
 [[package]]
 name = "http"

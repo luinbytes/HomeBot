@@ -58,6 +58,10 @@ Routine triggers and jobs use authenticated HTTP mutations plus durable `routine
 
 Skills use authenticated CRUD, duplication, assignment, and versioned import/export endpoints. The initial snapshot carries the Skill library; `skill_changed` and `skill_removed` keep client projections current. `SendMessageRequest.skill_ids` adds turn-specific Skills, while assigned and explicit active versions are resolved once and persisted in `MessageSummary.applied_skills`. Queued prompts similarly pin version IDs internally, so edit, reconnect, retry, or restart cannot silently change accepted context. Portable tool references remain subject to server capability and approval policy.
 
+## Repository workspaces
+
+Authenticated workspace endpoints register canonical Git repositories, list local branches, attach a chat in primary or isolated mode, and detach it. Snapshot fields and sequenced `repository_workspace_changed`, `chat_workspace_changed`, and `chat_workspace_removed` events keep desktop and Android projections aligned with SQLite authority. Summaries report the effective path, selected branch/base ref and `clean`, `dirty`, `conflicted`, or `unavailable` condition. Clients never construct managed paths or perform worktree lifecycle locally.
+
 ## Attachments
 
 Attachments are uploaded over authenticated HTTP with size/type limits, streaming digest verification, an idempotency key, and an explicit finalise step. WebSocket messages refer to completed attachment IDs. Partial uploads expire and cannot be consumed.

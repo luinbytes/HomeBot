@@ -16,6 +16,9 @@
     "artifact": {
       "$ref": "#/$defs/ArtifactSummary"
     },
+    "attach_chat_workspace_request": {
+      "$ref": "#/$defs/AttachChatWorkspaceRequest"
+    },
     "attachment": {
       "$ref": "#/$defs/Attachment"
     },
@@ -27,6 +30,9 @@
     },
     "chat_timeline_response": {
       "$ref": "#/$defs/ChatTimelineResponse"
+    },
+    "chat_workspace": {
+      "$ref": "#/$defs/ChatWorkspaceSummary"
     },
     "client_message": {
       "$ref": "#/$defs/ClientMessage"
@@ -49,6 +55,9 @@
     "create_local_mcp_plugin_request": {
       "$ref": "#/$defs/CreateLocalMcpPluginRequest"
     },
+    "create_repository_workspace_request": {
+      "$ref": "#/$defs/CreateRepositoryWorkspaceRequest"
+    },
     "create_routine_request": {
       "$ref": "#/$defs/CreateRoutineRequest"
     },
@@ -63,6 +72,9 @@
     },
     "deliver_routine_trigger_request": {
       "$ref": "#/$defs/DeliverRoutineTriggerRequest"
+    },
+    "detach_chat_workspace_request": {
+      "$ref": "#/$defs/DetachChatWorkspaceRequest"
     },
     "duplicate_routine_request": {
       "$ref": "#/$defs/DuplicateRoutineRequest"
@@ -90,6 +102,9 @@
     },
     "plugin_mutation_request": {
       "$ref": "#/$defs/PluginMutationRequest"
+    },
+    "repository_workspace": {
+      "$ref": "#/$defs/RepositoryWorkspaceSummary"
     },
     "routine": {
       "$ref": "#/$defs/RoutineSummary"
@@ -144,6 +159,9 @@
     },
     "update_skill_request": {
       "$ref": "#/$defs/UpdateSkillRequest"
+    },
+    "workspace_branches": {
+      "$ref": "#/$defs/WorkspaceBranchesResponse"
     }
   },
   "required": [
@@ -165,6 +183,12 @@
     "skill_bundle",
     "skill",
     "applied_skill",
+    "create_repository_workspace_request",
+    "attach_chat_workspace_request",
+    "detach_chat_workspace_request",
+    "repository_workspace",
+    "chat_workspace",
+    "workspace_branches",
     "create_routine_request",
     "update_routine_request",
     "duplicate_routine_request",
@@ -650,6 +674,45 @@
         "created_at_ms"
       ]
     },
+    "AttachChatWorkspaceRequest": {
+      "type": "object",
+      "properties": {
+        "base_ref": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "branch_name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "idempotency_key": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "mode": {
+          "$ref": "#/$defs/WorkspaceMode"
+        },
+        "request_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "workspace_id": {
+          "type": "string",
+          "format": "uuid"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "request_id",
+        "idempotency_key",
+        "workspace_id",
+        "mode"
+      ]
+    },
     "Attachment": {
       "type": "object",
       "properties": {
@@ -917,6 +980,54 @@
         "approvals",
         "queued_prompts",
         "boundary_sequence"
+      ]
+    },
+    "ChatWorkspaceSummary": {
+      "type": "object",
+      "properties": {
+        "base_ref": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "branch_name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "chat_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "condition": {
+          "$ref": "#/$defs/WorkingTreeCondition"
+        },
+        "effective_path": {
+          "type": "string"
+        },
+        "mode": {
+          "$ref": "#/$defs/WorkspaceMode"
+        },
+        "updated_at_unix_ms": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "workspace_id": {
+          "type": "string",
+          "format": "uuid"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "chat_id",
+        "workspace_id",
+        "mode",
+        "effective_path",
+        "condition",
+        "updated_at_unix_ms"
       ]
     },
     "ClientMessage": {
@@ -1248,6 +1359,34 @@
         "program"
       ]
     },
+    "CreateRepositoryWorkspaceRequest": {
+      "type": "object",
+      "properties": {
+        "idempotency_key": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "request_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "root_path": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "request_id",
+        "idempotency_key",
+        "root_path"
+      ]
+    },
     "CreateRoutineRequest": {
       "type": "object",
       "properties": {
@@ -1393,6 +1532,24 @@
         "request_id",
         "idempotency_key",
         "delivery_key"
+      ]
+    },
+    "DetachChatWorkspaceRequest": {
+      "type": "object",
+      "properties": {
+        "idempotency_key": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "request_id": {
+          "type": "string",
+          "format": "uuid"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "request_id",
+        "idempotency_key"
       ]
     },
     "DuplicateRoutineRequest": {
@@ -2225,6 +2382,49 @@
       "enum": [
         "user",
         "bot"
+      ]
+    },
+    "RepositoryWorkspaceSummary": {
+      "type": "object",
+      "properties": {
+        "condition": {
+          "$ref": "#/$defs/WorkingTreeCondition"
+        },
+        "created_at_unix_ms": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "current_branch": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "name": {
+          "type": "string"
+        },
+        "root_path": {
+          "type": "string"
+        },
+        "updated_at_unix_ms": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "name",
+        "root_path",
+        "condition",
+        "created_at_unix_ms",
+        "updated_at_unix_ms"
       ]
     },
     "ResumeDisposition": {
@@ -3483,6 +3683,55 @@
           "properties": {
             "kind": {
               "type": "string",
+              "const": "repository_workspace_changed"
+            },
+            "workspace": {
+              "$ref": "#/$defs/RepositoryWorkspaceSummary"
+            }
+          },
+          "required": [
+            "kind",
+            "workspace"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "chat_workspace_changed"
+            },
+            "workspace": {
+              "$ref": "#/$defs/ChatWorkspaceSummary"
+            }
+          },
+          "required": [
+            "kind",
+            "workspace"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "chat_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "kind": {
+              "type": "string",
+              "const": "chat_workspace_removed"
+            }
+          },
+          "required": [
+            "kind",
+            "chat_id"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
               "const": "routine_changed"
             },
             "routine": {
@@ -3895,6 +4144,13 @@
             "$ref": "#/$defs/BotSummary"
           }
         },
+        "chat_workspaces": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ChatWorkspaceSummary"
+          }
+        },
         "chats": {
           "type": "array",
           "items": {
@@ -3906,6 +4162,13 @@
           "default": [],
           "items": {
             "$ref": "#/$defs/GroupChatSummary"
+          }
+        },
+        "repository_workspaces": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/RepositoryWorkspaceSummary"
           }
         },
         "skills": {
@@ -4090,6 +4353,45 @@
         "idempotency_key",
         "name",
         "definition"
+      ]
+    },
+    "WorkingTreeCondition": {
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "clean",
+            "dirty",
+            "conflicted"
+          ]
+        },
+        {
+          "description": "The durable association exists, but Git can no longer inspect its path.",
+          "type": "string",
+          "const": "unavailable"
+        }
+      ]
+    },
+    "WorkspaceBranchesResponse": {
+      "type": "object",
+      "properties": {
+        "branches": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "branches"
+      ]
+    },
+    "WorkspaceMode": {
+      "type": "string",
+      "enum": [
+        "primary",
+        "isolated"
       ]
     }
   }

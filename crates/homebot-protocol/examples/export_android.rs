@@ -241,6 +241,24 @@ data class SkillBundle(val format_version: Int, val name: String, val descriptio
 data class ImportSkillRequest(val request_id: String, val idempotency_key: String, val bundle: SkillBundle, val conflict_policy: String)
 
 @Serializable
+data class RepositoryWorkspaceSummary(val id: String, val name: String, val root_path: String, val current_branch: String? = null, val condition: String, val created_at_unix_ms: Long, val updated_at_unix_ms: Long)
+
+@Serializable
+data class ChatWorkspaceSummary(val chat_id: String, val workspace_id: String, val mode: String, val effective_path: String, val branch_name: String? = null, val base_ref: String? = null, val condition: String, val updated_at_unix_ms: Long)
+
+@Serializable
+data class CreateRepositoryWorkspaceRequest(val request_id: String, val idempotency_key: String, val root_path: String, val name: String? = null)
+
+@Serializable
+data class AttachChatWorkspaceRequest(val request_id: String, val idempotency_key: String, val workspace_id: String, val mode: String, val base_ref: String? = null, val branch_name: String? = null)
+
+@Serializable
+data class DetachChatWorkspaceRequest(val request_id: String, val idempotency_key: String)
+
+@Serializable
+data class WorkspaceBranchesResponse(val branches: List<String>)
+
+@Serializable
 data class RoutineInput(val key: String, val label: String, val kind: String, val required: Boolean)
 
 @Serializable

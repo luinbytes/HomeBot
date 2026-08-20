@@ -11,6 +11,7 @@ mod routines;
 mod scheduler;
 mod secrets;
 mod skills;
+mod workspaces;
 
 use axum::{
     Json, Router,
@@ -31,6 +32,7 @@ use homebot_protocol::{
 use homebot_providers::{ProviderAdapterId, ProviderRuntime};
 use homebot_secrets::{OsSecretVault, SecretVault};
 use homebot_storage::{IdempotencyClaim, ReplayWindow, Storage};
+use homebot_vcs::GitRuntime;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{
@@ -86,6 +88,8 @@ pub struct AppState {
     scheduler_started: Arc<AtomicBool>,
     routine_cancellations: Arc<Mutex<HashMap<Uuid, Arc<Notify>>>>,
     trigger_events: broadcast::Sender<(String, Uuid)>,
+    git_runtime: Option<Arc<GitRuntime>>,
+    worktree_root: PathBuf,
 }
 
 impl AppState {
@@ -113,6 +117,8 @@ impl AppState {
             scheduler_started: Arc::new(AtomicBool::new(false)),
             routine_cancellations: Arc::new(Mutex::new(HashMap::new())),
             trigger_events,
+            git_runtime: GitRuntime::discover().ok().map(Arc::new),
+            worktree_root: std::env::temp_dir().join("homebot-worktrees"),
         }
     }
 
@@ -160,6 +166,13 @@ impl AppState {
         self.outbound_capacity = outbound_capacity.max(1);
         self.writer_delay = writer_delay;
         self.command_delay = command_delay;
+        self
+    }
+
+    #[must_use]
+    pub fn with_git_runtime(mut self, runtime: Arc<GitRuntime>, worktree_root: PathBuf) -> Self {
+        self.git_runtime = Some(runtime);
+        self.worktree_root = worktree_root;
         self
     }
 }
@@ -269,6 +282,22 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/skills/{skill_id}/export", get(skills::export))
         .route("/api/v1/skills/import", post(skills::import))
         .route("/api/v1/skills/{skill_id}/assignment", put(skills::assign))
+        .route(
+            "/api/v1/workspaces",
+            get(workspaces::list).post(workspaces::create),
+        )
+        .route(
+            "/api/v1/workspaces/{workspace_id}/branches",
+            get(workspaces::branches),
+        )
+        .route(
+            "/api/v1/chats/{chat_id}/workspace",
+            get(workspaces::chat).put(workspaces::attach),
+        )
+        .route(
+            "/api/v1/chats/{chat_id}/workspace/detach",
+            post(workspaces::detach),
+        )
         .route(
             "/api/v1/routines",
             get(routines::list).post(routines::create),
@@ -651,11 +680,17 @@ async fn current_snapshot(state: &AppState) -> Snapshot {
         .iter()
         .map(skills::summary)
         .collect();
+    let repository_workspaces = workspaces::repository_summaries(state)
+        .await
+        .unwrap_or_default();
+    let chat_workspaces = workspaces::chat_summaries(state).await.unwrap_or_default();
     Snapshot {
         bots: summaries,
         chats,
         group_chats,
         skills,
+        repository_workspaces,
+        chat_workspaces,
     }
 }
 

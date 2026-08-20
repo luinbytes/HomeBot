@@ -11,11 +11,13 @@ use std::{
 
 use futures_util::{SinkExt, StreamExt};
 use homebot_protocol::{
-    ApprovalDecisionRequest, BotMutationRequest, BotResponse, ChatTimelineResponse, ClientMessage,
-    CreateAttachmentRequest, CreateAttachmentResponse, CreateBotRequest, CreateDirectChatRequest,
-    CreateDirectChatResponse, ErrorEnvelope, FinalizeAttachmentRequest,
-    MIN_COMPATIBLE_PROTOCOL_VERSION, MessageMutationRequest, PROTOCOL_VERSION, ProtocolRange,
-    SendMessageRequest, ServerEvent, ServerEventBody, Snapshot, UpdateBotRequest,
+    ApprovalDecisionRequest, AttachChatWorkspaceRequest, BotMutationRequest, BotResponse,
+    ChatTimelineResponse, ChatWorkspaceSummary, ClientMessage, CreateAttachmentRequest,
+    CreateAttachmentResponse, CreateBotRequest, CreateDirectChatRequest, CreateDirectChatResponse,
+    CreateRepositoryWorkspaceRequest, DetachChatWorkspaceRequest, ErrorEnvelope,
+    FinalizeAttachmentRequest, MIN_COMPATIBLE_PROTOCOL_VERSION, MessageMutationRequest,
+    PROTOCOL_VERSION, ProtocolRange, RepositoryWorkspaceSummary, SendMessageRequest, ServerEvent,
+    ServerEventBody, Snapshot, UpdateBotRequest, WorkspaceBranchesResponse,
 };
 use reqwest::{Client, Method, StatusCode};
 use serde::Deserialize;
@@ -34,6 +36,7 @@ use uuid::Uuid;
 use crate::{
     bot_roster::{BotClientCommand, BotEditorDraft},
     timeline::{ComposerDraft, TimelineCommand},
+    workspaces::WorkspaceCommand,
 };
 
 const CLIENT_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -113,6 +116,13 @@ pub enum DesktopEvent {
     Timeline(ChatTimelineResponse),
     BotMutation(BotResponse),
     AttachmentUploaded(Uuid),
+    RepositoryWorkspaceRegistered(RepositoryWorkspaceSummary),
+    ChatWorkspaceAttached(ChatWorkspaceSummary),
+    ChatWorkspaceDetached(Uuid),
+    WorkspaceBranches {
+        workspace_id: Uuid,
+        branches: Vec<String>,
+    },
     MutationFailed(TransportFailure),
 }
 
@@ -130,6 +140,7 @@ pub enum DesktopCommand {
         media_type: String,
         bytes: Vec<u8>,
     },
+    Workspace(WorkspaceCommand),
     Shutdown,
 }
 

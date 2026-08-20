@@ -26,6 +26,40 @@ fn draft(name: &str) -> BotEditorDraft {
     }
 }
 
+fn git_repository(root: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
+    std::fs::create_dir_all(root)?;
+    for args in [
+        vec!["init", "-b", "main"],
+        vec!["config", "user.name", "HomeBot Fixture"],
+        vec!["config", "user.email", "fixture@homebot.invalid"],
+    ] {
+        let status = std::process::Command::new("/usr/bin/git")
+            .env_clear()
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .arg("-C")
+            .arg(root)
+            .args(args)
+            .status()?;
+        if !status.success() {
+            return Err("could not create Git fixture".into());
+        }
+    }
+    std::fs::write(root.join("README.md"), "fixture\n")?;
+    for args in [vec!["add", "README.md"], vec!["commit", "-m", "fixture"]] {
+        let status = std::process::Command::new("/usr/bin/git")
+            .env_clear()
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .arg("-C")
+            .arg(root)
+            .args(args)
+            .status()?;
+        if !status.success() {
+            return Err("could not commit Git fixture".into());
+        }
+    }
+    Ok(())
+}
+
 fn receive_until(
     transport: &DesktopTransport,
     timeout: Duration,
@@ -48,6 +82,7 @@ fn receive_until(
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn clean_local_launch_supervises_server_and_persists_real_api_state()
 -> Result<(), Box<dyn std::error::Error>> {
     let directory = TempDir::new()?;
@@ -103,6 +138,59 @@ fn clean_local_launch_supervises_server_and_persists_real_api_state()
             ..
         })
     )));
+    let chat_id = message_events
+        .iter()
+        .find_map(|event| match event {
+            DesktopEvent::Server(ServerEvent {
+                body: ServerEventBody::ChatChanged { chat },
+                ..
+            }) => Some(chat.id),
+            _ => None,
+        })
+        .ok_or("missing chat event")?;
+
+    let repository = directory.path().join("repository");
+    git_repository(&repository)?;
+    transport.send(DesktopCommand::Workspace(
+        crate::workspaces::WorkspaceCommand::RegisterRepository {
+            root_path: repository.to_string_lossy().into_owned(),
+            name: Some("Fixture repository".to_owned()),
+        },
+    ))?;
+    let workspace_id = receive_until(&transport, Duration::from_secs(10), |event| {
+        matches!(event, DesktopEvent::RepositoryWorkspaceRegistered(_))
+    })?
+    .into_iter()
+    .find_map(|event| match event {
+        DesktopEvent::RepositoryWorkspaceRegistered(workspace) => Some(workspace.id),
+        _ => None,
+    })
+    .ok_or("missing registered workspace")?;
+    transport.send(DesktopCommand::Workspace(
+        crate::workspaces::WorkspaceCommand::Attach {
+            chat_id,
+            workspace_id,
+            mode: homebot_protocol::WorkspaceMode::Isolated,
+            base_ref: Some("main".to_owned()),
+            branch_name: None,
+        },
+    ))?;
+    let attached = receive_until(&transport, Duration::from_secs(10), |event| {
+        matches!(event, DesktopEvent::ChatWorkspaceAttached(_))
+    })?;
+    assert!(attached.iter().any(|event| matches!(
+        event,
+        DesktopEvent::ChatWorkspaceAttached(workspace)
+            if workspace.chat_id == chat_id && workspace.workspace_id == workspace_id
+    )));
+    transport.send(DesktopCommand::Workspace(
+        crate::workspaces::WorkspaceCommand::Detach { chat_id },
+    ))?;
+    let _ = receive_until(
+        &transport,
+        Duration::from_secs(10),
+        |event| matches!(event, DesktopEvent::ChatWorkspaceDetached(id) if *id == chat_id),
+    )?;
 
     transport.send(DesktopCommand::UploadAttachment {
         filename: "note.txt".to_owned(),

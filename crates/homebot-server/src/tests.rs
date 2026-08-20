@@ -8,22 +8,24 @@ use axum::{
 use futures_util::{SinkExt, StreamExt};
 use homebot_protocol::{
     AddGroupParticipantRequest, AppendRoutineRecordingRequest, ApprovalDecisionRequest,
-    ArtifactSummary, Attachment, BotColor, BotMutationRequest, BotPermissionProfile,
-    BotProviderStatus, BotResponse, BotShape, ChatTimelineResponse, CreateAttachmentRequest,
-    CreateAttachmentResponse, CreateBotRequest, CreateDirectChatRequest, CreateDirectChatResponse,
-    CreateGroupChatRequest, CreateGroupChatResponse, CreateLocalMcpPluginRequest,
+    ArtifactSummary, AttachChatWorkspaceRequest, Attachment, BotColor, BotMutationRequest,
+    BotPermissionProfile, BotProviderStatus, BotResponse, BotShape, ChatTimelineResponse,
+    ChatWorkspaceSummary, CreateAttachmentRequest, CreateAttachmentResponse, CreateBotRequest,
+    CreateDirectChatRequest, CreateDirectChatResponse, CreateGroupChatRequest,
+    CreateGroupChatResponse, CreateLocalMcpPluginRequest, CreateRepositoryWorkspaceRequest,
     CreateRoutineRequest, CreateRoutineTriggerRequest, CreateSkillRequest,
-    DeliverRoutineTriggerRequest, DuplicateRoutineRequest, DuplicateSkillRequest,
-    FinalizeAttachmentRequest, GroupBotStatus, GroupTimelineResponse, HandoffGroupRequest,
-    ImportSkillRequest, MissedRunPolicy, OverlapPolicy, PluginConnectionState,
-    PluginMutationRequest, PluginSummary, RecordedAction, RecordedActor, RetryPolicy,
-    RoutineDefinition, RoutineInput, RoutineInputKind, RoutineJobSummary, RoutineRecordingSummary,
-    RoutineRunSummary, RoutineSchedule, RoutineStep, RoutineStepStatus, RoutineSummary,
-    RoutineTriggerDefinition, RoutineTriggerSource, RunRoutineRequest, SecretSummary,
-    SendGroupMessageRequest, SendMessageRequest, SendMessageResponse, SkillAssignmentRequest,
-    SkillBundle, SkillContext, SkillDefinition, SkillImportConflictPolicy, SkillSummary,
-    SkillToolReference, StartRoutineRecordingRequest, UpdateBotRequest,
-    UpdateGroupParticipantRequest, UpdateRoutineRequest, UpdateSkillRequest,
+    DeliverRoutineTriggerRequest, DetachChatWorkspaceRequest, DuplicateRoutineRequest,
+    DuplicateSkillRequest, FinalizeAttachmentRequest, GroupBotStatus, GroupTimelineResponse,
+    HandoffGroupRequest, ImportSkillRequest, MissedRunPolicy, OverlapPolicy, PluginConnectionState,
+    PluginMutationRequest, PluginSummary, RecordedAction, RecordedActor,
+    RepositoryWorkspaceSummary, RetryPolicy, RoutineDefinition, RoutineInput, RoutineInputKind,
+    RoutineJobSummary, RoutineRecordingSummary, RoutineRunSummary, RoutineSchedule, RoutineStep,
+    RoutineStepStatus, RoutineSummary, RoutineTriggerDefinition, RoutineTriggerSource,
+    RunRoutineRequest, SecretSummary, SendGroupMessageRequest, SendMessageRequest,
+    SendMessageResponse, SkillAssignmentRequest, SkillBundle, SkillContext, SkillDefinition,
+    SkillImportConflictPolicy, SkillSummary, SkillToolReference, StartRoutineRecordingRequest,
+    UpdateBotRequest, UpdateGroupParticipantRequest, UpdateRoutineRequest, UpdateSkillRequest,
+    WorkingTreeCondition, WorkspaceBranchesResponse, WorkspaceMode,
 };
 use homebot_providers::{
     ActivityKind, ActivityStatus as ProviderActivityStatus, ApprovalDecision, CompactRequest,
@@ -2758,6 +2760,268 @@ async fn skill_library_versions_assigns_exports_and_resolves_import_conflicts()
         storage.skill(Uuid::nil(), duplicate_id).await,
         Err(homebot_storage::StorageError::SkillNotFound)
     ));
+    Ok(())
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn repository_workspace_preserves_dirty_primary_and_guards_worktree_cleanup()
+-> Result<(), Box<dyn std::error::Error>> {
+    use std::process::Command as StdCommand;
+
+    let repository = tempfile::tempdir()?;
+    let git = |arguments: &[&str]| -> Result<(), Box<dyn std::error::Error>> {
+        let output = StdCommand::new("/usr/bin/git")
+            .arg("-C")
+            .arg(repository.path())
+            .args(arguments)
+            .output()?;
+        if !output.status.success() {
+            return Err(String::from_utf8_lossy(&output.stderr).into_owned().into());
+        }
+        Ok(())
+    };
+    git(&["init", "-b", "main"])?;
+    git(&["config", "user.name", "HomeBot Fixture"])?;
+    git(&["config", "user.email", "fixture@homebot.invalid"])?;
+    std::fs::write(repository.path().join("README.md"), "baseline\n")?;
+    git(&["add", "README.md"])?;
+    git(&["commit", "-m", "baseline"])?;
+    std::fs::write(
+        repository.path().join("README.md"),
+        "valuable dirty change\n",
+    )?;
+    std::fs::write(repository.path().join("untracked.txt"), "preserve\n")?;
+
+    let directory = tempfile::tempdir()?;
+    let managed = directory.path().join("worktrees");
+    let storage = Storage::open(&directory.path().join("homebot.db")).await?;
+    let bot = storage
+        .create_bot(
+            Uuid::nil(),
+            homebot_domain::Bot::create("Nova", "Coding")?,
+            1,
+        )
+        .await?;
+    let chat = storage
+        .create_direct_chat(Uuid::nil(), bot.id.0, Uuid::now_v7(), 2)
+        .await?;
+    let runtime = Arc::new(homebot_vcs::GitRuntime::discover()?);
+    let app = router(
+        AppState::new(storage.clone(), "correct-token")
+            .with_git_runtime(Arc::clone(&runtime), managed.clone()),
+    );
+    let workspace_id = Uuid::now_v7();
+    let create = CreateRepositoryWorkspaceRequest {
+        request_id: Uuid::now_v7(),
+        idempotency_key: workspace_id,
+        root_path: repository.path().to_string_lossy().into_owned(),
+        name: Some("HomeBot fixture".to_owned()),
+    };
+    let response = app
+        .clone()
+        .oneshot(json_request("POST", "/api/v1/workspaces", &create))
+        .await?;
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let workspace: RepositoryWorkspaceSummary = response_json(response).await?;
+    assert_eq!(workspace.condition, WorkingTreeCondition::Dirty);
+    assert_eq!(workspace.current_branch.as_deref(), Some("main"));
+    let replay = app
+        .clone()
+        .oneshot(json_request("POST", "/api/v1/workspaces", &create))
+        .await?;
+    assert_eq!(replay.status(), StatusCode::OK);
+    let duplicate = CreateRepositoryWorkspaceRequest {
+        request_id: Uuid::now_v7(),
+        idempotency_key: Uuid::now_v7(),
+        ..create.clone()
+    };
+    let response = app
+        .clone()
+        .oneshot(json_request("POST", "/api/v1/workspaces", &duplicate))
+        .await?;
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    let branches = app
+        .clone()
+        .oneshot(
+            Request::get(format!("/api/v1/workspaces/{workspace_id}/branches"))
+                .header("authorization", "Bearer correct-token")
+                .body(Body::empty())?,
+        )
+        .await?;
+    assert_eq!(
+        response_json::<WorkspaceBranchesResponse>(branches)
+            .await?
+            .branches,
+        vec!["main"]
+    );
+
+    let attach = AttachChatWorkspaceRequest {
+        request_id: Uuid::now_v7(),
+        idempotency_key: Uuid::now_v7(),
+        workspace_id,
+        mode: WorkspaceMode::Isolated,
+        base_ref: Some("main".to_owned()),
+        branch_name: None,
+    };
+    let response = app
+        .clone()
+        .oneshot(json_request(
+            "PUT",
+            &format!("/api/v1/chats/{}/workspace", chat.id),
+            &attach,
+        ))
+        .await?;
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let attached: ChatWorkspaceSummary = response_json(response).await?;
+    assert_eq!(attached.mode, WorkspaceMode::Isolated);
+    assert_eq!(attached.condition, WorkingTreeCondition::Clean);
+    assert!(
+        attached
+            .effective_path
+            .starts_with(&managed.to_string_lossy().into_owned())
+    );
+    assert_eq!(
+        std::fs::read_to_string(repository.path().join("README.md"))?,
+        "valuable dirty change\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(repository.path().join("untracked.txt"))?,
+        "preserve\n"
+    );
+    let replay = app
+        .clone()
+        .oneshot(json_request(
+            "PUT",
+            &format!("/api/v1/chats/{}/workspace", chat.id),
+            &attach,
+        ))
+        .await?;
+    assert_eq!(replay.status(), StatusCode::OK);
+
+    let valuable = std::path::Path::new(&attached.effective_path).join("valuable.txt");
+    std::fs::write(&valuable, "keep me\n")?;
+    let detach = DetachChatWorkspaceRequest {
+        request_id: Uuid::now_v7(),
+        idempotency_key: Uuid::now_v7(),
+    };
+    let denied = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            &format!("/api/v1/chats/{}/workspace/detach", chat.id),
+            &detach,
+        ))
+        .await?;
+    assert_eq!(denied.status(), StatusCode::CONFLICT);
+    assert_eq!(std::fs::read_to_string(&valuable)?, "keep me\n");
+    assert!(
+        storage
+            .chat_workspace(Uuid::nil(), chat.id)
+            .await?
+            .is_some()
+    );
+    std::fs::remove_file(&valuable)?;
+    let detach = DetachChatWorkspaceRequest {
+        request_id: Uuid::now_v7(),
+        idempotency_key: Uuid::now_v7(),
+    };
+    let removed = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            &format!("/api/v1/chats/{}/workspace/detach", chat.id),
+            &detach,
+        ))
+        .await?;
+    assert_eq!(removed.status(), StatusCode::NO_CONTENT);
+    assert!(!std::path::Path::new(&attached.effective_path).exists());
+    assert!(
+        storage
+            .chat_workspace(Uuid::nil(), chat.id)
+            .await?
+            .is_none()
+    );
+
+    let primary = AttachChatWorkspaceRequest {
+        request_id: Uuid::now_v7(),
+        idempotency_key: Uuid::now_v7(),
+        workspace_id,
+        mode: WorkspaceMode::Primary,
+        base_ref: None,
+        branch_name: None,
+    };
+    let response = app
+        .clone()
+        .oneshot(json_request(
+            "PUT",
+            &format!("/api/v1/chats/{}/workspace", chat.id),
+            &primary,
+        ))
+        .await?;
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let attached_primary: ChatWorkspaceSummary = response_json(response).await?;
+    assert_eq!(attached_primary.mode, WorkspaceMode::Primary);
+    assert_eq!(attached_primary.condition, WorkingTreeCondition::Dirty);
+    assert_eq!(
+        attached_primary.effective_path,
+        std::fs::canonicalize(repository.path())?.to_string_lossy()
+    );
+    let detach_primary = DetachChatWorkspaceRequest {
+        request_id: Uuid::now_v7(),
+        idempotency_key: Uuid::now_v7(),
+    };
+    let response = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            &format!("/api/v1/chats/{}/workspace/detach", chat.id),
+            &detach_primary,
+        ))
+        .await?;
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    assert!(repository.path().exists());
+    assert_eq!(
+        std::fs::read_to_string(repository.path().join("README.md"))?,
+        "valuable dirty change\n"
+    );
+
+    let conflict = AttachChatWorkspaceRequest {
+        request_id: Uuid::now_v7(),
+        idempotency_key: Uuid::now_v7(),
+        workspace_id,
+        mode: WorkspaceMode::Isolated,
+        base_ref: Some("main".to_owned()),
+        branch_name: Some("main".to_owned()),
+    };
+    let denied = app
+        .clone()
+        .oneshot(json_request(
+            "PUT",
+            &format!("/api/v1/chats/{}/workspace", chat.id),
+            &conflict,
+        ))
+        .await?;
+    assert_eq!(denied.status(), StatusCode::CONFLICT);
+    assert!(
+        storage
+            .chat_workspace(Uuid::nil(), chat.id)
+            .await?
+            .is_none()
+    );
+    let moved_repository = directory.path().join("repository-moved");
+    std::fs::rename(repository.path(), &moved_repository)?;
+    let response = app
+        .oneshot(
+            Request::get("/api/v1/workspaces")
+                .header("authorization", "Bearer correct-token")
+                .body(Body::empty())?,
+        )
+        .await?;
+    assert_eq!(response.status(), StatusCode::OK);
+    let unavailable: Vec<RepositoryWorkspaceSummary> = response_json(response).await?;
+    assert_eq!(unavailable.len(), 1);
+    assert_eq!(unavailable[0].condition, WorkingTreeCondition::Unavailable);
     Ok(())
 }
 

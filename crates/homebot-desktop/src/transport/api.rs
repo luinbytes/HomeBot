@@ -4,7 +4,7 @@ use super::{
     CreateDirectChatRequest, CreateDirectChatResponse, DesktopCommand, DesktopEvent, Digest,
     ErrorEnvelope, FinalizeAttachmentRequest, MessageMutationRequest, Method, RuntimeConfig,
     SendMessageRequest, Sender, Sha256, StatusCode, TimelineCommand, TransportFailure,
-    UpdateBotRequest, Uuid, protocol_error, request_error,
+    UpdateBotRequest, Uuid, WorkspaceCommand, protocol_error, request_error,
 };
 
 pub(super) async fn execute_command(
@@ -45,7 +45,109 @@ pub(super) async fn execute_command(
             let _ = events.send(DesktopEvent::AttachmentUploaded(attachment));
             Ok(())
         }
+        DesktopCommand::Workspace(command) => {
+            execute_workspace(client, config, command, events).await
+        }
         DesktopCommand::Shutdown => Ok(()),
+    }
+}
+
+async fn execute_workspace(
+    client: &Client,
+    config: &RuntimeConfig,
+    command: WorkspaceCommand,
+    events: &Sender<DesktopEvent>,
+) -> Result<(), TransportFailure> {
+    match command {
+        WorkspaceCommand::RegisterRepository { root_path, name } => {
+            let body = super::CreateRepositoryWorkspaceRequest {
+                request_id: Uuid::now_v7(),
+                idempotency_key: Uuid::now_v7(),
+                root_path,
+                name,
+            };
+            let workspace = response_json(
+                authenticated(client, config, Method::POST, "/api/v1/workspaces")
+                    .json(&body)
+                    .send()
+                    .await
+                    .map_err(request_error)?,
+            )
+            .await?;
+            let _ = events.send(DesktopEvent::RepositoryWorkspaceRegistered(workspace));
+            Ok(())
+        }
+        WorkspaceCommand::Attach {
+            chat_id,
+            workspace_id,
+            mode,
+            base_ref,
+            branch_name,
+        } => {
+            let body = super::AttachChatWorkspaceRequest {
+                request_id: Uuid::now_v7(),
+                idempotency_key: Uuid::now_v7(),
+                workspace_id,
+                mode,
+                base_ref,
+                branch_name,
+            };
+            let workspace = response_json(
+                authenticated(
+                    client,
+                    config,
+                    Method::PUT,
+                    &format!("/api/v1/chats/{chat_id}/workspace"),
+                )
+                .json(&body)
+                .send()
+                .await
+                .map_err(request_error)?,
+            )
+            .await?;
+            let _ = events.send(DesktopEvent::ChatWorkspaceAttached(workspace));
+            Ok(())
+        }
+        WorkspaceCommand::Detach { chat_id } => {
+            let body = super::DetachChatWorkspaceRequest {
+                request_id: Uuid::now_v7(),
+                idempotency_key: Uuid::now_v7(),
+            };
+            ensure_success(
+                authenticated(
+                    client,
+                    config,
+                    Method::POST,
+                    &format!("/api/v1/chats/{chat_id}/workspace/detach"),
+                )
+                .json(&body)
+                .send()
+                .await
+                .map_err(request_error)?,
+            )
+            .await?;
+            let _ = events.send(DesktopEvent::ChatWorkspaceDetached(chat_id));
+            Ok(())
+        }
+        WorkspaceCommand::LoadBranches { workspace_id } => {
+            let response: super::WorkspaceBranchesResponse = response_json(
+                authenticated(
+                    client,
+                    config,
+                    Method::GET,
+                    &format!("/api/v1/workspaces/{workspace_id}/branches"),
+                )
+                .send()
+                .await
+                .map_err(request_error)?,
+            )
+            .await?;
+            let _ = events.send(DesktopEvent::WorkspaceBranches {
+                workspace_id,
+                branches: response.branches,
+            });
+            Ok(())
+        }
     }
 }
 

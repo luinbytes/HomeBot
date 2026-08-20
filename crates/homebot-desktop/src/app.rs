@@ -18,6 +18,7 @@ use crate::{
     timeline::{ComposerError, TimelineModel},
     tokens::HomeBotTheme,
     transport::{DesktopCommand, DesktopEvent, DesktopTransport, RuntimeConfig},
+    workspaces::{WorkspaceCommand, WorkspaceProjection},
 };
 
 const SETTINGS_STORAGE_KEY: &str = "homebot.desktop.settings.v1";
@@ -28,6 +29,7 @@ pub struct HomeBotApp {
     pub timeline: TimelineModel,
     pub settings: DesktopSettings,
     pub skills: SkillProjection,
+    pub workspaces: WorkspaceProjection,
     pub active_deep_link: Option<DeepLink>,
     notification_center: NotificationCenter,
     notification_sink: SystemNotificationSink,
@@ -49,6 +51,7 @@ impl Default for HomeBotApp {
             timeline: TimelineModel::default(),
             settings: DesktopSettings::default(),
             skills: SkillProjection::default(),
+            workspaces: WorkspaceProjection::default(),
             active_deep_link: None,
             notification_center: NotificationCenter::default(),
             notification_sink: SystemNotificationSink::new(deep_link_sender),
@@ -138,10 +141,13 @@ impl HomeBotApp {
                     self.roster.apply_snapshot(snapshot.bots);
                     self.chats = snapshot.chats;
                     self.skills.hydrate(snapshot.skills);
+                    self.workspaces
+                        .hydrate(snapshot.repository_workspaces, snapshot.chat_workspaces);
                     self.load_selected_timeline();
                 }
                 DesktopEvent::Server(event) => {
                     self.skills.apply(&event);
+                    self.workspaces.apply(&event);
                     let bot_id = match &event.body {
                         ServerEventBody::BotChanged { bot } => {
                             self.roster.apply_change(bot.clone());
@@ -167,6 +173,16 @@ impl HomeBotApp {
                 DesktopEvent::AttachmentUploaded(attachment_id) => {
                     self.timeline.composer.attachment_ids.push(attachment_id);
                 }
+                DesktopEvent::RepositoryWorkspaceRegistered(workspace) => {
+                    self.workspaces.apply_repository(workspace);
+                }
+                DesktopEvent::ChatWorkspaceAttached(workspace) => {
+                    self.workspaces.apply_chat(workspace);
+                }
+                DesktopEvent::ChatWorkspaceDetached(chat_id) => {
+                    self.workspaces.remove_chat(chat_id);
+                }
+                DesktopEvent::WorkspaceBranches { .. } => {}
                 DesktopEvent::MutationFailed(error) => {
                     self.transport_error = Some(error.to_string());
                 }
@@ -385,6 +401,7 @@ impl HomeBotApp {
     fn timeline_content(&mut self, ui: &mut egui::Ui, bot: &BotSummary) {
         ui.set_max_width(self.theme.layout.content_max_width);
         ui.heading(&bot.name);
+        self.workspace_controls(ui);
         if bot.provider == BotProviderStatus::Unavailable {
             ui.colored_label(
                 self.theme.palette.warning,
@@ -473,6 +490,37 @@ impl HomeBotApp {
                 self.timeline.set_at_bottom(true);
             }
         });
+    }
+
+    fn workspace_controls(&mut self, ui: &mut egui::Ui) {
+        if let Some(chat_id) = self.timeline.chat.as_ref().map(|chat| chat.id) {
+            let attached = self.workspaces.for_chat(chat_id).cloned();
+            let first_repository = self.workspaces.repositories().next().cloned();
+            ui.horizontal(|ui| {
+                if let Some(workspace) = attached {
+                    ui.label(format!(
+                        "Repository · {} · {:?}",
+                        workspace.branch_name.as_deref().unwrap_or("detached HEAD"),
+                        workspace.condition
+                    ));
+                    if ui.button("Detach").clicked() {
+                        self.send_transport(DesktopCommand::Workspace(WorkspaceCommand::Detach {
+                            chat_id,
+                        }));
+                    }
+                } else if let Some(repository) = first_repository
+                    && ui.button("Attach isolated repository").clicked()
+                {
+                    self.send_transport(DesktopCommand::Workspace(WorkspaceCommand::Attach {
+                        chat_id,
+                        workspace_id: repository.id,
+                        mode: homebot_protocol::WorkspaceMode::Isolated,
+                        base_ref: repository.current_branch,
+                        branch_name: None,
+                    }));
+                }
+            });
+        }
     }
 
     fn editor(&mut self, context: &egui::Context) {

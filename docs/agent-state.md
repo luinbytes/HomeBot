@@ -7,9 +7,9 @@ This file is operational state for coding agents. It is not user-facing product 
 ## Current state
 
 - Current milestone: M2, Grok Bot Desktop Parity
-- Current Linear issue: 6C7-45 Group chats, Bot mentions, coordination and ownership handoff
+- Current Linear issue: 6C7-46 Files, terminal, browser activity and artifact surfaces
 - Current Git branch: `feat/m0-contracts`
-- Latest verified remote commit: `9e4b4c9d18a75cadbf88a45cb7195c0d308f718e`
+- Latest verified remote commit: `99c34c39116028fcaacda8088b3e9b16eb69d53b`
 - Public repository: `https://github.com/luinbytes/HomeBot`
 - Repository owner and commit identity: `luinbytes <42706009+luinbytes@users.noreply.github.com>`
 
@@ -42,7 +42,8 @@ Current blockers:
 - 6C7-42 is Done. GitHub Actions run 32363729132 passed all nine quality, dependency, platform-build and cross-platform visual-golden jobs after the bounded executable-busy retry fix.
 - 6C7-43 is Done. GitHub Actions run 32366996632 passed all nine jobs with the native eframe executable and cross-platform visual goldens.
 - 6C7-44 is Done. GitHub Actions run 32371952432 passed all nine jobs with provider-backed streaming, approvals, cancellation, retry, unread state and the queue/error visual golden.
-- 6C7-45 is In Progress. The exact next action is to add the durable group-chat/participant/coordination policy model and migration, then prove three-Bot restart recovery before adding the server contract and desktop surface.
+- 6C7-45 is Done. GitHub Actions run 32374691935 passed all nine jobs with three-Bot coordination, shared context, participant management, bounded turns, handoff, restart recovery and the group-chat visual golden.
+- 6C7-46 is In Progress. The exact next action is to define the normalized file/terminal/browser/artifact activity contract and durable projection, then add server-authoritative artifact access before building expandable desktop surfaces.
 - egui 0.32.3 transitively uses unmaintained `ttf-parser` 0.25.1. RUSTSEC-2026-0192 reports no known vulnerability and no safe upgrade; the exact advisory is documented and temporarily ignored, with mandatory review in 6C7-69.
 
 ## Completed work
@@ -66,18 +67,19 @@ Current blockers:
 - Semantic egui tokens, reusable shell components, deterministic CPU-rendered visual goldens and Linux/macOS visual CI are complete; Linear 6C7-42 is Done.
 - Validated Bot identity, owner-scoped SQLite lifecycle, authenticated APIs, durable Bot events/snapshots, native eframe roster/editor interactions and six visual states are complete; Linear 6C7-43 is Done.
 - Durable direct chats, rich timelines, provider-backed streaming, attachments, activities, approvals, steering, queued prompts, cancellation, retry, unread state, reconnect reconciliation and native error/queue presentation are complete; Linear 6C7-44 is Done.
+- Durable three-Bot group chats, participant management, mentions, Bot-to-Bot shared context, parallel state, bounded coordination, explicit ownership handoff, stop controls and restart recovery are complete; Linear 6C7-45 is Done.
 
 ## Immediate next work
 
-1. Add migration 0006 and domain/storage contracts for group chats, at least three participants, shared-context references, explicit ownership and bounded coordination turns.
-2. Verify participant changes, Bot-to-Bot messages, ownership handoff and restart recovery in storage fixtures.
-3. Add versioned group-chat APIs/events and server-side anti-ping-pong enforcement, then build the desktop group timeline and controls.
+1. Define provider-agnostic file, terminal, browser and artifact activity detail schemas with risk and approval metadata.
+2. Persist normalized details and content-addressed artifact references, then expose authenticated metadata/content endpoints with path authority remaining server-side.
+3. Build expandable desktop activity/artifact cards with copy/open actions and visual goldens for every activity class.
 
 ## Verification state
 
 Verified:
 
-- Local and remote Git trees match at `9e4b4c9`. GitHub Actions run 32371952432 passed all nine jobs, including native eframe workspace builds and exact visual comparison on Linux, macOS Intel and macOS Apple Silicon.
+- Local and remote Git trees match at `99c34c3`. GitHub Actions run 32374691935 passed all nine jobs, including native eframe workspace builds and exact visual comparison on Linux, macOS Intel and macOS Apple Silicon.
 - Remote commits are attributed to GitHub account `luinbytes`; the latest verified commit exposes the expected noreply identity.
 - Working tree was clean before `feat/m0-contracts` was created.
 - All committed TOML files parse with Python `tomllib`.
@@ -85,14 +87,14 @@ Verified:
 - Local documentation link targets referenced by the README exist.
 - `git diff --check` passed for the committed baseline.
 - `cargo fmt --all -- --check` passes.
-- `cargo test -p homebot-storage -p homebot-server` passes with 29 tests. Provider-backed direct-chat coverage verifies streaming, approval, resume, unread/read, cancellation and idempotent retry.
+- `cargo test -p homebot-storage -p homebot-server` passes with 31 tests. Group coverage verifies participant management, three-Bot coordination, context, handoff, bounded parallel/turn limits, stop and restart recovery.
 - `cargo clippy --workspace --all-targets -- -D warnings` passes.
 - Rust JSON Schema and generated Android binding drift checks pass.
 - `homebot-storage` has ten passing tests covering clean install/table inventory, WAL mode, restart/outbox durability, backup/restore, migration rollback, corrupted startup, concurrent access, idempotency, replay retention, and attachment transitions.
-- `./scripts/check.sh` passes locally with formatting, workspace clippy, 84 Rust test cases, protocol schema drift and generated Android binding drift checks.
+- `./scripts/check.sh` passes locally with formatting, workspace clippy, 87 Rust test cases, protocol schema drift and generated Android binding drift checks.
 - `homebot-providers` has 22 passing tests. Codex coverage includes JSONL fixture normalization, profile isolation and redaction, explicit binary discovery, auth/error and interruption normalization, fake App Server start/resume, streaming, approval resolution, cancellation, and an explicit real-binary skip when Codex is absent. Claude fixtures verify normalized init/content/tool/usage/result records, resume-oriented CLI arguments, streaming and cancellation. OpenAI-compatible tests verify request-time bearer resolution, model discovery, streamed Responses events, HTTPS/loopback policy, redaction and cancellation. Generic process tests verify its JSONL contract, bounded normalized streaming, redaction and cancellation.
 - `homebot-tools` has 12 unit and 3 hostile-input integration tests covering actor-scoped deny/allow policy, single-use/expiring/digest-bound approvals, policy revision invalidation, content substitution, traversal, symlinks, atomic and bounded filesystem operations, real PTY output/input lifecycle, duplicate IDs, filtered environment, cancellation, timeout, output limits, loopback-only browser control, profile confinement and normalized CDP actions.
-- The full workspace now has 84 passing Rust test cases, including seven pixel-exact CPU-rendered desktop goldens and a deterministic transient executable-busy regression. The full 23-test provider suite also passed 100 consecutive stress iterations. Local cargo-deny 0.20.2 reports advisories, bans, licenses and sources all OK with the documented exact unmaintained-font-parser exception.
+- The full workspace now has 87 passing Rust test cases, including eight pixel-exact CPU-rendered desktop goldens and a deterministic transient executable-busy regression. The full 23-test provider suite also passed 100 consecutive stress iterations. Local cargo-deny 0.20.2 reports advisories, bans, licenses and sources all OK with the documented exact unmaintained-font-parser exception.
 
 Not yet verified:
 
@@ -104,7 +106,7 @@ Not yet verified:
 
 - `homebot-server` covers every stated 6C7-37 transport behaviour locally and in the passing remote matrix.
 - The first-class Codex and Claude adapters cannot perform real authenticated provider messages in this environment because neither CLI binary is installed. Their structured protocol fixtures pass. The OpenAI-compatible adapter is verified against a local protocol-faithful HTTP/SSE fixture, not a user credential. The local computer capability layer is implemented but no real Chrome process is installed in this environment, so CDP behavior is verified against a protocol-faithful loopback fixture. Android, routines, plugins, VCS, pairing, and packaging are not implemented.
-- Group chats, multi-Bot coordination and ownership handoff remain unimplemented and are the active 6C7-45 work.
+- Expandable file, terminal, browser and artifact chat surfaces remain unimplemented and are the active 6C7-46 work.
 - No release artifact exists. Do not describe the project as installable or v1-ready.
 
 ## Environment notes

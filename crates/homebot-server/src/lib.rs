@@ -13,9 +13,10 @@ use axum::{
 };
 use futures_util::StreamExt;
 use homebot_protocol::{
-    ClientMessage, ProtocolRange, ResumeDisposition, ServerEvent, ServerEventBody, Snapshot,
+    ClientMessage, ErrorCode, ErrorEnvelope, ProtocolRange, ResumeDisposition, ServerEvent,
+    ServerEventBody, Snapshot,
 };
-use homebot_storage::Storage;
+use homebot_storage::{IdempotencyClaim, Storage};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
@@ -60,8 +61,21 @@ async fn events_socket(State(state): State<AppState>, upgrade: WebSocketUpgrade)
 }
 
 async fn serve_events(mut socket: WebSocket, state: AppState) {
-    let Some(Ok(Message::Text(text))) = socket.next().await else {
+    if !initial_sync(&mut socket, &state).await {
         return;
+    }
+    while let Some(Ok(Message::Text(text))) = socket.next().await {
+        if let Ok(message) = serde_json::from_str::<ClientMessage>(&text)
+            && !handle_client_message(&mut socket, &state, message).await
+        {
+            return;
+        }
+    }
+}
+
+async fn initial_sync(socket: &mut WebSocket, state: &AppState) -> bool {
+    let Some(Ok(Message::Text(text))) = socket.next().await else {
+        return false;
     };
     let Ok(ClientMessage::Hello {
         protocol_version,
@@ -69,13 +83,13 @@ async fn serve_events(mut socket: WebSocket, state: AppState) {
         ..
     }) = serde_json::from_str(&text)
     else {
-        return;
+        return false;
     };
     if let Err(error) = homebot_protocol::check_compatibility(protocol_version) {
         if let Ok(encoded) = serde_json::to_string(&error) {
             let _ = socket.send(Message::Text(encoded.into())).await;
         }
-        return;
+        return false;
     }
 
     let cursor = resume_after.unwrap_or(0);
@@ -108,13 +122,13 @@ async fn serve_events(mut socket: WebSocket, state: AppState) {
             heartbeat_timeout_ms: 45_000,
         },
     };
-    if send_json(&mut socket, &hello).await.is_err() {
-        return;
+    if send_json(socket, &hello).await.is_err() {
+        return false;
     }
     if let Some(events) = retained {
         for event in events {
-            if send_json(&mut socket, &event.payload).await.is_err() {
-                return;
+            if send_json(socket, &event.payload).await.is_err() {
+                return false;
             }
         }
     } else {
@@ -132,8 +146,148 @@ async fn serve_events(mut socket: WebSocket, state: AppState) {
                 snapshot: Snapshot::default(),
             },
         };
-        let _ = send_json(&mut socket, &snapshot).await;
+        if send_json(socket, &snapshot).await.is_err() {
+            return false;
+        }
     }
+    true
+}
+
+#[allow(clippy::too_many_lines)] // Command lifecycle stays together until operation executors land.
+async fn handle_client_message(
+    socket: &mut WebSocket,
+    state: &AppState,
+    message: ClientMessage,
+) -> bool {
+    match message {
+        ClientMessage::Command {
+            request_id,
+            idempotency_key,
+            command,
+        } => {
+            let Ok(encoded) = serde_json::to_vec(&command) else {
+                return true;
+            };
+            let request_hash = format!("{:x}", Sha256::digest(encoded));
+            let proposed = Uuid::now_v7();
+            let claim = state
+                .storage
+                .claim_idempotency(idempotency_key, &request_hash, proposed, unix_time_ms())
+                .await;
+            let Ok(claim) = claim else {
+                return true;
+            };
+            match claim {
+                IdempotencyClaim::Claimed { operation_id }
+                | IdempotencyClaim::Replayed { operation_id } => {
+                    let accepted = persist_event(
+                        state,
+                        "command_accepted",
+                        ServerEventBody::CommandAccepted {
+                            request_id,
+                            operation_id,
+                        },
+                    )
+                    .await;
+                    if let Ok(event) = accepted {
+                        if send_json(socket, &event).await.is_err() {
+                            return false;
+                        }
+                    }
+                    if matches!(claim, IdempotencyClaim::Claimed { .. }) {
+                        let completed = persist_event(
+                            state,
+                            "command_completed",
+                            ServerEventBody::CommandCompleted {
+                                request_id,
+                                operation_id,
+                                result: json!({"status":"accepted"}),
+                            },
+                        )
+                        .await;
+                        if let Ok(event) = completed {
+                            if send_json(socket, &event).await.is_err() {
+                                return false;
+                            }
+                        }
+                    }
+                }
+                IdempotencyClaim::Conflict => {
+                    let failed = persist_event(
+                        state,
+                        "command_failed",
+                        ServerEventBody::CommandFailed {
+                            request_id,
+                            operation_id: proposed,
+                            error: ErrorEnvelope {
+                                code: ErrorCode::Conflict,
+                                message: "Idempotency key was already used for a different command"
+                                    .to_owned(),
+                                retryable: false,
+                                request_id: Some(request_id),
+                                retry_after_ms: None,
+                                details: None,
+                            },
+                        },
+                    )
+                    .await;
+                    if let Ok(event) = failed {
+                        if send_json(socket, &event).await.is_err() {
+                            return false;
+                        }
+                    }
+                }
+            }
+        }
+        ClientMessage::Cancel {
+            request_id,
+            operation_id,
+        } => {
+            let cancelled = persist_event(
+                state,
+                "command_cancelled",
+                ServerEventBody::CommandCancelled {
+                    request_id,
+                    operation_id,
+                },
+            )
+            .await;
+            if let Ok(event) = cancelled {
+                if send_json(socket, &event).await.is_err() {
+                    return false;
+                }
+            }
+        }
+        ClientMessage::Hello { .. } | ClientMessage::Pong { .. } => {}
+    }
+    true
+}
+
+async fn persist_event(
+    state: &AppState,
+    kind: &str,
+    body: ServerEventBody,
+) -> Result<ServerEvent, ()> {
+    let event = ServerEvent {
+        protocol_version: homebot_protocol::PROTOCOL_VERSION,
+        sequence: 0,
+        event_id: Uuid::now_v7(),
+        body,
+    };
+    let payload = serde_json::to_value(&event).map_err(|_| ())?;
+    let stored = state
+        .storage
+        .append_event(state.owner_id, kind, &payload, unix_time_ms())
+        .await
+        .map_err(|_| ())?;
+    serde_json::from_value(stored.payload).map_err(|_| ())
+}
+
+fn unix_time_ms() -> i64 {
+    let duration = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default();
+    i64::try_from(duration.as_millis()).unwrap_or(i64::MAX)
 }
 
 async fn send_json(socket: &mut WebSocket, value: &impl serde::Serialize) -> Result<(), ()> {
@@ -383,6 +537,96 @@ mod tests {
             }
         ));
         assert_eq!(replayed, replay);
+        task.abort();
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn duplicate_command_reuses_operation_and_conflicting_key_fails()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let storage = Storage::open(&directory.path().join("homebot.db")).await?;
+        let (address, task, _guard) = spawn_app(storage).await?;
+        let mut request = format!("ws://{address}/api/v1/events").into_client_request()?;
+        request
+            .headers_mut()
+            .insert("authorization", "Bearer correct-token".parse()?);
+        let (mut socket, _) = connect_async(request).await?;
+        socket
+            .send(tokio_tungstenite::tungstenite::Message::Text(
+                serde_json::to_string(&ClientMessage::Hello {
+                    protocol_version: homebot_protocol::PROTOCOL_VERSION,
+                    client_version: "test".to_owned(),
+                    device_session: "test-device".to_owned(),
+                    resume_after: None,
+                })?
+                .into(),
+            ))
+            .await?;
+        let _hello = socket.next().await.ok_or("missing hello")??;
+        let _snapshot = socket.next().await.ok_or("missing snapshot")??;
+        let request_id = Uuid::now_v7();
+        let key = Uuid::now_v7();
+        let command = ClientMessage::Command {
+            request_id,
+            idempotency_key: key,
+            command: homebot_protocol::Command::CreateBot {
+                name: "Ada".to_owned(),
+                title: "Engineer".to_owned(),
+            },
+        };
+        socket
+            .send(tokio_tungstenite::tungstenite::Message::Text(
+                serde_json::to_string(&command)?.into(),
+            ))
+            .await?;
+        let accepted: ServerEvent =
+            serde_json::from_str(socket.next().await.ok_or("missing accepted")??.to_text()?)?;
+        let _completed: ServerEvent =
+            serde_json::from_str(socket.next().await.ok_or("missing completed")??.to_text()?)?;
+        socket
+            .send(tokio_tungstenite::tungstenite::Message::Text(
+                serde_json::to_string(&command)?.into(),
+            ))
+            .await?;
+        let replayed: ServerEvent =
+            serde_json::from_str(socket.next().await.ok_or("missing replay")??.to_text()?)?;
+        let ServerEventBody::CommandAccepted {
+            operation_id: operation,
+            ..
+        } = accepted.body
+        else {
+            return Err("expected accepted event".into());
+        };
+        assert!(
+            matches!(replayed.body, ServerEventBody::CommandAccepted { operation_id, .. } if operation_id == operation)
+        );
+
+        let conflict = ClientMessage::Command {
+            request_id: Uuid::now_v7(),
+            idempotency_key: key,
+            command: homebot_protocol::Command::CreateBot {
+                name: "Different".to_owned(),
+                title: "Engineer".to_owned(),
+            },
+        };
+        socket
+            .send(tokio_tungstenite::tungstenite::Message::Text(
+                serde_json::to_string(&conflict)?.into(),
+            ))
+            .await?;
+        let failed: ServerEvent =
+            serde_json::from_str(socket.next().await.ok_or("missing conflict")??.to_text()?)?;
+        assert!(matches!(
+            failed.body,
+            ServerEventBody::CommandFailed {
+                error: ErrorEnvelope {
+                    code: ErrorCode::Conflict,
+                    ..
+                },
+                ..
+            }
+        ));
         task.abort();
         Ok(())
     }

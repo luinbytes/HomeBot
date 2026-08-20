@@ -41,6 +41,13 @@ pub struct OutboxEvent {
     pub created_at_ms: i64,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum IdempotencyClaim {
+    Claimed { operation_id: Uuid },
+    Replayed { operation_id: Uuid },
+    Conflict,
+}
+
 impl Storage {
     /// Opens or creates a database, applies migrations, and verifies integrity.
     ///
@@ -113,15 +120,76 @@ impl Storage {
             .execute(&mut *transaction).await?;
         let sequence = u64::try_from(result.last_insert_rowid())
             .map_err(|_| StorageError::Integrity("negative outbox sequence".to_owned()))?;
+        let mut stored_payload = payload.clone();
+        if let Value::Object(object) = &mut stored_payload
+            && object.contains_key("sequence")
+        {
+            object.insert("sequence".to_owned(), Value::from(sequence));
+            sqlx::query("UPDATE event_outbox SET payload_json = ? WHERE sequence = ?")
+                .bind(&stored_payload)
+                .bind(i64::try_from(sequence).map_err(|_| {
+                    StorageError::Integrity("outbox sequence exceeds SQLite range".to_owned())
+                })?)
+                .execute(&mut *transaction)
+                .await?;
+        }
         transaction.commit().await?;
         Ok(OutboxEvent {
             sequence,
             event_id,
             owner_id,
             event_kind: event_kind.to_owned(),
-            payload: payload.clone(),
+            payload: stored_payload,
             created_at_ms,
         })
+    }
+
+    /// Claims an idempotency key or returns the durable prior operation.
+    ///
+    /// # Errors
+    ///
+    /// Returns a storage error if the claim cannot be resolved atomically.
+    pub async fn claim_idempotency(
+        &self,
+        key: Uuid,
+        request_hash: &str,
+        proposed_operation_id: Uuid,
+        created_at_ms: i64,
+    ) -> Result<IdempotencyClaim, StorageError> {
+        let mut transaction = self.pool.begin().await?;
+        let inserted = sqlx::query(
+            "INSERT INTO idempotency_records (key, request_hash, operation_id, created_at_ms) VALUES (?, ?, ?, ?) ON CONFLICT(key) DO NOTHING",
+        )
+        .bind(key.to_string())
+        .bind(request_hash)
+        .bind(proposed_operation_id.to_string())
+        .bind(created_at_ms)
+        .execute(&mut *transaction)
+        .await?
+        .rows_affected();
+        let outcome = if inserted == 1 {
+            IdempotencyClaim::Claimed {
+                operation_id: proposed_operation_id,
+            }
+        } else {
+            let row = sqlx::query(
+                "SELECT request_hash, operation_id FROM idempotency_records WHERE key = ?",
+            )
+            .bind(key.to_string())
+            .fetch_one(&mut *transaction)
+            .await?;
+            let existing_hash: String = row.try_get("request_hash")?;
+            if existing_hash == request_hash {
+                let operation_id: String = row.try_get("operation_id")?;
+                IdempotencyClaim::Replayed {
+                    operation_id: parse_uuid(&operation_id)?,
+                }
+            } else {
+                IdempotencyClaim::Conflict
+            }
+        };
+        transaction.commit().await?;
+        Ok(outcome)
     }
 
     /// Replays owner-authorised events strictly after `sequence`.
@@ -355,6 +423,37 @@ mod tests {
         .fetch_one(storage.pool())
         .await?;
         assert_eq!(table_count, 0);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn idempotency_replays_same_request_and_rejects_key_reuse() -> Result<(), StorageError> {
+        let directory = tempfile::tempdir()?;
+        let storage = Storage::open(&directory.path().join("homebot.db")).await?;
+        let key = Uuid::now_v7();
+        let operation = Uuid::now_v7();
+        assert_eq!(
+            storage
+                .claim_idempotency(key, "hash-a", operation, 1)
+                .await?,
+            IdempotencyClaim::Claimed {
+                operation_id: operation
+            }
+        );
+        assert_eq!(
+            storage
+                .claim_idempotency(key, "hash-a", Uuid::now_v7(), 2)
+                .await?,
+            IdempotencyClaim::Replayed {
+                operation_id: operation
+            }
+        );
+        assert_eq!(
+            storage
+                .claim_idempotency(key, "hash-b", Uuid::now_v7(), 3)
+                .await?,
+            IdempotencyClaim::Conflict
+        );
         Ok(())
     }
 }

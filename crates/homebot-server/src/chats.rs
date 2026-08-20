@@ -160,6 +160,9 @@ pub(super) async fn send_message(
         return Ok(Json(SendMessageResponse::Queued { prompt }));
     }
 
+    let provider_prompt = request.content.clone();
+    let provider_attachments = request.attachment_ids.clone();
+
     let message = if replayed {
         state
             .storage
@@ -191,6 +194,15 @@ pub(super) async fn send_message(
             ServerEventBody::MessageChanged {
                 message: message.clone(),
             },
+        )
+        .await?;
+    }
+    if !replayed {
+        crate::provider_turn::start_if_configured(
+            &state,
+            &chat,
+            &provider_prompt,
+            &provider_attachments,
         )
         .await?;
     }
@@ -273,6 +285,9 @@ pub(super) async fn stop(
         .await?,
         IdempotencyClaim::Replayed { .. }
     );
+    if !replayed {
+        crate::provider_turn::cancel(&state, chat_id).await?;
+    }
     let chat = if replayed {
         state
             .storage
@@ -311,6 +326,9 @@ pub(super) async fn decide_approval(
         .await?,
         IdempotencyClaim::Replayed { .. }
     );
+    if !replayed {
+        crate::provider_turn::resolve_approval(&state, approval_id, request.allow).await?;
+    }
     let approval = if replayed {
         state
             .storage
@@ -336,7 +354,11 @@ pub(super) async fn decide_approval(
     Ok(Json(approval))
 }
 
-async fn publish(state: &AppState, kind: &str, body: ServerEventBody) -> Result<(), ApiError> {
+pub(super) async fn publish(
+    state: &AppState,
+    kind: &str,
+    body: ServerEventBody,
+) -> Result<(), ApiError> {
     persist_event(state, kind, body)
         .await
         .map(|_| ())
@@ -355,7 +377,7 @@ pub(super) fn chat_summary(chat: DomainChat) -> ChatSummary {
     }
 }
 
-async fn message_summary(
+pub(super) async fn message_summary(
     state: &AppState,
     message: DomainMessage,
 ) -> Result<MessageSummary, ApiError> {
@@ -428,7 +450,7 @@ fn prompt_summary(prompt: DomainPrompt) -> QueuedPromptSummary {
     }
 }
 
-fn activity_summary(activity: DomainActivity) -> ActivitySummary {
+pub(super) fn activity_summary(activity: DomainActivity) -> ActivitySummary {
     ActivitySummary {
         id: activity.id,
         chat_id: activity.chat_id,
@@ -448,7 +470,7 @@ fn activity_summary(activity: DomainActivity) -> ActivitySummary {
     }
 }
 
-fn approval_summary(approval: DomainApproval) -> ApprovalSummary {
+pub(super) fn approval_summary(approval: DomainApproval) -> ApprovalSummary {
     ApprovalSummary {
         id: approval.id,
         chat_id: approval.chat_id,

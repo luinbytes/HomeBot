@@ -1785,10 +1785,12 @@ name = "homebot-server"
 version = "0.0.1"
 dependencies = [
  "anyhow",
+ "async-trait",
  "axum",
  "futures-util",
  "homebot-domain",
  "homebot-protocol",
+ "homebot-providers",
  "homebot-storage",
  "serde",
  "serde_json",

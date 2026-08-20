@@ -12,9 +12,172 @@ use homebot_protocol::{
     CreateAttachmentResponse, CreateBotRequest, CreateDirectChatRequest, CreateDirectChatResponse,
     FinalizeAttachmentRequest, SendMessageRequest, SendMessageResponse, UpdateBotRequest,
 };
+use homebot_providers::{
+    ActivityKind, ActivityStatus as ProviderActivityStatus, ApprovalDecision, CompactRequest,
+    ProviderAdapter, ProviderAdapterId, ProviderApproval, ProviderCapabilities, ProviderCapability,
+    ProviderDescriptor, ProviderError, ProviderEvent, ProviderHealth, ProviderModel, ProviderRun,
+    ProviderRuntime, ResumeRequest, StartRequest,
+};
+use std::{collections::HashMap, sync::Arc, time::Duration};
+use tokio::sync::{Mutex, mpsc, watch};
 use tokio::task::JoinHandle;
 use tokio_tungstenite::{connect_async, tungstenite::client::IntoClientRequest};
 use tower::ServiceExt;
+
+#[derive(Debug)]
+struct ChatFakeAdapter {
+    id: ProviderAdapterId,
+    operations: Arc<Mutex<HashMap<Uuid, watch::Sender<bool>>>>,
+    approvals: Arc<Mutex<HashMap<Uuid, watch::Sender<bool>>>>,
+}
+
+impl ChatFakeAdapter {
+    fn new() -> Result<Self, homebot_providers::ProviderContractError> {
+        Ok(Self {
+            id: ProviderAdapterId::new("chat-fake")?,
+            operations: Arc::new(Mutex::new(HashMap::new())),
+            approvals: Arc::new(Mutex::new(HashMap::new())),
+        })
+    }
+
+    async fn run(&self, operation_id: Uuid, conversation_id: String) -> ProviderRun {
+        let (events_tx, events_rx) = mpsc::channel(16);
+        let (cancel_tx, mut cancel_rx) = watch::channel(false);
+        let (approval_tx, mut approval_rx) = watch::channel(false);
+        let approval_id = Uuid::now_v7();
+        self.operations.lock().await.insert(operation_id, cancel_tx);
+        self.approvals.lock().await.insert(approval_id, approval_tx);
+        let operations = Arc::clone(&self.operations);
+        let approvals = Arc::clone(&self.approvals);
+        tokio::spawn(async move {
+            for event in [
+                ProviderEvent::ConversationStarted { conversation_id },
+                ProviderEvent::ContentDelta {
+                    text: "Hello from the Bot".to_owned(),
+                },
+                ProviderEvent::Activity {
+                    activity: homebot_providers::ProviderActivity {
+                        activity_id: Uuid::now_v7(),
+                        kind: ActivityKind::Search,
+                        title: "Searching sources".to_owned(),
+                        status: ProviderActivityStatus::Started,
+                    },
+                },
+                ProviderEvent::ApprovalRequired {
+                    approval: ProviderApproval {
+                        approval_id,
+                        capability: "shell_execute".to_owned(),
+                        action: "Run tests".to_owned(),
+                        resource: "workspace".to_owned(),
+                        reason: "Verify the change".to_owned(),
+                    },
+                },
+            ] {
+                let _ = events_tx.send(event).await;
+            }
+            tokio::select! {
+                changed = cancel_rx.changed() => {
+                    if changed.is_ok() && *cancel_rx.borrow() {
+                        let _ = events_tx.send(ProviderEvent::Cancelled).await;
+                    }
+                }
+                changed = approval_rx.changed() => {
+                    if changed.is_ok() && *approval_rx.borrow() {
+                        let _ = events_tx.send(ProviderEvent::Completed).await;
+                    }
+                }
+            }
+            operations.lock().await.remove(&operation_id);
+            approvals.lock().await.remove(&approval_id);
+        });
+        ProviderRun {
+            operation_id,
+            events: events_rx,
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl ProviderAdapter for ChatFakeAdapter {
+    fn id(&self) -> &ProviderAdapterId {
+        &self.id
+    }
+
+    async fn discover(&self) -> Result<ProviderDescriptor, ProviderError> {
+        Ok(ProviderDescriptor {
+            adapter_id: self.id.clone(),
+            display_name: "Chat fixture".to_owned(),
+            executable: None,
+            capabilities: ProviderCapabilities {
+                supported: [
+                    ProviderCapability::ConversationResume,
+                    ProviderCapability::Streaming,
+                    ProviderCapability::Activities,
+                    ProviderCapability::Approvals,
+                    ProviderCapability::Cancellation,
+                ]
+                .into_iter()
+                .collect(),
+            },
+        })
+    }
+
+    async fn health(&self) -> ProviderHealth {
+        ProviderHealth {
+            availability: homebot_providers::ProviderAvailability::Available,
+            message: "Ready".to_owned(),
+            checked_at_unix_ms: 1,
+        }
+    }
+
+    async fn models(&self) -> Result<Vec<ProviderModel>, ProviderError> {
+        Ok(Vec::new())
+    }
+
+    async fn start(&self, request: StartRequest) -> Result<ProviderRun, ProviderError> {
+        Ok(self
+            .run(request.operation_id, format!("chat-{}", request.chat_id))
+            .await)
+    }
+
+    async fn resume(&self, request: ResumeRequest) -> Result<ProviderRun, ProviderError> {
+        Ok(self
+            .run(request.operation_id, request.conversation_id)
+            .await)
+    }
+
+    async fn cancel(&self, operation_id: Uuid) -> Result<(), ProviderError> {
+        self.operations
+            .lock()
+            .await
+            .get(&operation_id)
+            .ok_or_else(|| ProviderError::internal("operation finished"))?
+            .send(true)
+            .map_err(|_| ProviderError::internal("operation finished"))
+    }
+
+    async fn resolve_approval(
+        &self,
+        approval_id: Uuid,
+        _decision: ApprovalDecision,
+    ) -> Result<(), ProviderError> {
+        self.approvals
+            .lock()
+            .await
+            .get(&approval_id)
+            .ok_or_else(|| ProviderError::internal("approval finished"))?
+            .send(true)
+            .map_err(|_| ProviderError::internal("approval finished"))
+    }
+
+    async fn compact(&self, _request: CompactRequest) -> Result<(), ProviderError> {
+        Ok(())
+    }
+
+    async fn recover(&self) -> Result<Vec<ProviderRun>, ProviderError> {
+        Ok(Vec::new())
+    }
+}
 
 async fn test_app() -> Result<Router, homebot_storage::StorageError> {
     let directory = tempfile::tempdir()?;
@@ -86,6 +249,21 @@ async fn response_json<T: serde::de::DeserializeOwned>(
     Ok(serde_json::from_slice(
         &to_bytes(response.into_body(), usize::MAX).await?,
     )?)
+}
+
+async fn fetch_timeline(
+    app: &Router,
+    chat_id: Uuid,
+) -> Result<ChatTimelineResponse, Box<dyn std::error::Error>> {
+    let response = app
+        .clone()
+        .oneshot(
+            Request::get(format!("/api/v1/chats/{chat_id}/timeline"))
+                .header("authorization", "Bearer correct-token")
+                .body(Body::empty())?,
+        )
+        .await?;
+    response_json(response).await
 }
 
 #[tokio::test]
@@ -427,6 +605,182 @@ async fn direct_chat_send_queue_replay_and_timeline_are_server_authoritative()
         homebot_protocol::ApprovalStatus::Denied
     );
     Ok(())
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn provider_turn_streams_persists_approves_resumes_and_cancels()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let storage = Storage::open(&directory.path().join("homebot.db")).await?;
+    let profile_id = Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO provider_profiles (
+            id, adapter_kind, display_name, configuration_json, created_at_ms, updated_at_ms
+         ) VALUES (?, 'chat-fake', 'Fixture', '{\"model\":\"fixture\"}', 1, 1)",
+    )
+    .bind(profile_id.to_string())
+    .execute(storage.pool())
+    .await?;
+    let runtime = Arc::new(ProviderRuntime::new());
+    runtime.register(Arc::new(ChatFakeAdapter::new()?)).await?;
+    let state = AppState::new(storage.clone(), "correct-token").with_provider_runtime(runtime);
+    let app = router(state);
+
+    let bot_id = Uuid::now_v7();
+    let response = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/bots",
+            &CreateBotRequest {
+                request_id: Uuid::now_v7(),
+                idempotency_key: bot_id,
+                name: "Nova".to_owned(),
+                title: "Research".to_owned(),
+                description: String::new(),
+                shape: BotShape::RoundedSquare,
+                color: BotColor::Violet,
+                provider_profile_id: Some(profile_id),
+                permission_profile: BotPermissionProfile::AskBeforeChanges,
+            },
+        ))
+        .await?;
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let chat_id = Uuid::now_v7();
+    let response = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/chats/direct",
+            &CreateDirectChatRequest {
+                request_id: Uuid::now_v7(),
+                idempotency_key: chat_id,
+                bot_id,
+            },
+        ))
+        .await?;
+    assert_eq!(response.status(), StatusCode::CREATED);
+
+    let send = SendMessageRequest {
+        request_id: Uuid::now_v7(),
+        idempotency_key: Uuid::now_v7(),
+        content: "Find it".to_owned(),
+        attachment_ids: Vec::new(),
+        reply_to_message_id: None,
+        mentioned_bot_ids: Vec::new(),
+    };
+    let response = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            &format!("/api/v1/chats/{chat_id}/messages"),
+            &send,
+        ))
+        .await?;
+    assert_eq!(response.status(), StatusCode::OK);
+    let timeline = wait_for_timeline(&app, chat_id, |timeline| {
+        timeline.approvals.len() == 1 && timeline.messages.len() == 2
+    })
+    .await?;
+    assert!(timeline.chat.running);
+    assert_eq!(timeline.activities.len(), 1);
+    assert!(matches!(
+        &timeline.messages[1].parts[0],
+        homebot_protocol::MessagePart::Text { text, .. } if text == "Hello from the Bot"
+    ));
+
+    let approval_id = timeline.approvals[0].id;
+    let response = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            &format!("/api/v1/approvals/{approval_id}/decision"),
+            &ApprovalDecisionRequest {
+                request_id: Uuid::now_v7(),
+                idempotency_key: Uuid::now_v7(),
+                allow: true,
+            },
+        ))
+        .await?;
+    assert_eq!(response.status(), StatusCode::OK);
+    let timeline = wait_for_timeline(&app, chat_id, |timeline| {
+        !timeline.chat.running
+            && timeline
+                .messages
+                .last()
+                .is_some_and(|message| message.status == homebot_protocol::MessageStatus::Completed)
+    })
+    .await?;
+    assert_eq!(
+        timeline.approvals[0].status,
+        homebot_protocol::ApprovalStatus::Allowed
+    );
+    let expected_conversation = format!("chat-{chat_id}");
+    assert_eq!(
+        storage
+            .provider_conversation(bot_id, chat_id, profile_id)
+            .await?
+            .as_deref(),
+        Some(expected_conversation.as_str())
+    );
+
+    let response = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            &format!("/api/v1/chats/{chat_id}/messages"),
+            &SendMessageRequest {
+                request_id: Uuid::now_v7(),
+                idempotency_key: Uuid::now_v7(),
+                content: "Continue".to_owned(),
+                attachment_ids: Vec::new(),
+                reply_to_message_id: None,
+                mentioned_bot_ids: Vec::new(),
+            },
+        ))
+        .await?;
+    assert_eq!(response.status(), StatusCode::OK);
+    let _ = wait_for_timeline(&app, chat_id, |timeline| {
+        timeline.chat.running && timeline.messages.len() == 4
+    })
+    .await?;
+    let response = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            &format!("/api/v1/chats/{chat_id}/stop"),
+            &BotMutationRequest {
+                request_id: Uuid::now_v7(),
+                idempotency_key: Uuid::now_v7(),
+            },
+        ))
+        .await?;
+    assert_eq!(response.status(), StatusCode::OK);
+    let timeline = wait_for_timeline(&app, chat_id, |timeline| {
+        timeline
+            .messages
+            .last()
+            .is_some_and(|message| message.status == homebot_protocol::MessageStatus::Cancelled)
+    })
+    .await?;
+    assert!(!timeline.chat.running);
+    Ok(())
+}
+
+async fn wait_for_timeline(
+    app: &Router,
+    chat_id: Uuid,
+    ready: impl Fn(&ChatTimelineResponse) -> bool,
+) -> Result<ChatTimelineResponse, Box<dyn std::error::Error>> {
+    for _ in 0..100 {
+        let timeline = fetch_timeline(app, chat_id).await?;
+        if ready(&timeline) {
+            return Ok(timeline);
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    Err("timed out waiting for provider-backed timeline".into())
 }
 
 #[tokio::test]

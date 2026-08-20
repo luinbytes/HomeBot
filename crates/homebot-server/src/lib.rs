@@ -3,6 +3,7 @@
 mod attachments;
 mod bots;
 mod chats;
+mod provider_turn;
 
 use axum::{
     Json, Router,
@@ -20,6 +21,7 @@ use homebot_protocol::{
     ClientMessage, ErrorCode, ErrorEnvelope, ProtocolRange, ResumeDisposition, ServerEvent,
     ServerEventBody, Snapshot,
 };
+use homebot_providers::{ProviderAdapterId, ProviderRuntime};
 use homebot_storage::{IdempotencyClaim, ReplayWindow, Storage};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -40,6 +42,15 @@ struct OperationControl {
 }
 
 #[derive(Clone, Debug)]
+struct ChatOperation {
+    operation: Uuid,
+    adapter: ProviderAdapterId,
+    profile: Uuid,
+    bot: Uuid,
+    message: Uuid,
+}
+
+#[derive(Clone, Debug)]
 pub struct AppState {
     storage: Storage,
     bearer_digest: [u8; 32],
@@ -51,6 +62,8 @@ pub struct AppState {
     writer_delay: std::time::Duration,
     command_delay: std::time::Duration,
     operations: Arc<Mutex<HashMap<Uuid, Arc<OperationControl>>>>,
+    provider_runtime: Arc<ProviderRuntime>,
+    chat_operations: Arc<Mutex<HashMap<Uuid, ChatOperation>>>,
     live_events: broadcast::Sender<ServerEvent>,
 }
 
@@ -69,6 +82,8 @@ impl AppState {
             writer_delay: std::time::Duration::ZERO,
             command_delay: COMMAND_DELAY,
             operations: Arc::new(Mutex::new(HashMap::new())),
+            provider_runtime: Arc::new(ProviderRuntime::new()),
+            chat_operations: Arc::new(Mutex::new(HashMap::new())),
             live_events,
         }
     }
@@ -76,6 +91,12 @@ impl AppState {
     #[must_use]
     pub fn storage(&self) -> &Storage {
         &self.storage
+    }
+
+    #[must_use]
+    pub fn with_provider_runtime(mut self, provider_runtime: Arc<ProviderRuntime>) -> Self {
+        self.provider_runtime = provider_runtime;
+        self
     }
 
     #[must_use]

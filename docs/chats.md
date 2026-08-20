@@ -26,3 +26,9 @@ The desktop timeline model hydrates from the HTTP timeline and then applies stri
 The composer carries attachments, replies and Bot mentions. It chooses send, queue or steer based on server running state and exposes stop, retry and approval decisions as commands for the transport client. Scroll anchoring follows new content only when the user is already at the bottom; otherwise it counts unseen updates and offers a jump-to-latest action.
 
 Provider-specific tool names and payloads do not enter this contract. Activities use a safe user-facing title, detail, normalized status and attention flag.
+
+## Provider turns
+
+When a Bot has a provider profile, the server resolves its normalized adapter and starts or resumes the provider conversation after persisting the user message. One stable streaming Bot message receives durable text deltas. Normalized provider activities and approvals are persisted before their WebSocket events are published. Completion, cancellation and normalized failures produce exactly one terminal message state and clear the authoritative chat-running flag.
+
+Provider conversation IDs remain a mapping of Bot, chat and provider profile. They never replace HomeBot Bot, chat or message identity. Stop is routed by the server to the adapter that owns the active operation. Approval decisions are routed to that adapter before the durable approval is marked decided.

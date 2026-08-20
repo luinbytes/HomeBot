@@ -65,6 +65,7 @@ Read the deeper contracts:
 - [Security and threat model](docs/security.md)
 - [Android](docs/android.md)
 - [Routines](docs/routines.md)
+- [Skills](docs/skills.md)
 - [Plugins](docs/plugins.md)
 - [Development](docs/development.md)
 - [Releasing](docs/releasing.md)

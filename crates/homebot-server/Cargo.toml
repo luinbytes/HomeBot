@@ -16,6 +16,7 @@ homebot-domain.workspace = true
 homebot-providers.workspace = true
 homebot-plugins.workspace = true
 homebot-routines.workspace = true
+homebot-skills.workspace = true
 homebot-secrets.workspace = true
 homebot-storage = { version = "=0.0.1", path = "../homebot-storage" }
 serde.workspace = true

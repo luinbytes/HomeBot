@@ -588,6 +588,14 @@ impl RoutineActionExecutor for ServerExecutor<'_> {
                 ..
             } => {
                 let prompt = render_template(prompt_template, inputs);
+                let applied_skills = self
+                    .state
+                    .storage
+                    .resolve_applied_skills(self.state.owner_id, *bot_id, &[])
+                    .await
+                    .map_err(|_| RoutineError::StepFailed)?;
+                let provider_prompt = super::chats::prompt_with_skills(&prompt, &applied_skills)
+                    .map_err(|_| RoutineError::StepFailed)?;
                 let chat = self
                     .state
                     .storage
@@ -610,6 +618,7 @@ impl RoutineActionExecutor for ServerExecutor<'_> {
                         &[],
                         None,
                         Vec::new(),
+                        &applied_skills,
                         unix_time_ms(),
                     )
                     .await
@@ -634,10 +643,14 @@ impl RoutineActionExecutor for ServerExecutor<'_> {
                 )
                 .await
                 .map_err(|_| RoutineError::StepFailed)?;
-                let provider_started =
-                    super::provider_turn::start_if_configured(self.state, &chat, &prompt, &[])
-                        .await
-                        .map_err(|_| RoutineError::StepFailed)?;
+                let provider_started = super::provider_turn::start_if_configured(
+                    self.state,
+                    &chat,
+                    &provider_prompt,
+                    &[],
+                )
+                .await
+                .map_err(|_| RoutineError::StepFailed)?;
                 json!({"kind":"bot_prompt","bot_id":bot_id,"chat_id":chat.id,"message_id":message_id,"provider_started":provider_started})
             }
             RoutineStep::PluginTool {

@@ -1,5 +1,5 @@
 [package]
-name = "homebot-storage"
+name = "homebot-skills"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -7,17 +7,10 @@ repository.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-homebot-domain.workspace = true
-homebot-routines.workspace = true
-homebot-skills.workspace = true
-serde_json.workspace = true
-sqlx.workspace = true
+schemars.workspace = true
+serde.workspace = true
 thiserror.workspace = true
 uuid.workspace = true
-
-[dev-dependencies]
-tempfile = "3.20"
-tokio.workspace = true
 
 [lints]
 workspace = true

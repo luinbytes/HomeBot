@@ -128,6 +128,8 @@ pub struct QueuedPrompt {
     pub chat_id: Uuid,
     pub content: String,
     pub attachment_ids: Vec<Uuid>,
+    pub skill_ids: Vec<Uuid>,
+    pub skill_version_ids: Vec<Uuid>,
     pub position: u32,
     pub created_at_ms: i64,
 }

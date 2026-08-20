@@ -56,6 +56,8 @@ Each run carries the immutable `routine_version_id`, step status and redacted st
 
 Routine triggers and jobs use authenticated HTTP mutations plus durable `routine_trigger_changed`, `routine_trigger_removed`, and `routine_job_changed` events. Trigger definitions carry timezone/missed-run/overlap/retry policy; job summaries expose only redacted input metadata. Schedule delivery keys and external webhook/event delivery keys are idempotent. Event triggers advance a durable outbox sequence only after all preceding events have been examined, which provides restart-safe delivery without treating WebSocket broadcasts as authority.
 
+Skills use authenticated CRUD, duplication, assignment, and versioned import/export endpoints. The initial snapshot carries the Skill library; `skill_changed` and `skill_removed` keep client projections current. `SendMessageRequest.skill_ids` adds turn-specific Skills, while assigned and explicit active versions are resolved once and persisted in `MessageSummary.applied_skills`. Queued prompts similarly pin version IDs internally, so edit, reconnect, retry, or restart cannot silently change accepted context. Portable tool references remain subject to server capability and approval policy.
+
 ## Attachments
 
 Attachments are uploaded over authenticated HTTP with size/type limits, streaming digest verification, an idempotency key, and an explicit finalise step. WebSocket messages refer to completed attachment IDs. Partial uploads expire and cannot be consumed.

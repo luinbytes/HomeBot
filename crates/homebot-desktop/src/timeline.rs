@@ -13,6 +13,7 @@ pub struct ComposerDraft {
     pub attachment_ids: Vec<Uuid>,
     pub reply_to_message_id: Option<Uuid>,
     pub mentioned_bot_ids: Vec<Uuid>,
+    pub skill_ids: Vec<Uuid>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -303,6 +304,7 @@ mod tests {
             reply_to_message_id: None,
             mentioned_bot_ids: Vec::new(),
             shared_context_message_ids: Vec::new(),
+            applied_skills: Vec::new(),
             created_at_ms: 1,
             completed_at_ms: None,
             error: None,

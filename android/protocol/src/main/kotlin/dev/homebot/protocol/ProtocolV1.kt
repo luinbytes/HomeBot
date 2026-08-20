@@ -163,6 +163,7 @@ data class MessageSummary(
     val reply_to_message_id: String? = null,
     val mentioned_bot_ids: List<String>,
     val shared_context_message_ids: List<String>,
+    val applied_skills: List<AppliedSkillSummary> = emptyList(),
     val created_at_ms: Long,
     val completed_at_ms: Long? = null,
     val error: ErrorEnvelope? = null,
@@ -184,7 +185,7 @@ data class ApprovalSummary(val id: String, val chat_id: String, val message_id: 
 data class ApprovalDecisionRequest(val request_id: String, val idempotency_key: String, val allow: Boolean)
 
 @Serializable
-data class QueuedPromptSummary(val id: String, val chat_id: String, val content: String, val attachment_ids: List<String>, val position: Int, val created_at_ms: Long)
+data class QueuedPromptSummary(val id: String, val chat_id: String, val content: String, val attachment_ids: List<String>, val skill_ids: List<String> = emptyList(), val position: Int, val created_at_ms: Long)
 
 @Serializable
 data class SecretSummary(val id: String, val label: String, val status: String, val created_at_unix_ms: Long, val updated_at_unix_ms: Long)
@@ -203,6 +204,39 @@ data class PluginMutationRequest(val request_id: String, val idempotency_key: St
 
 @Serializable
 data class PluginAssignmentRequest(val request_id: String, val idempotency_key: String, val bot_id: String, val enabled: Boolean)
+
+@Serializable
+data class SkillContext(val label: String, val content: String)
+
+@Serializable
+data class SkillToolReference(val plugin_name: String, val tool_name: String)
+
+@Serializable
+data class SkillDefinition(val instructions: String, val context: List<SkillContext> = emptyList(), val tools: List<SkillToolReference> = emptyList())
+
+@Serializable
+data class AppliedSkillSummary(val skill_id: String, val skill_version_id: String, val name: String, val version: Int)
+
+@Serializable
+data class SkillSummary(val id: String, val name: String, val description: String, val active_version_id: String, val version: Int, val definition: SkillDefinition, val bot_ids: List<String>, val created_at_unix_ms: Long, val updated_at_unix_ms: Long)
+
+@Serializable
+data class CreateSkillRequest(val request_id: String, val idempotency_key: String, val name: String, val description: String = "", val definition: SkillDefinition)
+
+@Serializable
+data class UpdateSkillRequest(val request_id: String, val idempotency_key: String, val name: String, val description: String = "", val definition: SkillDefinition)
+
+@Serializable
+data class DuplicateSkillRequest(val request_id: String, val idempotency_key: String, val name: String)
+
+@Serializable
+data class SkillAssignmentRequest(val request_id: String, val idempotency_key: String, val bot_id: String, val enabled: Boolean)
+
+@Serializable
+data class SkillBundle(val format_version: Int, val name: String, val description: String, val definition: SkillDefinition)
+
+@Serializable
+data class ImportSkillRequest(val request_id: String, val idempotency_key: String, val bundle: SkillBundle, val conflict_policy: String)
 
 @Serializable
 data class RoutineInput(val key: String, val label: String, val kind: String, val required: Boolean)
@@ -272,7 +306,7 @@ data class CreateDirectChatRequest(val request_id: String, val idempotency_key: 
 data class CreateDirectChatResponse(val chat: ChatSummary)
 
 @Serializable
-data class SendMessageRequest(val request_id: String, val idempotency_key: String, val content: String, val attachment_ids: List<String>, val reply_to_message_id: String? = null, val mentioned_bot_ids: List<String>)
+data class SendMessageRequest(val request_id: String, val idempotency_key: String, val content: String, val attachment_ids: List<String>, val reply_to_message_id: String? = null, val mentioned_bot_ids: List<String>, val skill_ids: List<String> = emptyList())
 
 @Serializable
 sealed interface SendMessageResponse {

@@ -14,6 +14,7 @@ use crate::{
     },
     notifications::{DeepLink, NotificationCenter, NotificationSink, SystemNotificationSink},
     settings::{DesktopSettings, settings_view},
+    skills::SkillProjection,
     timeline::{ComposerError, TimelineModel},
     tokens::HomeBotTheme,
     transport::{DesktopCommand, DesktopEvent, DesktopTransport, RuntimeConfig},
@@ -26,6 +27,7 @@ pub struct HomeBotApp {
     pub theme: HomeBotTheme,
     pub timeline: TimelineModel,
     pub settings: DesktopSettings,
+    pub skills: SkillProjection,
     pub active_deep_link: Option<DeepLink>,
     notification_center: NotificationCenter,
     notification_sink: SystemNotificationSink,
@@ -46,6 +48,7 @@ impl Default for HomeBotApp {
             theme: HomeBotTheme::light(),
             timeline: TimelineModel::default(),
             settings: DesktopSettings::default(),
+            skills: SkillProjection::default(),
             active_deep_link: None,
             notification_center: NotificationCenter::default(),
             notification_sink: SystemNotificationSink::new(deep_link_sender),
@@ -134,9 +137,11 @@ impl HomeBotApp {
                 DesktopEvent::Snapshot { snapshot, .. } => {
                     self.roster.apply_snapshot(snapshot.bots);
                     self.chats = snapshot.chats;
+                    self.skills.hydrate(snapshot.skills);
                     self.load_selected_timeline();
                 }
                 DesktopEvent::Server(event) => {
+                    self.skills.apply(&event);
                     let bot_id = match &event.body {
                         ServerEventBody::BotChanged { bot } => {
                             self.roster.apply_change(bot.clone());

@@ -1925,6 +1925,7 @@ version = "0.0.1"
 dependencies = [
  "homebot-domain",
  "homebot-routines",
+ "homebot-skills",
  "schemars",
  "serde",
  "serde_json",
@@ -1990,6 +1991,7 @@ dependencies = [
  "homebot-providers",
  "homebot-routines",
  "homebot-secrets",
+ "homebot-skills",
  "homebot-storage",
  "serde",
  "serde_json",
@@ -2007,11 +2009,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "homebot-skills"
+version = "0.0.1"
+dependencies = [
+ "schemars",
+ "serde",
+ "thiserror 2.0.20",
+ "uuid",
+]
+
+[[package]]
 name = "homebot-storage"
 version = "0.0.1"
 dependencies = [
  "homebot-domain",
  "homebot-routines",
+ "homebot-skills",
  "serde_json",
  "sqlx",
  "tempfile",

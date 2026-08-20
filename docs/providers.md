@@ -47,3 +47,6 @@ Responses API profiles support streamed text, reasoning/tool activity, usage, ca
 ```
 
 Resume uses `kind: "resume"` and includes `conversation_id`. The child writes one serialized `ProviderEvent` per stdout line and must finish with exactly one `completed`, `cancelled` or `failed` event. Lines and event queues are bounded; malformed output fails closed; cancellation closes stdin and then enforces the supervisor deadline. Arguments and environment values are omitted from debug output. Community adapters that need a richer native protocol should implement `ProviderAdapter` directly instead of adding provider-specific fields to this contract.
+## Skill assembly
+
+HomeBot resolves Bot-assigned and turn-selected Skills before invoking an adapter. The server deterministically assembles the immutable applied versions into a provider-neutral delimited instruction block; adapters receive only the resulting prompt. Skill tool references do not alter adapter capabilities, plugin assignments, or approval decisions. Historical retry loads the original message's exact Skill versions rather than the current library version.

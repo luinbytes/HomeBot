@@ -7,6 +7,7 @@ pub mod notifications;
 pub mod routines;
 pub mod settings;
 pub mod showcase;
+pub mod skills;
 pub mod timeline;
 pub mod tokens;
 pub mod transport;

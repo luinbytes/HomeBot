@@ -21,6 +21,7 @@ Server-owned responsibilities:
 - capability policy and approvals
 - filesystem, PTY, browser, MCP/plugin, secret, and VCS operations
 - routines, schedules, event triggers, retries, and run history
+- versioned Skills, Bot assignment, and exact per-message Skill history
 - SQLite, migrations, backups, outbox sequence, and artifact storage
 - pairing, device sessions, rate limits, and audit events
 

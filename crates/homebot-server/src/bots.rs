@@ -411,6 +411,14 @@ impl From<StorageError> for ApiError {
             StorageError::DuplicatePluginName => {
                 Self::conflict("A plugin with that name already exists")
             }
+            StorageError::SkillNotFound => Self::new(
+                StatusCode::NOT_FOUND,
+                ErrorCode::NotFound,
+                "Skill was not found",
+            ),
+            StorageError::DuplicateSkillName => {
+                Self::conflict("A Skill with that name already exists")
+            }
             StorageError::RoutineNotFound => Self::new(
                 StatusCode::NOT_FOUND,
                 ErrorCode::NotFound,

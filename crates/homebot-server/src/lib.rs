@@ -10,6 +10,7 @@ mod provider_turn;
 mod routines;
 mod scheduler;
 mod secrets;
+mod skills;
 
 use axum::{
     Json, Router,
@@ -256,6 +257,18 @@ pub fn router(state: AppState) -> Router {
             "/api/v1/plugins/{plugin_id}/assignment",
             put(plugins::assign),
         )
+        .route("/api/v1/skills", get(skills::list).post(skills::create))
+        .route(
+            "/api/v1/skills/{skill_id}",
+            put(skills::update).delete(skills::delete),
+        )
+        .route(
+            "/api/v1/skills/{skill_id}/duplicate",
+            post(skills::duplicate),
+        )
+        .route("/api/v1/skills/{skill_id}/export", get(skills::export))
+        .route("/api/v1/skills/import", post(skills::import))
+        .route("/api/v1/skills/{skill_id}/assignment", put(skills::assign))
         .route(
             "/api/v1/routines",
             get(routines::list).post(routines::create),
@@ -630,10 +643,19 @@ async fn current_snapshot(state: &AppState) -> Snapshot {
         .into_iter()
         .map(groups::group_summary)
         .collect();
+    let skills = state
+        .storage
+        .list_skills(state.owner_id)
+        .await
+        .unwrap_or_default()
+        .iter()
+        .map(skills::summary)
+        .collect();
     Snapshot {
         bots: summaries,
         chats,
         group_chats,
+        skills,
     }
 }
 

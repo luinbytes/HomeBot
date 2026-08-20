@@ -5,6 +5,7 @@ pub use homebot_routines::{
     RoutineDefinition, RoutineExecutionResult, RoutineInput, RoutineInputKind, RoutineSchedule,
     RoutineStep, RoutineStepStatus, RoutineTriggerDefinition, RoutineTriggerSource,
 };
+pub use homebot_skills::{SkillContext, SkillDefinition, SkillToolReference};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -121,6 +122,12 @@ pub enum ServerEventBody {
     PluginRemoved {
         plugin_id: Uuid,
     },
+    SkillChanged {
+        skill: SkillSummary,
+    },
+    SkillRemoved {
+        skill_id: Uuid,
+    },
     RoutineChanged {
         routine: RoutineSummary,
     },
@@ -179,6 +186,8 @@ pub struct Snapshot {
     pub chats: Vec<ChatSummary>,
     #[serde(default)]
     pub group_chats: Vec<GroupChatSummary>,
+    #[serde(default)]
+    pub skills: Vec<SkillSummary>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
@@ -473,6 +482,8 @@ pub struct MessageSummary {
     pub reply_to_message_id: Option<Uuid>,
     pub mentioned_bot_ids: Vec<Uuid>,
     pub shared_context_message_ids: Vec<Uuid>,
+    #[serde(default)]
+    pub applied_skills: Vec<AppliedSkillSummary>,
     pub created_at_ms: i64,
     pub completed_at_ms: Option<i64>,
     pub error: Option<ErrorEnvelope>,
@@ -645,6 +656,8 @@ pub struct QueuedPromptSummary {
     pub chat_id: Uuid,
     pub content: String,
     pub attachment_ids: Vec<Uuid>,
+    #[serde(default)]
+    pub skill_ids: Vec<Uuid>,
     pub position: u32,
     pub created_at_ms: i64,
 }
@@ -683,6 +696,8 @@ pub struct SendMessageRequest {
     pub attachment_ids: Vec<Uuid>,
     pub reply_to_message_id: Option<Uuid>,
     pub mentioned_bot_ids: Vec<Uuid>,
+    #[serde(default)]
+    pub skill_ids: Vec<Uuid>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
@@ -842,6 +857,94 @@ pub struct PluginAssignmentRequest {
     pub idempotency_key: Uuid,
     pub bot_id: Uuid,
     pub enabled: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AppliedSkillSummary {
+    pub skill_id: Uuid,
+    pub skill_version_id: Uuid,
+    pub name: String,
+    pub version: u32,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SkillSummary {
+    pub id: Uuid,
+    pub name: String,
+    pub description: String,
+    pub active_version_id: Uuid,
+    pub version: u32,
+    pub definition: SkillDefinition,
+    pub bot_ids: Vec<Uuid>,
+    pub created_at_unix_ms: u64,
+    pub updated_at_unix_ms: u64,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CreateSkillRequest {
+    pub request_id: Uuid,
+    pub idempotency_key: Uuid,
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    pub definition: SkillDefinition,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct UpdateSkillRequest {
+    pub request_id: Uuid,
+    pub idempotency_key: Uuid,
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    pub definition: SkillDefinition,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct DuplicateSkillRequest {
+    pub request_id: Uuid,
+    pub idempotency_key: Uuid,
+    pub name: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SkillAssignmentRequest {
+    pub request_id: Uuid,
+    pub idempotency_key: Uuid,
+    pub bot_id: Uuid,
+    pub enabled: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SkillBundle {
+    pub format_version: u16,
+    pub name: String,
+    pub description: String,
+    pub definition: SkillDefinition,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SkillImportConflictPolicy {
+    Reject,
+    Rename,
+    CreateVersion,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ImportSkillRequest {
+    pub request_id: Uuid,
+    pub idempotency_key: Uuid,
+    pub bundle: SkillBundle,
+    pub conflict_policy: SkillImportConflictPolicy,
 }
 
 #[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
@@ -1064,6 +1167,14 @@ pub struct ProtocolV1Schema {
     pub plugin_mutation_request: PluginMutationRequest,
     pub plugin_assignment_request: PluginAssignmentRequest,
     pub plugin: PluginSummary,
+    pub create_skill_request: CreateSkillRequest,
+    pub update_skill_request: UpdateSkillRequest,
+    pub duplicate_skill_request: DuplicateSkillRequest,
+    pub skill_assignment_request: SkillAssignmentRequest,
+    pub import_skill_request: ImportSkillRequest,
+    pub skill_bundle: SkillBundle,
+    pub skill: SkillSummary,
+    pub applied_skill: AppliedSkillSummary,
     pub create_routine_request: CreateRoutineRequest,
     pub update_routine_request: UpdateRoutineRequest,
     pub duplicate_routine_request: DuplicateRoutineRequest,

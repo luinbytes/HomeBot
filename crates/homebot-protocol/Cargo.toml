@@ -9,6 +9,7 @@ rust-version.workspace = true
 [dependencies]
 homebot-domain.workspace = true
 homebot-routines.workspace = true
+homebot-skills.workspace = true
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true

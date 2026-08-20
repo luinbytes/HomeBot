@@ -7,6 +7,9 @@
     "append_routine_recording_request": {
       "$ref": "#/$defs/AppendRoutineRecordingRequest"
     },
+    "applied_skill": {
+      "$ref": "#/$defs/AppliedSkillSummary"
+    },
     "approval_decision_request": {
       "$ref": "#/$defs/ApprovalDecisionRequest"
     },
@@ -55,17 +58,26 @@
     "create_secret_request": {
       "$ref": "#/$defs/CreateSecretRequest"
     },
+    "create_skill_request": {
+      "$ref": "#/$defs/CreateSkillRequest"
+    },
     "deliver_routine_trigger_request": {
       "$ref": "#/$defs/DeliverRoutineTriggerRequest"
     },
     "duplicate_routine_request": {
       "$ref": "#/$defs/DuplicateRoutineRequest"
     },
+    "duplicate_skill_request": {
+      "$ref": "#/$defs/DuplicateSkillRequest"
+    },
     "error": {
       "$ref": "#/$defs/ErrorEnvelope"
     },
     "finalize_attachment_request": {
       "$ref": "#/$defs/FinalizeAttachmentRequest"
+    },
+    "import_skill_request": {
+      "$ref": "#/$defs/ImportSkillRequest"
     },
     "message_mutation_request": {
       "$ref": "#/$defs/MessageMutationRequest"
@@ -109,6 +121,15 @@
     "server_event": {
       "$ref": "#/$defs/ServerEvent"
     },
+    "skill": {
+      "$ref": "#/$defs/SkillSummary"
+    },
+    "skill_assignment_request": {
+      "$ref": "#/$defs/SkillAssignmentRequest"
+    },
+    "skill_bundle": {
+      "$ref": "#/$defs/SkillBundle"
+    },
     "start_routine_recording_request": {
       "$ref": "#/$defs/StartRoutineRecordingRequest"
     },
@@ -120,6 +141,9 @@
     },
     "update_secret_request": {
       "$ref": "#/$defs/UpdateSecretRequest"
+    },
+    "update_skill_request": {
+      "$ref": "#/$defs/UpdateSkillRequest"
     }
   },
   "required": [
@@ -133,6 +157,14 @@
     "plugin_mutation_request",
     "plugin_assignment_request",
     "plugin",
+    "create_skill_request",
+    "update_skill_request",
+    "duplicate_skill_request",
+    "skill_assignment_request",
+    "import_skill_request",
+    "skill_bundle",
+    "skill",
+    "applied_skill",
     "create_routine_request",
     "update_routine_request",
     "duplicate_routine_request",
@@ -449,6 +481,34 @@
         "request_id",
         "idempotency_key",
         "action"
+      ]
+    },
+    "AppliedSkillSummary": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "skill_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "skill_version_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "version": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "skill_id",
+        "skill_version_id",
+        "name",
+        "version"
       ]
     },
     "ApprovalDecisionRequest": {
@@ -1280,6 +1340,36 @@
         "value"
       ]
     },
+    "CreateSkillRequest": {
+      "type": "object",
+      "properties": {
+        "definition": {
+          "$ref": "#/$defs/SkillDefinition"
+        },
+        "description": {
+          "type": "string",
+          "default": ""
+        },
+        "idempotency_key": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "name": {
+          "type": "string"
+        },
+        "request_id": {
+          "type": "string",
+          "format": "uuid"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "request_id",
+        "idempotency_key",
+        "name",
+        "definition"
+      ]
+    },
     "DeliverRoutineTriggerRequest": {
       "type": "object",
       "properties": {
@@ -1306,6 +1396,28 @@
       ]
     },
     "DuplicateRoutineRequest": {
+      "type": "object",
+      "properties": {
+        "idempotency_key": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "name": {
+          "type": "string"
+        },
+        "request_id": {
+          "type": "string",
+          "format": "uuid"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "request_id",
+        "idempotency_key",
+        "name"
+      ]
+    },
+    "DuplicateSkillRequest": {
       "type": "object",
       "properties": {
         "idempotency_key": {
@@ -1525,6 +1637,32 @@
         "updated_at_ms"
       ]
     },
+    "ImportSkillRequest": {
+      "type": "object",
+      "properties": {
+        "bundle": {
+          "$ref": "#/$defs/SkillBundle"
+        },
+        "conflict_policy": {
+          "$ref": "#/$defs/SkillImportConflictPolicy"
+        },
+        "idempotency_key": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "request_id": {
+          "type": "string",
+          "format": "uuid"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "request_id",
+        "idempotency_key",
+        "bundle",
+        "conflict_policy"
+      ]
+    },
     "MessageAuthor": {
       "type": "string",
       "enum": [
@@ -1649,6 +1787,13 @@
     "MessageSummary": {
       "type": "object",
       "properties": {
+        "applied_skills": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/AppliedSkillSummary"
+          }
+        },
         "author": {
           "$ref": "#/$defs/MessageAuthor"
         },
@@ -2039,6 +2184,14 @@
           "type": "integer",
           "format": "uint32",
           "minimum": 0
+        },
+        "skill_ids": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string",
+            "format": "uuid"
+          }
         }
       },
       "additionalProperties": false,
@@ -2901,6 +3054,14 @@
         "request_id": {
           "type": "string",
           "format": "uuid"
+        },
+        "skill_ids": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string",
+            "format": "uuid"
+          }
         }
       },
       "additionalProperties": false,
@@ -3289,6 +3450,39 @@
           "properties": {
             "kind": {
               "type": "string",
+              "const": "skill_changed"
+            },
+            "skill": {
+              "$ref": "#/$defs/SkillSummary"
+            }
+          },
+          "required": [
+            "kind",
+            "skill"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "skill_removed"
+            },
+            "skill_id": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          "required": [
+            "kind",
+            "skill_id"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
               "const": "routine_changed"
             },
             "routine": {
@@ -3516,6 +3710,182 @@
         "event_id"
       ]
     },
+    "SkillAssignmentRequest": {
+      "type": "object",
+      "properties": {
+        "bot_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "idempotency_key": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "request_id": {
+          "type": "string",
+          "format": "uuid"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "request_id",
+        "idempotency_key",
+        "bot_id",
+        "enabled"
+      ]
+    },
+    "SkillBundle": {
+      "type": "object",
+      "properties": {
+        "definition": {
+          "$ref": "#/$defs/SkillDefinition"
+        },
+        "description": {
+          "type": "string"
+        },
+        "format_version": {
+          "type": "integer",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "format_version",
+        "name",
+        "description",
+        "definition"
+      ]
+    },
+    "SkillContext": {
+      "type": "object",
+      "properties": {
+        "content": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "label",
+        "content"
+      ]
+    },
+    "SkillDefinition": {
+      "type": "object",
+      "properties": {
+        "context": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/SkillContext"
+          }
+        },
+        "instructions": {
+          "type": "string"
+        },
+        "tools": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/SkillToolReference"
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "instructions"
+      ]
+    },
+    "SkillImportConflictPolicy": {
+      "type": "string",
+      "enum": [
+        "reject",
+        "rename",
+        "create_version"
+      ]
+    },
+    "SkillSummary": {
+      "type": "object",
+      "properties": {
+        "active_version_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "bot_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        "created_at_unix_ms": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "definition": {
+          "$ref": "#/$defs/SkillDefinition"
+        },
+        "description": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "name": {
+          "type": "string"
+        },
+        "updated_at_unix_ms": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "version": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "name",
+        "description",
+        "active_version_id",
+        "version",
+        "definition",
+        "bot_ids",
+        "created_at_unix_ms",
+        "updated_at_unix_ms"
+      ]
+    },
+    "SkillToolReference": {
+      "type": "object",
+      "properties": {
+        "plugin_name": {
+          "type": "string"
+        },
+        "tool_name": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "plugin_name",
+        "tool_name"
+      ]
+    },
     "Snapshot": {
       "type": "object",
       "properties": {
@@ -3536,6 +3906,13 @@
           "default": [],
           "items": {
             "$ref": "#/$defs/GroupChatSummary"
+          }
+        },
+        "skills": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/SkillSummary"
           }
         }
       },
@@ -3683,6 +4060,36 @@
       "additionalProperties": false,
       "required": [
         "request_id"
+      ]
+    },
+    "UpdateSkillRequest": {
+      "type": "object",
+      "properties": {
+        "definition": {
+          "$ref": "#/$defs/SkillDefinition"
+        },
+        "description": {
+          "type": "string",
+          "default": ""
+        },
+        "idempotency_key": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "name": {
+          "type": "string"
+        },
+        "request_id": {
+          "type": "string",
+          "format": "uuid"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "request_id",
+        "idempotency_key",
+        "name",
+        "definition"
       ]
     }
   }

@@ -12,15 +12,18 @@ use homebot_protocol::{
     BotProviderStatus, BotResponse, BotShape, ChatTimelineResponse, CreateAttachmentRequest,
     CreateAttachmentResponse, CreateBotRequest, CreateDirectChatRequest, CreateDirectChatResponse,
     CreateGroupChatRequest, CreateGroupChatResponse, CreateLocalMcpPluginRequest,
-    CreateRoutineRequest, CreateRoutineTriggerRequest, DeliverRoutineTriggerRequest,
-    DuplicateRoutineRequest, FinalizeAttachmentRequest, GroupBotStatus, GroupTimelineResponse,
-    HandoffGroupRequest, MissedRunPolicy, OverlapPolicy, PluginConnectionState,
+    CreateRoutineRequest, CreateRoutineTriggerRequest, CreateSkillRequest,
+    DeliverRoutineTriggerRequest, DuplicateRoutineRequest, DuplicateSkillRequest,
+    FinalizeAttachmentRequest, GroupBotStatus, GroupTimelineResponse, HandoffGroupRequest,
+    ImportSkillRequest, MissedRunPolicy, OverlapPolicy, PluginConnectionState,
     PluginMutationRequest, PluginSummary, RecordedAction, RecordedActor, RetryPolicy,
     RoutineDefinition, RoutineInput, RoutineInputKind, RoutineJobSummary, RoutineRecordingSummary,
     RoutineRunSummary, RoutineSchedule, RoutineStep, RoutineStepStatus, RoutineSummary,
     RoutineTriggerDefinition, RoutineTriggerSource, RunRoutineRequest, SecretSummary,
-    SendGroupMessageRequest, SendMessageRequest, SendMessageResponse, StartRoutineRecordingRequest,
-    UpdateBotRequest, UpdateGroupParticipantRequest, UpdateRoutineRequest,
+    SendGroupMessageRequest, SendMessageRequest, SendMessageResponse, SkillAssignmentRequest,
+    SkillBundle, SkillContext, SkillDefinition, SkillImportConflictPolicy, SkillSummary,
+    SkillToolReference, StartRoutineRecordingRequest, UpdateBotRequest,
+    UpdateGroupParticipantRequest, UpdateRoutineRequest, UpdateSkillRequest,
 };
 use homebot_providers::{
     ActivityKind, ActivityStatus as ProviderActivityStatus, ApprovalDecision, CompactRequest,
@@ -42,6 +45,7 @@ struct ChatFakeAdapter {
     id: ProviderAdapterId,
     operations: Arc<Mutex<HashMap<Uuid, watch::Sender<bool>>>>,
     approvals: Arc<Mutex<HashMap<Uuid, watch::Sender<bool>>>>,
+    prompts: Arc<Mutex<Vec<String>>>,
 }
 
 impl ChatFakeAdapter {
@@ -50,6 +54,7 @@ impl ChatFakeAdapter {
             id: ProviderAdapterId::new("chat-fake")?,
             operations: Arc::new(Mutex::new(HashMap::new())),
             approvals: Arc::new(Mutex::new(HashMap::new())),
+            prompts: Arc::new(Mutex::new(Vec::new())),
         })
     }
 
@@ -148,12 +153,14 @@ impl ProviderAdapter for ChatFakeAdapter {
     }
 
     async fn start(&self, request: StartRequest) -> Result<ProviderRun, ProviderError> {
+        self.prompts.lock().await.push(request.prompt.clone());
         Ok(self
             .run(request.operation_id, format!("chat-{}", request.chat_id))
             .await)
     }
 
     async fn resume(&self, request: ResumeRequest) -> Result<ProviderRun, ProviderError> {
+        self.prompts.lock().await.push(request.prompt.clone());
         Ok(self
             .run(request.operation_id, request.conversation_id)
             .await)
@@ -1194,6 +1201,7 @@ async fn direct_chat_send_queue_replay_and_timeline_are_server_authoritative()
         attachment_ids: Vec::new(),
         reply_to_message_id: None,
         mentioned_bot_ids: vec![bot_id],
+        skill_ids: Vec::new(),
     };
     let response = app
         .clone()
@@ -1230,6 +1238,7 @@ async fn direct_chat_send_queue_replay_and_timeline_are_server_authoritative()
         attachment_ids: Vec::new(),
         reply_to_message_id: Some(message_key),
         mentioned_bot_ids: Vec::new(),
+        skill_ids: Vec::new(),
     };
     let response = app
         .clone()
@@ -1251,6 +1260,7 @@ async fn direct_chat_send_queue_replay_and_timeline_are_server_authoritative()
         attachment_ids: Vec::new(),
         reply_to_message_id: None,
         mentioned_bot_ids: Vec::new(),
+        skill_ids: Vec::new(),
     };
     let response = app
         .clone()
@@ -1393,6 +1403,7 @@ async fn provider_turn_streams_persists_approves_resumes_and_cancels()
         attachment_ids: Vec::new(),
         reply_to_message_id: None,
         mentioned_bot_ids: Vec::new(),
+        skill_ids: Vec::new(),
     };
     let response = app
         .clone()
@@ -1479,6 +1490,7 @@ async fn provider_turn_streams_persists_approves_resumes_and_cancels()
                 attachment_ids: Vec::new(),
                 reply_to_message_id: None,
                 mentioned_bot_ids: Vec::new(),
+                skill_ids: Vec::new(),
             },
         ))
         .await?;
@@ -1543,6 +1555,7 @@ async fn failed_provider_message_can_be_retried_idempotently()
                 attachment_ids: Vec::new(),
                 reply_to_message_id: None,
                 mentioned_bot_ids: Vec::new(),
+                skill_ids: Vec::new(),
             },
         ))
         .await?;
@@ -2541,6 +2554,323 @@ async fn invalid_attachment_bytes_are_deleted_and_cannot_be_finalized()
         )
         .await?;
     assert_eq!(finalize_response.status(), StatusCode::CONFLICT);
+    Ok(())
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn skill_library_versions_assigns_exports_and_resolves_import_conflicts()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let storage = Storage::open(&directory.path().join("homebot.db")).await?;
+    let bot = storage
+        .create_bot(
+            Uuid::nil(),
+            homebot_domain::Bot::create("Nova", "Research")?,
+            1,
+        )
+        .await?;
+    let app = router(AppState::new(storage.clone(), "correct-token"));
+    let skill_id = Uuid::now_v7();
+    let definition = SkillDefinition {
+        instructions: "Write concise release notes.".to_owned(),
+        context: vec![SkillContext {
+            label: "Voice".to_owned(),
+            content: "Use plain language.".to_owned(),
+        }],
+        tools: vec![SkillToolReference {
+            plugin_name: "repository".to_owned(),
+            tool_name: "status".to_owned(),
+        }],
+    };
+    let create = CreateSkillRequest {
+        request_id: Uuid::now_v7(),
+        idempotency_key: skill_id,
+        name: "Release writer".to_owned(),
+        description: "Project release voice".to_owned(),
+        definition: definition.clone(),
+    };
+    let response = app
+        .clone()
+        .oneshot(json_request("POST", "/api/v1/skills", &create))
+        .await?;
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let created: SkillSummary = response_json(response).await?;
+    assert_eq!(created.version, 1);
+    assert!(created.bot_ids.is_empty());
+    let replay = app
+        .clone()
+        .oneshot(json_request("POST", "/api/v1/skills", &create))
+        .await?;
+    assert_eq!(replay.status(), StatusCode::OK);
+
+    let assignment = SkillAssignmentRequest {
+        request_id: Uuid::now_v7(),
+        idempotency_key: Uuid::now_v7(),
+        bot_id: bot.id.0,
+        enabled: true,
+    };
+    let response = app
+        .clone()
+        .oneshot(json_request(
+            "PUT",
+            &format!("/api/v1/skills/{skill_id}/assignment"),
+            &assignment,
+        ))
+        .await?;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response_json::<SkillSummary>(response).await?.bot_ids,
+        vec![bot.id.0]
+    );
+
+    let edit_key = Uuid::now_v7();
+    let mut updated_definition = definition.clone();
+    updated_definition.instructions = "Write concise, verifiable release notes.".to_owned();
+    let update = UpdateSkillRequest {
+        request_id: Uuid::now_v7(),
+        idempotency_key: edit_key,
+        name: "Release writer".to_owned(),
+        description: "Updated voice".to_owned(),
+        definition: updated_definition.clone(),
+    };
+    let response = app
+        .clone()
+        .oneshot(json_request(
+            "PUT",
+            &format!("/api/v1/skills/{skill_id}"),
+            &update,
+        ))
+        .await?;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response_json::<SkillSummary>(response).await?.version, 2);
+    let replay = app
+        .clone()
+        .oneshot(json_request(
+            "PUT",
+            &format!("/api/v1/skills/{skill_id}"),
+            &update,
+        ))
+        .await?;
+    assert_eq!(replay.status(), StatusCode::OK);
+    let replayed: SkillSummary = response_json(replay).await?;
+    assert_eq!(replayed.version, 2);
+    assert_eq!(storage.skill(Uuid::nil(), skill_id).await?.version, 2);
+
+    let exported = app
+        .clone()
+        .oneshot(
+            Request::get(format!("/api/v1/skills/{skill_id}/export"))
+                .header("authorization", "Bearer correct-token")
+                .body(Body::empty())?,
+        )
+        .await?;
+    let bundle: SkillBundle = response_json(exported).await?;
+    assert_eq!(bundle.definition, updated_definition);
+
+    let rejected = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/skills/import",
+            &ImportSkillRequest {
+                request_id: Uuid::now_v7(),
+                idempotency_key: Uuid::now_v7(),
+                bundle: bundle.clone(),
+                conflict_policy: SkillImportConflictPolicy::Reject,
+            },
+        ))
+        .await?;
+    assert_eq!(rejected.status(), StatusCode::CONFLICT);
+    let imported_id = Uuid::now_v7();
+    let renamed = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/skills/import",
+            &ImportSkillRequest {
+                request_id: Uuid::now_v7(),
+                idempotency_key: imported_id,
+                bundle: bundle.clone(),
+                conflict_policy: SkillImportConflictPolicy::Rename,
+            },
+        ))
+        .await?;
+    assert_eq!(renamed.status(), StatusCode::CREATED);
+    let renamed: SkillSummary = response_json(renamed).await?;
+    assert_eq!(renamed.id, imported_id);
+    assert_eq!(renamed.name, "Release writer (imported)");
+
+    let version_key = Uuid::now_v7();
+    let versioned = ImportSkillRequest {
+        request_id: Uuid::now_v7(),
+        idempotency_key: version_key,
+        bundle,
+        conflict_policy: SkillImportConflictPolicy::CreateVersion,
+    };
+    let response = app
+        .clone()
+        .oneshot(json_request("POST", "/api/v1/skills/import", &versioned))
+        .await?;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response_json::<SkillSummary>(response).await?.version, 3);
+    assert_eq!(
+        storage
+            .skill_version(Uuid::nil(), version_key)
+            .await?
+            .version,
+        3
+    );
+    let replay = app
+        .clone()
+        .oneshot(json_request("POST", "/api/v1/skills/import", &versioned))
+        .await?;
+    assert_eq!(replay.status(), StatusCode::OK);
+    assert_eq!(response_json::<SkillSummary>(replay).await?.version, 3);
+    assert_eq!(storage.skill(Uuid::nil(), skill_id).await?.version, 3);
+
+    let duplicate_id = Uuid::now_v7();
+    let duplicated = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            &format!("/api/v1/skills/{skill_id}/duplicate"),
+            &DuplicateSkillRequest {
+                request_id: Uuid::now_v7(),
+                idempotency_key: duplicate_id,
+                name: "Release writer copy".to_owned(),
+            },
+        ))
+        .await?;
+    assert_eq!(duplicated.status(), StatusCode::CREATED);
+    assert_eq!(response_json::<SkillSummary>(duplicated).await?.version, 1);
+
+    let deleted = app
+        .clone()
+        .oneshot(
+            Request::delete(format!("/api/v1/skills/{duplicate_id}"))
+                .header("authorization", "Bearer correct-token")
+                .body(Body::empty())?,
+        )
+        .await?;
+    assert_eq!(deleted.status(), StatusCode::NO_CONTENT);
+    assert!(matches!(
+        storage.skill(Uuid::nil(), duplicate_id).await,
+        Err(homebot_storage::StorageError::SkillNotFound)
+    ));
+    Ok(())
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn skill_versions_are_assembled_for_providers_and_pinned_to_message_history()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let storage = Storage::open(&directory.path().join("homebot.db")).await?;
+    let profile_id = Uuid::now_v7();
+    sqlx::query("INSERT INTO provider_profiles (id, adapter_kind, display_name, configuration_json, created_at_ms, updated_at_ms) VALUES (?, 'chat-fake', 'Fixture', '{}', 1, 1)")
+        .bind(profile_id.to_string()).execute(storage.pool()).await?;
+    let mut domain_bot = homebot_domain::Bot::create("Nova", "Research")?;
+    domain_bot.provider_profile_id = Some(profile_id);
+    let bot = storage.create_bot(Uuid::nil(), domain_bot, 1).await?;
+    let chat = storage
+        .create_direct_chat(Uuid::nil(), bot.id.0, Uuid::now_v7(), 2)
+        .await?;
+    let skill_id = Uuid::now_v7();
+    let first_version = Uuid::now_v7();
+    storage
+        .create_skill(&homebot_storage::SkillRecord {
+            id: skill_id,
+            owner_id: Uuid::nil(),
+            name: "Source reviewer".to_owned(),
+            description: String::new(),
+            active_version_id: first_version,
+            version: 1,
+            definition: SkillDefinition {
+                instructions: "Use exact evidence.".to_owned(),
+                context: Vec::new(),
+                tools: vec![SkillToolReference {
+                    plugin_name: "repository".to_owned(),
+                    tool_name: "status".to_owned(),
+                }],
+            },
+            bot_ids: Vec::new(),
+            created_at_ms: 3,
+            updated_at_ms: 3,
+        })
+        .await?;
+    storage
+        .set_skill_assignment(Uuid::nil(), skill_id, bot.id.0, true, 4)
+        .await?;
+    let adapter = Arc::new(ChatFakeAdapter::new()?);
+    let prompts = Arc::clone(&adapter.prompts);
+    let runtime = Arc::new(ProviderRuntime::new());
+    runtime.register(adapter).await?;
+    let app =
+        router(AppState::new(storage.clone(), "correct-token").with_provider_runtime(runtime));
+    let message_id = Uuid::now_v7();
+    let response = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            &format!("/api/v1/chats/{}/messages", chat.id),
+            &SendMessageRequest {
+                request_id: Uuid::now_v7(),
+                idempotency_key: message_id,
+                content: "Review the change".to_owned(),
+                attachment_ids: Vec::new(),
+                reply_to_message_id: None,
+                mentioned_bot_ids: Vec::new(),
+                skill_ids: Vec::new(),
+            },
+        ))
+        .await?;
+    assert_eq!(response.status(), StatusCode::OK);
+    let prompt = prompts.lock().await[0].clone();
+    assert!(prompt.contains("## Skill: Source reviewer (version 1)"));
+    assert!(prompt.contains("Use exact evidence."));
+    assert!(prompt.contains("capability policy still applies"));
+    assert!(prompt.ends_with("<user_message>\nReview the change\n</user_message>"));
+
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if !storage
+                .chat_approvals(Uuid::nil(), chat.id)
+                .await
+                .unwrap_or_default()
+                .is_empty()
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await?;
+
+    storage
+        .update_skill(
+            Uuid::nil(),
+            skill_id,
+            "Source reviewer",
+            "",
+            &SkillDefinition {
+                instructions: "Use the new behavior.".to_owned(),
+                context: Vec::new(),
+                tools: Vec::new(),
+            },
+            Uuid::now_v7(),
+            5,
+        )
+        .await?;
+    let timeline = fetch_timeline(&app, chat.id).await?;
+    let persisted = timeline
+        .messages
+        .iter()
+        .find(|message| message.id == message_id)
+        .ok_or("message missing")?;
+    assert_eq!(persisted.applied_skills.len(), 1);
+    assert_eq!(persisted.applied_skills[0].skill_version_id, first_version);
+    assert_eq!(persisted.applied_skills[0].version, 1);
     Ok(())
 }
 

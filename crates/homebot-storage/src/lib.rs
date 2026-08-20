@@ -12,6 +12,7 @@ use homebot_routines::{
     OverlapPolicy, RecordedAction, RoutineDefinition, RoutineExecutionResult,
     RoutineTriggerDefinition,
 };
+use homebot_skills::{AppliedSkill, SkillDefinition};
 use serde_json::Value;
 use sqlx::{
     Row, SqlitePool,
@@ -21,7 +22,7 @@ use sqlx::{
 use std::{collections::HashSet, path::Path, str::FromStr, time::Duration};
 use uuid::Uuid;
 
-pub const SCHEMA_VERSION: u32 = 11;
+pub const SCHEMA_VERSION: u32 = 12;
 static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
 
 #[derive(Debug, thiserror::Error)]
@@ -76,6 +77,10 @@ pub enum StorageError {
     RoutineTriggerNotFound,
     #[error("Routine job was not found")]
     RoutineJobNotFound,
+    #[error("Skill was not found")]
+    SkillNotFound,
+    #[error("A Skill with that name already exists")]
+    DuplicateSkillName,
     #[error("database JSON is invalid: {0}")]
     Serialization(String),
 }
@@ -273,6 +278,26 @@ pub struct RoutineJobRecord {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SkillRecord {
+    pub id: Uuid,
+    pub owner_id: Uuid,
+    pub name: String,
+    pub description: String,
+    pub active_version_id: Uuid,
+    pub version: u32,
+    pub definition: SkillDefinition,
+    pub bot_ids: Vec<Uuid>,
+    pub created_at_ms: i64,
+    pub updated_at_ms: i64,
+}
+
+pub struct QueuedPromptInput<'a> {
+    pub content: &'a str,
+    pub attachment_ids: &'a [Uuid],
+    pub applied_skills: &'a [AppliedSkill],
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum RoutineJobClaim {
     Claimed,
     Replayed,
@@ -349,6 +374,240 @@ impl Storage {
         let mut routine = routine_from_row_selected(&row, "selected_version_id")?;
         routine.active_version_id = version_id;
         Ok(routine)
+    }
+
+    /// Creates a Skill and immutable version 1 atomically.
+    ///
+    /// # Errors
+    /// Returns duplicate-name, serialization, or database errors.
+    pub async fn create_skill(&self, record: &SkillRecord) -> Result<(), StorageError> {
+        let definition = serde_json::to_string(&record.definition)
+            .map_err(|error| StorageError::Serialization(error.to_string()))?;
+        let mut transaction = self.pool.begin().await?;
+        let duplicate: i64 = sqlx::query_scalar("SELECT count(*) FROM skills WHERE owner_id = ? AND name_normalized = ? AND deleted_at_ms IS NULL")
+            .bind(record.owner_id.to_string()).bind(normalize_skill_name(&record.name)).fetch_one(&mut *transaction).await?;
+        if duplicate > 0 {
+            return Err(StorageError::DuplicateSkillName);
+        }
+        sqlx::query("INSERT INTO skills (id, owner_id, name, name_normalized, description, active_version_id, version, created_at_ms, updated_at_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
+            .bind(record.id.to_string()).bind(record.owner_id.to_string()).bind(&record.name)
+            .bind(normalize_skill_name(&record.name)).bind(&record.description).bind(record.active_version_id.to_string())
+            .bind(i64::from(record.version)).bind(record.created_at_ms).bind(record.updated_at_ms)
+            .execute(&mut *transaction).await?;
+        sqlx::query("INSERT INTO skill_versions (id, skill_id, version, definition_json, name, description, created_at_ms) VALUES (?, ?, ?, ?, ?, ?, ?)")
+            .bind(record.active_version_id.to_string()).bind(record.id.to_string()).bind(i64::from(record.version))
+            .bind(definition).bind(&record.name).bind(&record.description).bind(record.created_at_ms).execute(&mut *transaction).await?;
+        transaction.commit().await?;
+        Ok(())
+    }
+
+    /// Lists active owner-scoped Skills with current versions and Bot assignments.
+    ///
+    /// # Errors
+    /// Returns database, serialization, or integrity errors.
+    pub async fn list_skills(&self, owner_id: Uuid) -> Result<Vec<SkillRecord>, StorageError> {
+        let rows = sqlx::query("SELECT s.id, s.owner_id, s.name, s.description, s.active_version_id, s.version, v.definition_json, s.created_at_ms, s.updated_at_ms FROM skills s JOIN skill_versions v ON v.id = s.active_version_id WHERE s.owner_id = ? AND s.deleted_at_ms IS NULL ORDER BY s.name_normalized, s.id")
+            .bind(owner_id.to_string()).fetch_all(&self.pool).await?;
+        let mut records = Vec::with_capacity(rows.len());
+        for row in &rows {
+            let mut record = skill_from_row(row)?;
+            record.bot_ids = self.skill_bot_ids(owner_id, record.id).await?;
+            records.push(record);
+        }
+        Ok(records)
+    }
+
+    /// Loads one active owner-scoped Skill.
+    ///
+    /// # Errors
+    /// Returns not-found, database, serialization, or integrity errors.
+    pub async fn skill(&self, owner_id: Uuid, skill_id: Uuid) -> Result<SkillRecord, StorageError> {
+        let row = sqlx::query("SELECT s.id, s.owner_id, s.name, s.description, s.active_version_id, s.version, v.definition_json, s.created_at_ms, s.updated_at_ms FROM skills s JOIN skill_versions v ON v.id = s.active_version_id WHERE s.owner_id = ? AND s.id = ? AND s.deleted_at_ms IS NULL")
+            .bind(owner_id.to_string()).bind(skill_id.to_string()).fetch_optional(&self.pool).await?
+            .ok_or(StorageError::SkillNotFound)?;
+        let mut record = skill_from_row(&row)?;
+        record.bot_ids = self.skill_bot_ids(owner_id, skill_id).await?;
+        Ok(record)
+    }
+
+    /// Loads an immutable Skill version for idempotent mutation replay.
+    ///
+    /// # Errors
+    /// Returns not-found, database, serialization, or integrity errors.
+    pub async fn skill_version(
+        &self,
+        owner_id: Uuid,
+        version_id: Uuid,
+    ) -> Result<SkillRecord, StorageError> {
+        let row = sqlx::query("SELECT s.id, s.owner_id, v.name, v.description, v.id AS active_version_id, v.version, v.definition_json, s.created_at_ms, v.created_at_ms AS updated_at_ms FROM skills s JOIN skill_versions v ON v.skill_id = s.id WHERE s.owner_id = ? AND v.id = ?")
+            .bind(owner_id.to_string()).bind(version_id.to_string()).fetch_optional(&self.pool).await?
+            .ok_or(StorageError::SkillNotFound)?;
+        let mut record = skill_from_row(&row)?;
+        record.bot_ids = self.skill_bot_ids(owner_id, record.id).await?;
+        Ok(record)
+    }
+
+    /// Creates an immutable Skill version and advances its active pointer atomically.
+    ///
+    /// # Errors
+    /// Returns not-found, duplicate-name, serialization, or database errors.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn update_skill(
+        &self,
+        owner_id: Uuid,
+        skill_id: Uuid,
+        name: &str,
+        description: &str,
+        definition: &SkillDefinition,
+        version_id: Uuid,
+        updated_at_ms: i64,
+    ) -> Result<SkillRecord, StorageError> {
+        let definition_json = serde_json::to_string(definition)
+            .map_err(|error| StorageError::Serialization(error.to_string()))?;
+        let mut transaction = self.pool.begin().await?;
+        // Make the first statement a write so SQLite acquires the write lock before this
+        // transaction observes a snapshot. This avoids SQLITE_BUSY_SNAPSHOT when the scheduler
+        // persists an unrelated event between a read and the version update.
+        let normalized = normalize_skill_name(name);
+        let version: Option<i64> = sqlx::query_scalar("UPDATE skills SET name = ?, name_normalized = ?, description = ?, active_version_id = ?, version = version + 1, updated_at_ms = ? WHERE owner_id = ? AND id = ? AND deleted_at_ms IS NULL AND version < 4294967295 AND NOT EXISTS (SELECT 1 FROM skills AS other WHERE other.owner_id = ? AND other.id != ? AND other.name_normalized = ? AND other.deleted_at_ms IS NULL) RETURNING version")
+            .bind(name).bind(&normalized).bind(description).bind(version_id.to_string()).bind(updated_at_ms)
+            .bind(owner_id.to_string()).bind(skill_id.to_string()).bind(owner_id.to_string()).bind(skill_id.to_string()).bind(&normalized)
+            .fetch_optional(&mut *transaction).await?;
+        let Some(version) = version else {
+            transaction.rollback().await?;
+            let current: Option<i64> = sqlx::query_scalar("SELECT version FROM skills WHERE owner_id = ? AND id = ? AND deleted_at_ms IS NULL")
+                .bind(owner_id.to_string()).bind(skill_id.to_string()).fetch_optional(&self.pool).await?;
+            let Some(current) = current else {
+                return Err(StorageError::SkillNotFound);
+            };
+            let duplicate: i64 = sqlx::query_scalar("SELECT count(*) FROM skills WHERE owner_id = ? AND id != ? AND name_normalized = ? AND deleted_at_ms IS NULL")
+                .bind(owner_id.to_string()).bind(skill_id.to_string()).bind(&normalized).fetch_one(&self.pool).await?;
+            return if duplicate > 0 {
+                Err(StorageError::DuplicateSkillName)
+            } else {
+                Err(StorageError::Integrity(format!(
+                    "Skill version {current} cannot be incremented"
+                )))
+            };
+        };
+        sqlx::query("INSERT INTO skill_versions (id, skill_id, version, definition_json, name, description, created_at_ms) VALUES (?, ?, ?, ?, ?, ?, ?)")
+            .bind(version_id.to_string()).bind(skill_id.to_string()).bind(version).bind(definition_json).bind(name).bind(description).bind(updated_at_ms)
+            .execute(&mut *transaction).await?;
+        transaction.commit().await?;
+        self.skill(owner_id, skill_id).await
+    }
+
+    /// Soft-deletes a Skill while preserving versions referenced by historical messages.
+    ///
+    /// # Errors
+    /// Returns not-found or database errors.
+    pub async fn delete_skill(
+        &self,
+        owner_id: Uuid,
+        skill_id: Uuid,
+        deleted_at_ms: i64,
+    ) -> Result<(), StorageError> {
+        let mut transaction = self.pool.begin().await?;
+        let result = sqlx::query("UPDATE skills SET deleted_at_ms = ?, name_normalized = name_normalized || '#' || id, updated_at_ms = ? WHERE owner_id = ? AND id = ? AND deleted_at_ms IS NULL")
+            .bind(deleted_at_ms).bind(deleted_at_ms).bind(owner_id.to_string()).bind(skill_id.to_string()).execute(&mut *transaction).await?;
+        if result.rows_affected() == 0 {
+            return Err(StorageError::SkillNotFound);
+        }
+        sqlx::query("DELETE FROM skill_bot_assignments WHERE owner_id = ? AND skill_id = ?")
+            .bind(owner_id.to_string())
+            .bind(skill_id.to_string())
+            .execute(&mut *transaction)
+            .await?;
+        transaction.commit().await?;
+        Ok(())
+    }
+
+    /// Assigns or unassigns a Skill without granting any referenced tool capability.
+    ///
+    /// # Errors
+    /// Returns missing Skill/Bot or database errors.
+    pub async fn set_skill_assignment(
+        &self,
+        owner_id: Uuid,
+        skill_id: Uuid,
+        bot_id: Uuid,
+        enabled: bool,
+        assigned_at_ms: i64,
+    ) -> Result<(), StorageError> {
+        let _ = self.skill(owner_id, skill_id).await?;
+        let _ = self.get_bot(owner_id, bot_id).await?;
+        if enabled {
+            sqlx::query("INSERT INTO skill_bot_assignments (owner_id, skill_id, bot_id, assigned_at_ms) VALUES (?, ?, ?, ?) ON CONFLICT(skill_id, bot_id) DO UPDATE SET assigned_at_ms = excluded.assigned_at_ms")
+                .bind(owner_id.to_string()).bind(skill_id.to_string()).bind(bot_id.to_string()).bind(assigned_at_ms).execute(&self.pool).await?;
+        } else {
+            sqlx::query("DELETE FROM skill_bot_assignments WHERE owner_id = ? AND skill_id = ? AND bot_id = ?")
+                .bind(owner_id.to_string()).bind(skill_id.to_string()).bind(bot_id.to_string()).execute(&self.pool).await?;
+        }
+        Ok(())
+    }
+
+    /// Resolves exact active versions assigned to a Bot or explicitly selected for a turn.
+    ///
+    /// # Errors
+    /// Returns when an explicit Skill is missing, or on database/decoding errors.
+    pub async fn resolve_applied_skills(
+        &self,
+        owner_id: Uuid,
+        bot_id: Uuid,
+        explicit_skill_ids: &[Uuid],
+    ) -> Result<Vec<AppliedSkill>, StorageError> {
+        let assigned: HashSet<Uuid> = self
+            .skill_bot_ids_for_bot(owner_id, bot_id)
+            .await?
+            .into_iter()
+            .collect();
+        let explicit: HashSet<Uuid> = explicit_skill_ids.iter().copied().collect();
+        let mut resolved = self
+            .list_skills(owner_id)
+            .await?
+            .into_iter()
+            .filter(|skill| assigned.contains(&skill.id) || explicit.contains(&skill.id))
+            .map(|skill| AppliedSkill {
+                skill_id: skill.id,
+                version_id: skill.active_version_id,
+                name: skill.name,
+                version: skill.version,
+                definition: skill.definition,
+            })
+            .collect::<Vec<_>>();
+        if explicit
+            .iter()
+            .any(|id| !resolved.iter().any(|skill| skill.skill_id == *id))
+        {
+            return Err(StorageError::SkillNotFound);
+        }
+        resolved.sort_by(|left, right| {
+            left.name
+                .to_ascii_lowercase()
+                .cmp(&right.name.to_ascii_lowercase())
+                .then_with(|| left.skill_id.cmp(&right.skill_id))
+        });
+        Ok(resolved)
+    }
+
+    async fn skill_bot_ids(
+        &self,
+        owner_id: Uuid,
+        skill_id: Uuid,
+    ) -> Result<Vec<Uuid>, StorageError> {
+        let rows: Vec<String> = sqlx::query_scalar("SELECT bot_id FROM skill_bot_assignments WHERE owner_id = ? AND skill_id = ? ORDER BY bot_id")
+            .bind(owner_id.to_string()).bind(skill_id.to_string()).fetch_all(&self.pool).await?;
+        rows.iter().map(|value| parse_uuid(value)).collect()
+    }
+
+    async fn skill_bot_ids_for_bot(
+        &self,
+        owner_id: Uuid,
+        bot_id: Uuid,
+    ) -> Result<Vec<Uuid>, StorageError> {
+        let rows: Vec<String> = sqlx::query_scalar("SELECT skill_id FROM skill_bot_assignments WHERE owner_id = ? AND bot_id = ? ORDER BY skill_id")
+            .bind(owner_id.to_string()).bind(bot_id.to_string()).fetch_all(&self.pool).await?;
+        rows.iter().map(|value| parse_uuid(value)).collect()
     }
 
     /// Creates a routine and immutable version 1 atomically.
@@ -2173,6 +2432,7 @@ impl Storage {
         attachment_ids: &[Uuid],
         reply_to_message_id: Option<Uuid>,
         mentioned_bot_ids: Vec<Uuid>,
+        applied_skills: &[AppliedSkill],
         now_ms: i64,
     ) -> Result<ChatMessage, StorageError> {
         let _ = self.get_direct_chat(owner_id, chat_id).await?;
@@ -2217,6 +2477,15 @@ impl Storage {
             .execute(&mut *transaction)
             .await?;
         }
+        for (ordinal, skill) in applied_skills.iter().enumerate() {
+            let result = sqlx::query("INSERT INTO message_skill_versions (message_id, skill_id, skill_version_id, ordinal) SELECT ?, s.id, v.id, ? FROM skills s JOIN skill_versions v ON v.skill_id = s.id WHERE s.owner_id = ? AND s.id = ? AND v.id = ?")
+                .bind(message.id.to_string()).bind(i64::try_from(ordinal).unwrap_or(i64::MAX))
+                .bind(owner_id.to_string()).bind(skill.skill_id.to_string()).bind(skill.version_id.to_string())
+                .execute(&mut *transaction).await?;
+            if result.rows_affected() != 1 {
+                return Err(StorageError::SkillNotFound);
+            }
+        }
         sqlx::query("UPDATE chats SET updated_at_ms = ? WHERE id = ? AND owner_id = ?")
             .bind(now_ms)
             .bind(chat_id.to_string())
@@ -2225,6 +2494,33 @@ impl Storage {
             .await?;
         transaction.commit().await?;
         Ok(message)
+    }
+
+    /// Loads immutable Skill versions applied to a historical message in original order.
+    ///
+    /// # Errors
+    /// Returns database, serialization, or integrity errors.
+    pub async fn message_applied_skills(
+        &self,
+        owner_id: Uuid,
+        message_id: Uuid,
+    ) -> Result<Vec<AppliedSkill>, StorageError> {
+        let rows = sqlx::query("SELECT s.id AS skill_id, v.id AS version_id, v.name, v.version, v.definition_json FROM message_skill_versions msv JOIN messages m ON m.id = msv.message_id JOIN chats c ON c.id = m.chat_id JOIN skills s ON s.id = msv.skill_id JOIN skill_versions v ON v.id = msv.skill_version_id WHERE c.owner_id = ? AND m.id = ? ORDER BY msv.ordinal")
+            .bind(owner_id.to_string()).bind(message_id.to_string()).fetch_all(&self.pool).await?;
+        rows.iter()
+            .map(|row| {
+                let definition: String = row.try_get("definition_json")?;
+                Ok(AppliedSkill {
+                    skill_id: parse_uuid(row.try_get("skill_id")?)?,
+                    version_id: parse_uuid(row.try_get("version_id")?)?,
+                    name: row.try_get("name")?,
+                    version: u32::try_from(row.try_get::<i64, _>("version")?)
+                        .map_err(|_| StorageError::Integrity("invalid Skill version".to_owned()))?,
+                    definition: serde_json::from_str(&definition)
+                        .map_err(|error| StorageError::Serialization(error.to_string()))?,
+                })
+            })
+            .collect()
     }
 
     /// Creates the stable assistant message that receives provider deltas.
@@ -2548,8 +2844,7 @@ impl Storage {
         owner_id: Uuid,
         chat_id: Uuid,
         prompt_id: Uuid,
-        content: &str,
-        attachment_ids: &[Uuid],
+        input: QueuedPromptInput<'_>,
         now_ms: i64,
     ) -> Result<QueuedPrompt, StorageError> {
         let chat = self.get_direct_chat(owner_id, chat_id).await?;
@@ -2558,8 +2853,14 @@ impl Storage {
                 "cannot queue a prompt while the chat is idle".to_owned(),
             ));
         }
-        let validation =
-            ChatMessage::user(chat_id, content, attachment_ids, None, Vec::new(), now_ms)?;
+        let validation = ChatMessage::user(
+            chat_id,
+            input.content,
+            input.attachment_ids,
+            None,
+            Vec::new(),
+            now_ms,
+        )?;
         let mut transaction = self.pool.begin().await?;
         validate_message_references(&mut transaction, owner_id, &validation).await?;
         let next_position: i64 = sqlx::query_scalar(
@@ -2570,14 +2871,16 @@ impl Storage {
         .await?;
         sqlx::query(
             "INSERT INTO queued_prompts (
-                id, owner_id, chat_id, content, attachment_ids_json, position, created_at_ms
-             ) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                id, owner_id, chat_id, content, attachment_ids_json, skill_ids_json, skill_version_ids_json, position, created_at_ms
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(prompt_id.to_string())
         .bind(owner_id.to_string())
         .bind(chat_id.to_string())
-        .bind(content.trim())
-        .bind(serde_json::to_value(attachment_ids).map_err(|error| json_error(&error))?)
+        .bind(input.content.trim())
+        .bind(serde_json::to_value(input.attachment_ids).map_err(|error| json_error(&error))?)
+        .bind(serde_json::to_value(input.applied_skills.iter().map(|skill| skill.skill_id).collect::<Vec<_>>()).map_err(|error| json_error(&error))?)
+        .bind(serde_json::to_value(input.applied_skills.iter().map(|skill| skill.version_id).collect::<Vec<_>>()).map_err(|error| json_error(&error))?)
         .bind(next_position)
         .bind(now_ms)
         .execute(&mut *transaction)
@@ -2596,8 +2899,18 @@ impl Storage {
             id: prompt_id,
             owner_id,
             chat_id,
-            content: content.trim().to_owned(),
-            attachment_ids: attachment_ids.to_vec(),
+            content: input.content.trim().to_owned(),
+            attachment_ids: input.attachment_ids.to_vec(),
+            skill_ids: input
+                .applied_skills
+                .iter()
+                .map(|skill| skill.skill_id)
+                .collect(),
+            skill_version_ids: input
+                .applied_skills
+                .iter()
+                .map(|skill| skill.version_id)
+                .collect(),
             position: u32::try_from(next_position)
                 .map_err(|_| StorageError::Integrity("invalid queue position".to_owned()))?,
             created_at_ms: now_ms,
@@ -3455,6 +3768,8 @@ fn queued_prompt_from_row(row: &sqlx::sqlite::SqliteRow) -> Result<QueuedPrompt,
     let owner_id: String = row.try_get("owner_id")?;
     let chat_id: String = row.try_get("chat_id")?;
     let attachment_ids: Value = row.try_get("attachment_ids_json")?;
+    let skill_ids: Value = row.try_get("skill_ids_json")?;
+    let skill_version_ids: Value = row.try_get("skill_version_ids_json")?;
     let position: i64 = row.try_get("position")?;
     Ok(QueuedPrompt {
         id: parse_uuid(&id)?,
@@ -3462,6 +3777,9 @@ fn queued_prompt_from_row(row: &sqlx::sqlite::SqliteRow) -> Result<QueuedPrompt,
         chat_id: parse_uuid(&chat_id)?,
         content: row.try_get("content")?,
         attachment_ids: serde_json::from_value(attachment_ids)
+            .map_err(|error| json_error(&error))?,
+        skill_ids: serde_json::from_value(skill_ids).map_err(|error| json_error(&error))?,
+        skill_version_ids: serde_json::from_value(skill_version_ids)
             .map_err(|error| json_error(&error))?,
         position: u32::try_from(position)
             .map_err(|_| StorageError::Integrity("invalid queue position".to_owned()))?,
@@ -3680,6 +3998,28 @@ fn plugin_tool_from_row(row: &sqlx::sqlite::SqliteRow) -> Result<PluginToolRecor
     })
 }
 
+fn normalize_skill_name(name: &str) -> String {
+    name.trim().to_ascii_lowercase()
+}
+
+fn skill_from_row(row: &sqlx::sqlite::SqliteRow) -> Result<SkillRecord, StorageError> {
+    let definition: String = row.try_get("definition_json")?;
+    Ok(SkillRecord {
+        id: parse_uuid(row.try_get("id")?)?,
+        owner_id: parse_uuid(row.try_get("owner_id")?)?,
+        name: row.try_get("name")?,
+        description: row.try_get("description")?,
+        active_version_id: parse_uuid(row.try_get("active_version_id")?)?,
+        version: u32::try_from(row.try_get::<i64, _>("version")?)
+            .map_err(|_| StorageError::Integrity("invalid Skill version".to_owned()))?,
+        definition: serde_json::from_str(&definition)
+            .map_err(|error| StorageError::Serialization(error.to_string()))?,
+        bot_ids: Vec::new(),
+        created_at_ms: row.try_get("created_at_ms")?,
+        updated_at_ms: row.try_get("updated_at_ms")?,
+    })
+}
+
 fn routine_from_row(row: &sqlx::sqlite::SqliteRow) -> Result<RoutineRecord, StorageError> {
     routine_from_row_selected(row, "active_version_id")
 }
@@ -3821,6 +4161,106 @@ mod tests {
     use super::*;
     use homebot_domain::chat::{ActivityStatus, ApprovalStatus};
     use serde_json::json;
+
+    fn skill_definition(instructions: &str) -> SkillDefinition {
+        SkillDefinition {
+            instructions: instructions.to_owned(),
+            context: vec![homebot_skills::SkillContext {
+                label: "Guide".to_owned(),
+                content: "Follow repository conventions.".to_owned(),
+            }],
+            tools: vec![homebot_skills::SkillToolReference {
+                plugin_name: "repository".to_owned(),
+                tool_name: "status".to_owned(),
+            }],
+        }
+    }
+
+    #[tokio::test]
+    async fn skills_are_versioned_assigned_and_historical_messages_survive_restart()
+    -> Result<(), StorageError> {
+        let directory = tempfile::tempdir()?;
+        let database = directory.path().join("homebot.db");
+        let storage = Storage::open(&database).await?;
+        let owner = Uuid::now_v7();
+        let bot = storage
+            .create_bot(owner, Bot::create("Nova", "Research")?, 1)
+            .await?;
+        let chat = storage
+            .create_direct_chat(owner, bot.id.0, Uuid::now_v7(), 2)
+            .await?;
+        let skill_id = Uuid::now_v7();
+        let first_version_id = Uuid::now_v7();
+        let first_definition = skill_definition("Use version one.");
+        storage
+            .create_skill(&SkillRecord {
+                id: skill_id,
+                owner_id: owner,
+                name: "Repository reviewer".to_owned(),
+                description: "Review source changes".to_owned(),
+                active_version_id: first_version_id,
+                version: 1,
+                definition: first_definition.clone(),
+                bot_ids: Vec::new(),
+                created_at_ms: 3,
+                updated_at_ms: 3,
+            })
+            .await?;
+        storage
+            .set_skill_assignment(owner, skill_id, bot.id.0, true, 4)
+            .await?;
+        let applied_v1 = storage.resolve_applied_skills(owner, bot.id.0, &[]).await?;
+        assert_eq!(applied_v1[0].version_id, first_version_id);
+        let message_id = Uuid::now_v7();
+        storage
+            .append_user_message(
+                owner,
+                chat.id,
+                message_id,
+                "Review this",
+                &[],
+                None,
+                Vec::new(),
+                &applied_v1,
+                5,
+            )
+            .await?;
+        let second_version_id = Uuid::now_v7();
+        storage
+            .update_skill(
+                owner,
+                skill_id,
+                "Repository reviewer",
+                "Review source changes",
+                &skill_definition("Use version two."),
+                second_version_id,
+                6,
+            )
+            .await?;
+        assert_eq!(
+            storage.resolve_applied_skills(owner, bot.id.0, &[]).await?[0].version_id,
+            second_version_id
+        );
+        drop(storage);
+
+        let reopened = Storage::open(&database).await?;
+        let historical = reopened.message_applied_skills(owner, message_id).await?;
+        assert_eq!(historical.len(), 1);
+        assert_eq!(historical[0].version_id, first_version_id);
+        assert_eq!(historical[0].definition, first_definition);
+        reopened.delete_skill(owner, skill_id, 7).await?;
+        assert_eq!(
+            reopened.message_applied_skills(owner, message_id).await?[0].version_id,
+            first_version_id
+        );
+        assert!(
+            reopened
+                .resolve_applied_skills(owner, bot.id.0, &[])
+                .await?
+                .is_empty()
+        );
+        Ok(())
+    }
 
     #[tokio::test]
     async fn plugins_are_owner_scoped_and_discovery_cascades() -> Result<(), StorageError> {
@@ -4394,6 +4834,64 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn version_eleven_skill_upgrade_preserves_legacy_versions_and_duplicate_names()
+    -> Result<(), StorageError> {
+        let directory = tempfile::tempdir()?;
+        let database = directory.path().join("homebot-v11.db");
+        let options =
+            SqliteConnectOptions::from_str(database.to_str().ok_or(StorageError::InvalidPath)?)?
+                .create_if_missing(true)
+                .foreign_keys(true);
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(options)
+            .await?;
+        for migration in [
+            include_str!("../migrations/0001_initial.sql"),
+            include_str!("../migrations/0002_event_retention.sql"),
+            include_str!("../migrations/0003_attachments.sql"),
+            include_str!("../migrations/0004_bot_lifecycle.sql"),
+            include_str!("../migrations/0005_direct_chat.sql"),
+            include_str!("../migrations/0006_group_coordination.sql"),
+            include_str!("../migrations/0007_activity_artifacts.sql"),
+            include_str!("../migrations/0008_secret_references.sql"),
+            include_str!("../migrations/0009_plugins.sql"),
+            include_str!("../migrations/0010_routines.sql"),
+            include_str!("../migrations/0011_routine_scheduler.sql"),
+        ] {
+            sqlx::raw_sql(migration).execute(&pool).await?;
+        }
+        let definition = serde_json::to_string(&skill_definition("Legacy instructions"))
+            .map_err(|error| StorageError::Serialization(error.to_string()))?;
+        for _ in 0..2 {
+            let skill_id = Uuid::now_v7();
+            let version_id = Uuid::now_v7();
+            sqlx::query("INSERT INTO skills (id, name, active_version_id, created_at_ms) VALUES (?, 'Legacy', ?, 1)")
+                .bind(skill_id.to_string()).bind(version_id.to_string()).execute(&pool).await?;
+            sqlx::query("INSERT INTO skill_versions (id, skill_id, version, definition_json, created_at_ms) VALUES (?, ?, 1, ?, 1)")
+                .bind(version_id.to_string()).bind(skill_id.to_string()).bind(&definition).execute(&pool).await?;
+        }
+        sqlx::raw_sql(include_str!("../migrations/0012_skills.sql"))
+            .execute(&pool)
+            .await?;
+        let storage = Storage { pool };
+        let skills = storage.list_skills(Uuid::nil()).await?;
+        assert_eq!(skills.len(), 2);
+        assert!(skills.iter().all(|skill| skill.version == 1));
+        assert!(
+            skills
+                .iter()
+                .all(|skill| skill.definition.instructions == "Legacy instructions")
+        );
+        let normalized: Vec<String> =
+            sqlx::query_scalar("SELECT name_normalized FROM skills ORDER BY id")
+                .fetch_all(storage.pool())
+                .await?;
+        assert_ne!(normalized[0], normalized[1]);
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn version_ten_upgrade_preserves_routines_and_initializes_scheduler_state()
     -> Result<(), StorageError> {
         let directory = tempfile::tempdir()?;
@@ -4570,6 +5068,7 @@ mod tests {
                 &[],
                 None,
                 vec![bot.id.0],
+                &[],
                 4,
             )
             .await?;
@@ -4583,13 +5082,24 @@ mod tests {
                 &[],
                 Some(first_id),
                 Vec::new(),
+                &[],
                 5,
             )
             .await?;
         assert_eq!(second.reply_to_message_id, Some(first_id));
         storage.set_chat_running(owner, chat_id, true, 6).await?;
         let queued = storage
-            .enqueue_prompt(owner, chat_id, Uuid::now_v7(), "Next", &[], 7)
+            .enqueue_prompt(
+                owner,
+                chat_id,
+                Uuid::now_v7(),
+                QueuedPromptInput {
+                    content: "Next",
+                    attachment_ids: &[],
+                    applied_skills: &[],
+                },
+                7,
+            )
             .await?;
         assert_eq!(queued.position, 0);
         assert_eq!(storage.queued_prompts(owner, chat_id).await?.len(), 1);

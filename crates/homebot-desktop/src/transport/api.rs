@@ -222,6 +222,7 @@ async fn post_message(
         attachment_ids: draft.attachment_ids,
         reply_to_message_id: draft.reply_to_message_id,
         mentioned_bot_ids: draft.mentioned_bot_ids,
+        skill_ids: draft.skill_ids,
     };
     let action = if steer { "steer" } else { "messages" };
     ensure_success(

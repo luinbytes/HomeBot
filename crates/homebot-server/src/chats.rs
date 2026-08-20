@@ -16,7 +16,8 @@ use homebot_protocol::{
     MessageAuthor, MessagePart, MessageStatus, MessageSummary, QueuedPromptSummary,
     SendMessageRequest, SendMessageResponse, ServerEventBody,
 };
-use homebot_storage::IdempotencyClaim;
+use homebot_skills::AppliedSkill;
+use homebot_storage::{IdempotencyClaim, QueuedPromptInput};
 use uuid::Uuid;
 
 use crate::{
@@ -106,6 +107,7 @@ pub(super) async fn timeline(
     }))
 }
 
+#[allow(clippy::too_many_lines)]
 pub(super) async fn send_message(
     State(state): State<AppState>,
     Path(chat_id): Path<Uuid>,
@@ -125,6 +127,14 @@ pub(super) async fn send_message(
         .storage
         .get_direct_chat(state.owner_id, chat_id)
         .await?;
+    let applied_skills = if replayed {
+        Vec::new()
+    } else {
+        state
+            .storage
+            .resolve_applied_skills(state.owner_id, chat.bot_id, &request.skill_ids)
+            .await?
+    };
     if chat.running {
         let prompt = if replayed {
             state
@@ -141,8 +151,11 @@ pub(super) async fn send_message(
                     state.owner_id,
                     chat_id,
                     request.idempotency_key,
-                    &request.content,
-                    &request.attachment_ids,
+                    QueuedPromptInput {
+                        content: &request.content,
+                        attachment_ids: &request.attachment_ids,
+                        applied_skills: &applied_skills,
+                    },
                     unix_time_ms(),
                 )
                 .await?
@@ -161,7 +174,7 @@ pub(super) async fn send_message(
         return Ok(Json(SendMessageResponse::Queued { prompt }));
     }
 
-    let provider_prompt = request.content.clone();
+    let provider_prompt = prompt_with_skills(&request.content, &applied_skills)?;
     let provider_attachments = request.attachment_ids.clone();
 
     let message = if replayed {
@@ -183,6 +196,7 @@ pub(super) async fn send_message(
                 &request.attachment_ids,
                 request.reply_to_message_id,
                 request.mentioned_bot_ids,
+                &applied_skills,
                 unix_time_ms(),
             )
             .await?
@@ -234,6 +248,14 @@ pub(super) async fn steer(
             "Steering is available only while this Bot is working",
         ));
     }
+    let applied_skills = if replayed {
+        Vec::new()
+    } else {
+        state
+            .storage
+            .resolve_applied_skills(state.owner_id, chat.bot_id, &request.skill_ids)
+            .await?
+    };
     let message = if replayed {
         state
             .storage
@@ -253,6 +275,7 @@ pub(super) async fn steer(
                 &request.attachment_ids,
                 request.reply_to_message_id,
                 request.mentioned_bot_ids,
+                &applied_skills,
                 unix_time_ms(),
             )
             .await?
@@ -403,6 +426,11 @@ pub(super) async fn retry(
             DomainPart::Notice { .. } => {}
         }
     }
+    let applied_skills = state
+        .storage
+        .message_applied_skills(state.owner_id, source.id)
+        .await?;
+    let prompt = prompt_with_skills(&prompt, &applied_skills)?;
     if !crate::provider_turn::start_if_configured(&state, &chat, &prompt, &attachments).await? {
         return Err(ApiError::conflict(
             "Configure an available provider before retrying",
@@ -414,6 +442,20 @@ pub(super) async fn retry(
             .get_direct_chat(state.owner_id, chat_id)
             .await?,
     )))
+}
+
+pub(super) fn prompt_with_skills(
+    content: &str,
+    skills: &[AppliedSkill],
+) -> Result<String, ApiError> {
+    if skills.is_empty() {
+        return Ok(content.to_owned());
+    }
+    let instructions = homebot_skills::assemble(skills)
+        .map_err(|error| ApiError::validation(&error.to_string()))?;
+    Ok(format!(
+        "<homebot_skills>\n{instructions}</homebot_skills>\n\n<user_message>\n{content}\n</user_message>"
+    ))
 }
 
 pub(super) async fn decide_approval(
@@ -486,6 +528,18 @@ pub(super) async fn message_summary(
     state: &AppState,
     message: DomainMessage,
 ) -> Result<MessageSummary, ApiError> {
+    let applied_skills = state
+        .storage
+        .message_applied_skills(state.owner_id, message.id)
+        .await?
+        .into_iter()
+        .map(|skill| homebot_protocol::AppliedSkillSummary {
+            skill_id: skill.skill_id,
+            skill_version_id: skill.version_id,
+            name: skill.name,
+            version: skill.version,
+        })
+        .collect();
     let mut parts = Vec::with_capacity(message.parts.len());
     for part in message.parts {
         parts.push(match part {
@@ -535,6 +589,7 @@ pub(super) async fn message_summary(
         reply_to_message_id: message.reply_to_message_id,
         mentioned_bot_ids: message.mentioned_bot_ids,
         shared_context_message_ids: message.shared_context_message_ids,
+        applied_skills,
         created_at_ms: message.created_at_ms,
         completed_at_ms: message.completed_at_ms,
         error: message
@@ -551,6 +606,7 @@ fn prompt_summary(prompt: DomainPrompt) -> QueuedPromptSummary {
         chat_id: prompt.chat_id,
         content: prompt.content,
         attachment_ids: prompt.attachment_ids,
+        skill_ids: prompt.skill_ids,
         position: prompt.position,
         created_at_ms: prompt.created_at_ms,
     }

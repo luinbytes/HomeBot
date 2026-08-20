@@ -1,5 +1,8 @@
 [advisories]
 yanked = "deny"
+ignore = [
+  { id = "RUSTSEC-2026-0192", reason = "egui 0.32.3's transitive font parser has no known vulnerability and no safe upgrade at the Rust 1.85 MSRV; revisit before v1" },
+]
 
 [licenses]
 allow = [
@@ -11,6 +14,8 @@ allow = [
   "ISC",
   "MIT",
   "MPL-2.0",
+  "OFL-1.1",
+  "Ubuntu-font-1.0",
   "Unicode-3.0",
   "Zlib",
 ]

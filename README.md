@@ -53,6 +53,7 @@ Remote clients pair with a short-lived, single-use credential and receive a name
 Read the deeper contracts:
 
 - [Architecture](docs/architecture.md)
+- [Desktop visual system](docs/desktop-visual-system.md)
 - [Protocol](docs/protocol.md)
 - [Providers](docs/providers.md)
 - [Local computer capabilities](docs/tools.md)

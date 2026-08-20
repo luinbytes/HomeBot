@@ -9,7 +9,7 @@ This file is operational state for coding agents. It is not user-facing product 
 - Current milestone: M2, Grok Bot Desktop Parity
 - Current Linear issue: 6C7-42 visual token system and screenshot regression harness
 - Current Git branch: `feat/m0-contracts`
-- Latest verified remote commit: `51aa3f845c75096fea3a9ee18790ae689f770b83`
+- Latest verified remote commit: `6de983f9db1792b949704d853e13a6b6e0fb8486`
 - Public repository: `https://github.com/luinbytes/HomeBot`
 - Repository owner and commit identity: `luinbytes <42706009+luinbytes@users.noreply.github.com>`
 
@@ -40,7 +40,8 @@ Current blockers:
 - 6C7-39 is Done. GitHub Actions run 32355805077 passed the full six-job matrix. The current environment has no `codex` binary, so the real-binary smoke test skips with an explicit reason; fake executable App Server fixtures verify structured start, resume, streaming, approval, and interruption round trips.
 - 6C7-40 is Done. GitHub Actions run 32358033480 passed the full six-job matrix after the dependency policy explicitly admitted webpki-roots' permissive CDLA-Permissive-2.0 license.
 - M1 is complete. 6C7-72 and epic 6C7-34 are Done after GitHub Actions run 32361115615 passed all six jobs.
-- 6C7-42 is In Progress. The exact next action is to implement the reusable egui visual token/component layer and deterministic macOS/Linux screenshot golden harness, then verify it locally and remotely.
+- 6C7-42 is In Progress. Its reusable egui token/component layer, three deterministic screenshot goldens and platform-independent CPU renderer are complete locally. The exact next action is to publish the coherent change, verify the expanded Linux/macOS CI matrix, add evidence to Linear and close the issue only after every job passes.
+- egui 0.32.3 transitively uses unmaintained `ttf-parser` 0.25.1. RUSTSEC-2026-0192 reports no known vulnerability and no safe upgrade; the exact advisory is documented and temporarily ignored, with mandatory review in 6C7-69.
 
 ## Completed work
 
@@ -63,16 +64,16 @@ Current blockers:
 
 ## Immediate next work
 
-1. Implement 6C7-42 visual tokens for typography, spacing, radii, surfaces, shadows, avatars, layout, composer and motion.
-2. Add deterministic screenshot fixtures and cross-platform golden comparison tooling for the major shell states.
-3. Verify the full workspace and remote CI matrix, update Linear with evidence, then immediately continue to 6C7-43.
+1. Publish the complete 6C7-42 visual foundation and checked-in goldens to `main` under the `luinbytes` identity.
+2. Verify the full workspace, dependency policy/audit, three platform builds and Linux/macOS visual jobs remotely, then close 6C7-42 with evidence.
+3. Immediately start 6C7-43 Bot roster, identity editor and lifecycle work.
 
 ## Verification state
 
 Verified:
 
-- Local and remote Git trees match at `51aa3f8`. GitHub Actions run 32361115615 passed all six jobs for 6C7-72.
-- All three remote commits are attributed to GitHub account `luinbytes`.
+- Local and remote Git trees matched at `6de983f` before the current coherent 6C7-42 change. GitHub Actions run 32361638137 passed all six jobs for that transition commit.
+- Remote commits are attributed to GitHub account `luinbytes`; the latest verified commit exposes the expected noreply identity.
 - Working tree was clean before `feat/m0-contracts` was created.
 - All committed TOML files parse with Python `tomllib`.
 - Protocol JSON schema and golden JSON fixture parse successfully.
@@ -86,7 +87,7 @@ Verified:
 - `./scripts/check.sh` passes locally with formatting, workspace clippy, 51 Rust tests, protocol schema drift and generated Android binding drift checks.
 - `homebot-providers` has 22 passing tests. Codex coverage includes JSONL fixture normalization, profile isolation and redaction, explicit binary discovery, auth/error and interruption normalization, fake App Server start/resume, streaming, approval resolution, cancellation, and an explicit real-binary skip when Codex is absent. Claude fixtures verify normalized init/content/tool/usage/result records, resume-oriented CLI arguments, streaming and cancellation. OpenAI-compatible tests verify request-time bearer resolution, model discovery, streamed Responses events, HTTPS/loopback policy, redaction and cancellation. Generic process tests verify its JSONL contract, bounded normalized streaming, redaction and cancellation.
 - `homebot-tools` has 12 unit and 3 hostile-input integration tests covering actor-scoped deny/allow policy, single-use/expiring/digest-bound approvals, policy revision invalidation, content substitution, traversal, symlinks, atomic and bounded filesystem operations, real PTY output/input lifecycle, duplicate IDs, filtered environment, cancellation, timeout, output limits, loopback-only browser control, profile confinement and normalized CDP actions.
-- The full workspace now has 66 passing Rust tests. Local cargo-deny 0.20.2 reports advisories, bans, licenses and sources all OK.
+- The full workspace now has 70 passing Rust tests, including three pixel-exact CPU-rendered desktop goldens. Local cargo-deny 0.20.2 reports advisories, bans, licenses and sources all OK with the documented exact unmaintained-font-parser exception.
 
 Not yet verified:
 
@@ -98,7 +99,7 @@ Not yet verified:
 
 - `homebot-server` covers every stated 6C7-37 transport behaviour locally and in the passing remote matrix.
 - The first-class Codex and Claude adapters cannot perform real authenticated provider messages in this environment because neither CLI binary is installed. Their structured protocol fixtures pass. The OpenAI-compatible adapter is verified against a local protocol-faithful HTTP/SSE fixture, not a user credential. The local computer capability layer is implemented but no real Chrome process is installed in this environment, so CDP behavior is verified against a protocol-faithful loopback fixture. Desktop egui, Android, routines, plugins, VCS, pairing, and packaging are not implemented.
-- Desktop visual tokens and screenshot regression infrastructure are the active implementation work.
+- The desktop visual foundation is implemented locally but not yet verified by the expanded remote macOS/Linux visual matrix.
 - No release artifact exists. Do not describe the project as installable or v1-ready.
 
 ## Environment notes

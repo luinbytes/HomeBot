@@ -62,3 +62,5 @@ Provider, MCP, browser, terminal, and Git failures are isolated from the server 
 - supported compatibility-window duration after v1
 - egui native chrome exceptions and golden rendering hosts
 - the Android schema generation tool after the first complete Rust schema
+
+Desktop styling is centralized in a semantic egui token layer. Deterministic visual fixtures use egui tessellation plus a platform-independent CPU renderer so Linux and macOS compare the same checked-in pixels. A passing HomeBot golden detects regressions but does not alone establish Grok Bot parity; reference comparison status is tracked separately.

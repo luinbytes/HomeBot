@@ -10,3 +10,6 @@ android/**/build
 *.db-shm
 *.db-wal
 .env
+**/tests/snapshots/**/*.diff.png
+**/tests/snapshots/**/*.new.png
+**/tests/snapshots/**/*.old.png

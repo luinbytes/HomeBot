@@ -89,3 +89,5 @@ HomeBot intentionally exceeds initial Grok Bot mobile parity where the official 
 ## Golden-test rule
 
 Every future visual implementation issue must name the affected IDs, add or update deterministic goldens, record the renderer/platform/font inputs, and keep the status `Capture required` until a legitimate reference comparison has been performed. Feature existence alone never changes a row to `Pass`.
+
+The 6C7-42 HomeBot baseline now has deterministic CPU-rendered goldens for the empty shell, direct chat/activity shell and approval shell in light/dark themes. These cover the initial geometry and component system but remain `Capture required`; see [desktop-visual-system.md](desktop-visual-system.md).

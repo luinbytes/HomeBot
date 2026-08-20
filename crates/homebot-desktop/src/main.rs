@@ -1,3 +1,3 @@
 fn main() {
-    println!("HomeBot desktop shell is being built. Run homebot-server for headless mode.");
+    println!("HomeBot desktop visual foundation is ready. Run homebot-server for headless mode.");
 }

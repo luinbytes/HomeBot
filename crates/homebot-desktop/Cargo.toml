@@ -6,5 +6,12 @@ license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
 
+[dependencies]
+egui.workspace = true
+
+[dev-dependencies]
+egui_kittest = { version = "0.32.3", features = ["snapshot"] }
+image = { version = "0.25.10", default-features = false, features = ["png"] }
+
 [lints]
 workspace = true

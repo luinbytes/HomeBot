@@ -1,0 +1,675 @@
+//! Server transport integration tests.
+
+use super::*;
+use axum::{body::Body, http::Request};
+use futures_util::{SinkExt, StreamExt};
+use homebot_protocol::{
+    Attachment, CreateAttachmentRequest, CreateAttachmentResponse, FinalizeAttachmentRequest,
+};
+use tokio::task::JoinHandle;
+use tokio_tungstenite::{connect_async, tungstenite::client::IntoClientRequest};
+use tower::ServiceExt;
+
+async fn test_app() -> Result<Router, homebot_storage::StorageError> {
+    let directory = tempfile::tempdir()?;
+    let path = directory.path().join("homebot.db");
+    let storage = Storage::open(&path).await?;
+    Ok(router(AppState::new(storage, "correct-token")))
+}
+
+async fn spawn_app(
+    storage: Storage,
+) -> Result<(std::net::SocketAddr, JoinHandle<()>, tempfile::TempDir), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let (address, task) = spawn_state(AppState::new(storage, "correct-token")).await?;
+    Ok((address, task, directory))
+}
+
+async fn spawn_state(
+    state: AppState,
+) -> Result<(std::net::SocketAddr, JoinHandle<()>), Box<dyn std::error::Error>> {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let address = listener.local_addr()?;
+    let task = tokio::spawn(async move {
+        let _ = axum::serve(listener, router(state)).await;
+    });
+    Ok((address, task))
+}
+
+async fn authenticated_socket(
+    address: std::net::SocketAddr,
+    resume_after: Option<u64>,
+) -> Result<
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
+    Box<dyn std::error::Error>,
+> {
+    let mut request = format!("ws://{address}/api/v1/events").into_client_request()?;
+    request
+        .headers_mut()
+        .insert("authorization", "Bearer correct-token".parse()?);
+    let (mut socket, _) = connect_async(request).await?;
+    socket
+        .send(tokio_tungstenite::tungstenite::Message::Text(
+            serde_json::to_string(&ClientMessage::Hello {
+                protocol_version: homebot_protocol::PROTOCOL_VERSION,
+                client_version: "test".to_owned(),
+                device_session: "test-device".to_owned(),
+                resume_after,
+            })?
+            .into(),
+        ))
+        .await?;
+    Ok(socket)
+}
+
+#[tokio::test]
+async fn health_is_available_without_auth_but_reveals_no_secrets()
+-> Result<(), Box<dyn std::error::Error>> {
+    let response = test_app()
+        .await?
+        .oneshot(Request::get("/health").body(Body::empty())?)
+        .await?;
+    assert_eq!(response.status(), StatusCode::OK);
+    Ok(())
+}
+
+#[tokio::test]
+async fn protected_routes_deny_missing_and_invalid_tokens_server_side()
+-> Result<(), Box<dyn std::error::Error>> {
+    for authorization in [None, Some("Bearer wrong-token")] {
+        let mut request = Request::get("/api/v1/version");
+        if let Some(value) = authorization {
+            request = request.header("authorization", value);
+        }
+        let response = test_app()
+            .await?
+            .oneshot(request.body(Body::empty())?)
+            .await?;
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn valid_device_session_can_negotiate_version() -> Result<(), Box<dyn std::error::Error>> {
+    let response = test_app()
+        .await?
+        .oneshot(
+            Request::get("/api/v1/version")
+                .header("authorization", "Bearer correct-token")
+                .body(Body::empty())?,
+        )
+        .await?;
+    assert_eq!(response.status(), StatusCode::OK);
+    Ok(())
+}
+
+#[tokio::test]
+async fn stale_protocol_is_rejected_with_upgrade_required() -> Result<(), Box<dyn std::error::Error>>
+{
+    let response = test_app()
+        .await?
+        .oneshot(
+            Request::get("/api/v1/version")
+                .header("authorization", "Bearer correct-token")
+                .header("x-homebot-protocol", "0")
+                .body(Body::empty())?,
+        )
+        .await?;
+    assert_eq!(response.status(), StatusCode::UPGRADE_REQUIRED);
+    Ok(())
+}
+
+#[tokio::test]
+async fn websocket_requires_auth_and_sends_snapshot_after_hello()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let storage = Storage::open(&directory.path().join("homebot.db")).await?;
+    let (address, task, _guard) = spawn_app(storage).await?;
+    let url = format!("ws://{address}/api/v1/events");
+    let unauthorised = connect_async(&url).await;
+    assert!(
+        matches!(unauthorised, Err(tokio_tungstenite::tungstenite::Error::Http(ref response)) if response.status() == StatusCode::UNAUTHORIZED)
+    );
+
+    let mut request = url.into_client_request()?;
+    request
+        .headers_mut()
+        .insert("authorization", "Bearer correct-token".parse()?);
+    let (mut socket, _) = connect_async(request).await?;
+    socket
+        .send(tokio_tungstenite::tungstenite::Message::Text(
+            serde_json::to_string(&ClientMessage::Hello {
+                protocol_version: homebot_protocol::PROTOCOL_VERSION,
+                client_version: "test".to_owned(),
+                device_session: "test-device".to_owned(),
+                resume_after: None,
+            })?
+            .into(),
+        ))
+        .await?;
+    let hello: ServerEvent =
+        serde_json::from_str(socket.next().await.ok_or("missing hello")??.to_text()?)?;
+    let snapshot: ServerEvent =
+        serde_json::from_str(socket.next().await.ok_or("missing snapshot")??.to_text()?)?;
+    assert!(matches!(
+        hello.body,
+        ServerEventBody::Hello {
+            resume: ResumeDisposition::SnapshotRequired,
+            ..
+        }
+    ));
+    assert!(matches!(
+        snapshot.body,
+        ServerEventBody::Snapshot {
+            boundary_sequence: 0,
+            ..
+        }
+    ));
+    task.abort();
+    Ok(())
+}
+
+#[tokio::test]
+async fn reconnect_replays_events_strictly_after_cursor() -> Result<(), Box<dyn std::error::Error>>
+{
+    let directory = tempfile::tempdir()?;
+    let storage = Storage::open(&directory.path().join("homebot.db")).await?;
+    let replay = ServerEvent {
+        protocol_version: homebot_protocol::PROTOCOL_VERSION,
+        sequence: 1,
+        event_id: Uuid::now_v7(),
+        body: ServerEventBody::Ping {
+            nonce: Uuid::now_v7(),
+        },
+    };
+    storage
+        .append_event(Uuid::nil(), "ping", &serde_json::to_value(&replay)?, 1)
+        .await?;
+    let (address, task, _guard) = spawn_app(storage).await?;
+    let mut request = format!("ws://{address}/api/v1/events").into_client_request()?;
+    request
+        .headers_mut()
+        .insert("authorization", "Bearer correct-token".parse()?);
+    let (mut socket, _) = connect_async(request).await?;
+    socket
+        .send(tokio_tungstenite::tungstenite::Message::Text(
+            serde_json::to_string(&ClientMessage::Hello {
+                protocol_version: homebot_protocol::PROTOCOL_VERSION,
+                client_version: "test".to_owned(),
+                device_session: "test-device".to_owned(),
+                resume_after: Some(0),
+            })?
+            .into(),
+        ))
+        .await?;
+    let hello: ServerEvent =
+        serde_json::from_str(socket.next().await.ok_or("missing hello")??.to_text()?)?;
+    let replayed: ServerEvent =
+        serde_json::from_str(socket.next().await.ok_or("missing replay")??.to_text()?)?;
+    assert!(matches!(
+        hello.body,
+        ServerEventBody::Hello {
+            resume: ResumeDisposition::Replayed,
+            ..
+        }
+    ));
+    assert_eq!(replayed, replay);
+    task.abort();
+    Ok(())
+}
+
+#[tokio::test]
+async fn reconnect_uses_snapshot_when_cursor_falls_outside_retention()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let storage = Storage::open(&directory.path().join("homebot.db")).await?;
+    let replay = ServerEvent {
+        protocol_version: homebot_protocol::PROTOCOL_VERSION,
+        sequence: 0,
+        event_id: Uuid::now_v7(),
+        body: ServerEventBody::Ping {
+            nonce: Uuid::now_v7(),
+        },
+    };
+    storage
+        .append_event(Uuid::nil(), "ping", &serde_json::to_value(&replay)?, 1)
+        .await?;
+    storage.prune_events_through(Uuid::nil(), 1, 2).await?;
+    let (address, task, _guard) = spawn_app(storage).await?;
+    let mut request = format!("ws://{address}/api/v1/events").into_client_request()?;
+    request
+        .headers_mut()
+        .insert("authorization", "Bearer correct-token".parse()?);
+    let (mut socket, _) = connect_async(request).await?;
+    socket
+        .send(tokio_tungstenite::tungstenite::Message::Text(
+            serde_json::to_string(&ClientMessage::Hello {
+                protocol_version: homebot_protocol::PROTOCOL_VERSION,
+                client_version: "test".to_owned(),
+                device_session: "test-device".to_owned(),
+                resume_after: Some(0),
+            })?
+            .into(),
+        ))
+        .await?;
+    let hello: ServerEvent =
+        serde_json::from_str(socket.next().await.ok_or("missing hello")??.to_text()?)?;
+    let snapshot: ServerEvent =
+        serde_json::from_str(socket.next().await.ok_or("missing snapshot")??.to_text()?)?;
+    assert!(matches!(
+        hello.body,
+        ServerEventBody::Hello {
+            resume: ResumeDisposition::SnapshotRequired,
+            ..
+        }
+    ));
+    assert!(matches!(snapshot.body, ServerEventBody::Snapshot { .. }));
+    task.abort();
+    Ok(())
+}
+
+#[tokio::test]
+async fn duplicate_command_reuses_operation_and_conflicting_key_fails()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let storage = Storage::open(&directory.path().join("homebot.db")).await?;
+    let (address, task, _guard) = spawn_app(storage).await?;
+    let mut socket = authenticated_socket(address, None).await?;
+    let _hello = socket.next().await.ok_or("missing hello")??;
+    let _snapshot = socket.next().await.ok_or("missing snapshot")??;
+    let request_id = Uuid::now_v7();
+    let key = Uuid::now_v7();
+    let command = ClientMessage::Command {
+        request_id,
+        idempotency_key: key,
+        command: homebot_protocol::Command::CreateBot {
+            name: "Ada".to_owned(),
+            title: "Engineer".to_owned(),
+        },
+    };
+    socket
+        .send(tokio_tungstenite::tungstenite::Message::Text(
+            serde_json::to_string(&command)?.into(),
+        ))
+        .await?;
+    let accepted: ServerEvent =
+        serde_json::from_str(socket.next().await.ok_or("missing accepted")??.to_text()?)?;
+    let _completed: ServerEvent =
+        serde_json::from_str(socket.next().await.ok_or("missing completed")??.to_text()?)?;
+    socket
+        .send(tokio_tungstenite::tungstenite::Message::Text(
+            serde_json::to_string(&command)?.into(),
+        ))
+        .await?;
+    let replayed: ServerEvent =
+        serde_json::from_str(socket.next().await.ok_or("missing replay")??.to_text()?)?;
+    let ServerEventBody::CommandAccepted {
+        operation_id: operation,
+        ..
+    } = accepted.body
+    else {
+        return Err("expected accepted event".into());
+    };
+    assert!(
+        matches!(replayed.body, ServerEventBody::CommandAccepted { operation_id, .. } if operation_id == operation)
+    );
+
+    let conflict = ClientMessage::Command {
+        request_id: Uuid::now_v7(),
+        idempotency_key: key,
+        command: homebot_protocol::Command::CreateBot {
+            name: "Different".to_owned(),
+            title: "Engineer".to_owned(),
+        },
+    };
+    socket
+        .send(tokio_tungstenite::tungstenite::Message::Text(
+            serde_json::to_string(&conflict)?.into(),
+        ))
+        .await?;
+    let failed: ServerEvent =
+        serde_json::from_str(socket.next().await.ok_or("missing conflict")??.to_text()?)?;
+    assert!(matches!(
+        failed.body,
+        ServerEventBody::CommandFailed {
+            error: ErrorEnvelope {
+                code: ErrorCode::Conflict,
+                ..
+            },
+            ..
+        }
+    ));
+    task.abort();
+    Ok(())
+}
+
+#[tokio::test]
+async fn heartbeat_closes_clients_that_never_pong() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let storage = Storage::open(&directory.path().join("homebot.db")).await?;
+    let state = AppState::new(storage, "correct-token").with_heartbeat(
+        std::time::Duration::from_millis(15),
+        std::time::Duration::from_millis(45),
+    );
+    let (address, task) = spawn_state(state).await?;
+    let mut socket = authenticated_socket(address, None).await?;
+    let _hello = socket.next().await.ok_or("missing hello")??;
+    let _snapshot = socket.next().await.ok_or("missing snapshot")??;
+    let closed = tokio::time::timeout(std::time::Duration::from_millis(150), async {
+        while let Some(message) = socket.next().await {
+            if message.is_err()
+                || matches!(
+                    message,
+                    Ok(tokio_tungstenite::tungstenite::Message::Close(_))
+                )
+            {
+                break;
+            }
+        }
+    })
+    .await;
+    assert!(closed.is_ok());
+    task.abort();
+    Ok(())
+}
+
+#[tokio::test]
+async fn cancellation_stops_running_operation_with_exactly_one_terminal_event()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let storage = Storage::open(&directory.path().join("homebot.db")).await?;
+    let state = AppState::new(storage.clone(), "correct-token").with_transport_limits(
+        32,
+        std::time::Duration::ZERO,
+        std::time::Duration::from_millis(250),
+    );
+    let (address, task) = spawn_state(state).await?;
+    let mut socket = authenticated_socket(address, None).await?;
+    let _hello = socket.next().await.ok_or("missing hello")??;
+    let _snapshot = socket.next().await.ok_or("missing snapshot")??;
+    let request_id = Uuid::now_v7();
+    socket
+        .send(tokio_tungstenite::tungstenite::Message::Text(
+            serde_json::to_string(&ClientMessage::Command {
+                request_id,
+                idempotency_key: Uuid::now_v7(),
+                command: homebot_protocol::Command::SendMessage {
+                    chat_id: Uuid::now_v7(),
+                    content: "Please stop".to_owned(),
+                },
+            })?
+            .into(),
+        ))
+        .await?;
+    let accepted: ServerEvent =
+        serde_json::from_str(socket.next().await.ok_or("missing accepted")??.to_text()?)?;
+    let ServerEventBody::CommandAccepted { operation_id, .. } = accepted.body else {
+        return Err("expected accepted operation".into());
+    };
+    for _ in 0..2 {
+        socket
+            .send(tokio_tungstenite::tungstenite::Message::Text(
+                serde_json::to_string(&ClientMessage::Cancel {
+                    request_id: Uuid::now_v7(),
+                    operation_id,
+                })?
+                .into(),
+            ))
+            .await?;
+    }
+    let cancelled: ServerEvent = serde_json::from_str(
+        socket
+            .next()
+            .await
+            .ok_or("missing cancellation")??
+            .to_text()?,
+    )?;
+    assert!(matches!(
+        cancelled.body,
+        ServerEventBody::CommandCancelled {
+            request_id: id,
+            operation_id: operation,
+        } if id == request_id && operation == operation_id
+    ));
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    let events = storage.events_after(Uuid::nil(), 0, 100).await?;
+    let terminal_count = events
+        .iter()
+        .filter_map(|event| serde_json::from_value::<ServerEvent>(event.payload.clone()).ok())
+        .filter(|event| {
+            matches!(
+                event.body,
+                ServerEventBody::CommandCompleted { operation_id: id, .. }
+                    | ServerEventBody::CommandFailed { operation_id: id, .. }
+                    | ServerEventBody::CommandCancelled { operation_id: id, .. }
+                    if id == operation_id
+            )
+        })
+        .count();
+    assert_eq!(terminal_count, 1);
+    task.abort();
+    Ok(())
+}
+
+#[tokio::test]
+async fn slow_client_is_closed_with_cursor_and_replays_every_durable_event()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let storage = Storage::open(&directory.path().join("homebot.db")).await?;
+    let state = AppState::new(storage.clone(), "correct-token").with_transport_limits(
+        1,
+        std::time::Duration::from_millis(75),
+        std::time::Duration::from_millis(1),
+    );
+    let (address, task) = spawn_state(state).await?;
+    let mut socket = authenticated_socket(address, None).await?;
+    let _hello = socket.next().await.ok_or("missing hello")??;
+    let _snapshot = socket.next().await.ok_or("missing snapshot")??;
+    for index in 0..8 {
+        let sent = socket
+            .send(tokio_tungstenite::tungstenite::Message::Text(
+                serde_json::to_string(&ClientMessage::Command {
+                    request_id: Uuid::now_v7(),
+                    idempotency_key: Uuid::now_v7(),
+                    command: homebot_protocol::Command::CreateBot {
+                        name: format!("Bot {index}"),
+                        title: "Worker".to_owned(),
+                    },
+                })?
+                .into(),
+            ))
+            .await;
+        if sent.is_err() {
+            break;
+        }
+    }
+    let close_reason = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            let message = socket
+                .next()
+                .await
+                .ok_or("socket ended without close frame")??;
+            if let tokio_tungstenite::tungstenite::Message::Close(Some(frame)) = message {
+                return Ok::<String, Box<dyn std::error::Error>>(frame.reason.to_string());
+            }
+        }
+    })
+    .await??;
+    let resume_after = close_reason
+        .strip_prefix("resume_after=")
+        .ok_or("missing cursor")?
+        .parse::<u64>()?;
+    let latest = storage.latest_sequence(Uuid::nil()).await?;
+    assert!(latest > resume_after);
+
+    let mut resumed = authenticated_socket(address, Some(resume_after)).await?;
+    let hello: ServerEvent = serde_json::from_str(
+        resumed
+            .next()
+            .await
+            .ok_or("missing resumed hello")??
+            .to_text()?,
+    )?;
+    assert!(matches!(
+        hello.body,
+        ServerEventBody::Hello {
+            resume: ResumeDisposition::Replayed,
+            ..
+        }
+    ));
+    let mut sequences = Vec::new();
+    for _ in resume_after..latest {
+        let event: ServerEvent = serde_json::from_str(
+            resumed
+                .next()
+                .await
+                .ok_or("missing durable replay event")??
+                .to_text()?,
+        )?;
+        sequences.push(event.sequence);
+    }
+    assert_eq!(sequences, ((resume_after + 1)..=latest).collect::<Vec<_>>());
+    task.abort();
+    Ok(())
+}
+
+#[tokio::test]
+async fn attachment_upload_is_idempotent_bounded_and_integrity_checked()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let storage = Storage::open(&directory.path().join("homebot.db")).await?;
+    let artifact_root = directory.path().join("artifacts");
+    let app = router(
+        AppState::new(storage.clone(), "correct-token").with_artifact_root(artifact_root.clone()),
+    );
+    let content = b"hello";
+    let sha256 = format!("{:x}", Sha256::digest(content));
+    let create = CreateAttachmentRequest {
+        request_id: Uuid::now_v7(),
+        idempotency_key: Uuid::now_v7(),
+        filename: "greeting.txt".to_owned(),
+        media_type: "text/plain".to_owned(),
+        size_bytes: u64::try_from(content.len())?,
+        sha256: sha256.clone(),
+    };
+    let create_request = || {
+        Request::post("/api/v1/attachments")
+            .header("authorization", "Bearer correct-token")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_vec(&create).unwrap_or_default()))
+    };
+    let response = app.clone().oneshot(create_request()?).await?;
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let response_body = axum::body::to_bytes(response.into_body(), 16 * 1024).await?;
+    let created: CreateAttachmentResponse = serde_json::from_slice(&response_body)?;
+    let replay = app.clone().oneshot(create_request()?).await?;
+    let replay_body = axum::body::to_bytes(replay.into_body(), 16 * 1024).await?;
+    let replayed: CreateAttachmentResponse = serde_json::from_slice(&replay_body)?;
+    assert_eq!(replayed.attachment_id, created.attachment_id);
+
+    let upload = app
+        .clone()
+        .oneshot(
+            Request::put(&created.upload_url)
+                .header("authorization", "Bearer correct-token")
+                .body(Body::from(content.as_slice()))?,
+        )
+        .await?;
+    assert_eq!(upload.status(), StatusCode::NO_CONTENT);
+    let finalize = FinalizeAttachmentRequest {
+        request_id: Uuid::now_v7(),
+        idempotency_key: Uuid::now_v7(),
+        sha256: sha256.clone(),
+    };
+    let finalize_url = format!("/api/v1/attachments/{}/finalize", created.attachment_id);
+    let finalize_request = || {
+        Request::post(&finalize_url)
+            .header("authorization", "Bearer correct-token")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::to_vec(&finalize).unwrap_or_default(),
+            ))
+    };
+    let finalized = app.clone().oneshot(finalize_request()?).await?;
+    assert_eq!(finalized.status(), StatusCode::OK);
+    let finalized_body = axum::body::to_bytes(finalized.into_body(), 16 * 1024).await?;
+    let attachment: Attachment = serde_json::from_slice(&finalized_body)?;
+    assert_eq!(attachment.sha256, sha256);
+    let finalized_again = app.clone().oneshot(finalize_request()?).await?;
+    assert_eq!(finalized_again.status(), StatusCode::OK);
+    assert!(
+        artifact_root
+            .join("objects")
+            .join(&sha256[..2])
+            .join(&sha256)
+            .is_file()
+    );
+    assert_eq!(
+        storage
+            .attachment(Uuid::nil(), created.attachment_id)
+            .await?
+            .map(|record| record.status),
+        Some("ready".to_owned())
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn invalid_attachment_bytes_are_deleted_and_cannot_be_finalized()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let storage = Storage::open(&directory.path().join("homebot.db")).await?;
+    let app = router(
+        AppState::new(storage, "correct-token")
+            .with_artifact_root(directory.path().join("artifacts")),
+    );
+    let expected = b"hello";
+    let sha256 = format!("{:x}", Sha256::digest(expected));
+    let create = CreateAttachmentRequest {
+        request_id: Uuid::now_v7(),
+        idempotency_key: Uuid::now_v7(),
+        filename: "greeting.txt".to_owned(),
+        media_type: "text/plain".to_owned(),
+        size_bytes: 5,
+        sha256: sha256.clone(),
+    };
+    let response = app
+        .clone()
+        .oneshot(
+            Request::post("/api/v1/attachments")
+                .header("authorization", "Bearer correct-token")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&create)?))?,
+        )
+        .await?;
+    let body = axum::body::to_bytes(response.into_body(), 16 * 1024).await?;
+    let created: CreateAttachmentResponse = serde_json::from_slice(&body)?;
+    let invalid = app
+        .clone()
+        .oneshot(
+            Request::put(&created.upload_url)
+                .header("authorization", "Bearer correct-token")
+                .body(Body::from("wrong"))?,
+        )
+        .await?;
+    assert_eq!(invalid.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let finalize = FinalizeAttachmentRequest {
+        request_id: Uuid::now_v7(),
+        idempotency_key: Uuid::now_v7(),
+        sha256,
+    };
+    let finalize_response = app
+        .oneshot(
+            Request::post(format!(
+                "/api/v1/attachments/{}/finalize",
+                created.attachment_id
+            ))
+            .header("authorization", "Bearer correct-token")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_vec(&finalize)?))?,
+        )
+        .await?;
+    assert_eq!(finalize_response.status(), StatusCode::CONFLICT);
+    Ok(())
+}

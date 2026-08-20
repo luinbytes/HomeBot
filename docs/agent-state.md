@@ -9,7 +9,7 @@ This file is operational state for coding agents. It is not user-facing product 
 - Current milestone: M1, Local Runtime Foundation
 - Current Linear issue: 6C7-37 authenticated HTTP/WebSocket server and reconnect semantics
 - Current Git branch: `feat/m0-contracts`
-- Latest verified remote commit: `d1a1b5df84dba2113191a818f2cd4a6ddcae8ecf`
+- Latest verified remote commit: `85e28049df9cabce99c6968fe55e9ba1ea56e58a`
 - Public repository: `https://github.com/luinbytes/HomeBot`
 - Repository owner and commit identity: `luinbytes <42706009+luinbytes@users.noreply.github.com>`
 
@@ -29,7 +29,7 @@ Current blockers:
 
 - Rust is installed in isolated task paths under `/tmp/homebot-rustup` and `/tmp/homebot-cargo`.
 - Exact current-app pixel captures remain deliberately gated to 6C7-42.
-- 6C7-37 is In Progress. Authenticated attachment create/upload/finalise now uses bounded streaming, SHA-256 verification, durable idempotency, logical expiry, and content-addressed storage. Real operation cancellation and explicit slow-client backpressure work remains.
+- 6C7-37 is In Progress pending final CI evidence. Cooperative cancellation now produces exactly one durable terminal event. Live events fan out through a bounded broadcast/outbound pipeline; slow clients receive a close frame with their last delivered cursor and replay every later durable event after reconnect.
 
 ## Completed work
 
@@ -46,10 +46,9 @@ Current blockers:
 
 ## Immediate next work
 
-1. Commit and push authenticated attachment transport for 6C7-37.
-2. Refactor command execution around durable operation state and implement real cooperative cancellation with exactly one terminal event.
-3. Add bounded slow-client queues and prove disconnect/reconnect resumes without event loss.
-4. Run the full workspace and remote CI gates, then close 6C7-37 only if every postcondition passes.
+1. Commit and push cancellation, live fan-out, and bounded backpressure for 6C7-37.
+2. Verify the resulting GitHub Actions matrix and reconcile every 6C7-37 acceptance criterion against evidence.
+3. Mark 6C7-37 Done only after remote CI passes, refresh the dependency graph, and immediately begin the next unblocked M1 issue.
 
 ## Verification state
 
@@ -63,7 +62,7 @@ Verified:
 - Local documentation link targets referenced by the README exist.
 - `git diff --check` passed for the committed baseline.
 - `cargo fmt --all -- --check` passes.
-- `cargo test -p homebot-storage -p homebot-server` passes with 21 tests, including attachment idempotency, digest rejection, finalisation, and content-addressed persistence.
+- `cargo test -p homebot-storage -p homebot-server` passes with 23 tests. Cancellation and slow-client reconnect tests additionally passed three consecutive focused runs.
 - `cargo clippy --workspace --all-targets -- -D warnings` passes.
 - Rust JSON Schema and generated Android binding drift checks pass.
 - `homebot-storage` has ten passing tests covering clean install/table inventory, WAL mode, restart/outbox durability, backup/restore, migration rollback, corrupted startup, concurrent access, idempotency, replay retention, and attachment transitions.
@@ -76,8 +75,8 @@ Not yet verified:
 
 ## Known failures and incomplete implementation
 
-- `homebot-server` has authenticated HTTP/version, attachment transport, snapshot/replay, durable idempotent lifecycle, and heartbeat foundations but not the complete 6C7-37 transport.
-- Real cancellation, slow-client backpressure, providers, desktop egui, Android, routines, plugins, tools, VCS, pairing, and packaging are not implemented.
+- `homebot-server` now covers every stated 6C7-37 transport behaviour locally; remote CI is the remaining completion gate.
+- Providers, desktop egui, Android, routines, plugins, tools, VCS, pairing, and packaging are not implemented.
 - The protocol defines product-level v1 envelopes and lifecycle contracts; server persistence and transport behaviour remain implementation work in later issues.
 - No release artifact exists. Do not describe the project as installable or v1-ready.
 

@@ -6,11 +6,11 @@ This file is operational state for coding agents. It is not user-facing product 
 
 ## Current state
 
-- Current milestone: M3, Skills, Plugins, Routines & Secrets.
-- Current Linear issue: 6C7-52, routine recorder/editor and deterministic replay (`In Progress`).
+- Current milestone: M2 corrective integration, while M3 remains active.
+- Current Linear issue: 6C7-73, authenticated desktop/server integration and local runtime supervision (`In Progress`).
 - Current Git branch: `main`.
-- Latest verified remote commit: `4a0736f51c540cce6ff47677453df6dceae5c6d6`.
-- Latest verified GitHub Actions run: `32389096872`, all nine jobs passed.
+- Latest verified remote commit: `82a2d11b45481a623e75a30141df87ee625ca3c2`.
+- Latest verified GitHub Actions run: `32409841146`, all nine jobs passed.
 - Public repository: `https://github.com/luinbytes/HomeBot`.
 - Required commit identity: `luinbytes <42706009+luinbytes@users.noreply.github.com>`.
 
@@ -38,19 +38,20 @@ Current blockers:
 - M1 epic 6C7-34: Rust/CI foundation, SQLite/outbox/recovery, authenticated HTTP/WebSocket transport, provider runtime, Codex, Claude/OpenAI-compatible/community adapters, and local filesystem/PTY/browser capabilities.
 - M2 component work: egui visual system, native shell, Bot lifecycle, direct chats, three-Bot groups/coordination, normalized activity/artifact surfaces, and settings/native notifications. Epic 6C7-41 is not complete until 6C7-73 passes.
 - 6C7-50, local MCP/plugin registry, exact client recovery states, health/discovery, enablement/removal and per-Bot assignment.
-- Most recent completed issue: 6C7-50.
+- 6C7-52, durable routine create/edit/versioning, structured recording conversion, deterministic Bot/MCP replay, dry run, Run now, approval preservation, restart persistence, durable failures and server-driven desktop projections.
+- Most recent completed issue: 6C7-52.
 
 ## Immediate next work
 
-1. Commit and push the verified 6C7-52 patch: structured MCP tool execution, correctable invalid recordings, durable failed runs, preserved approval stops, and server-event-only desktop projections.
-2. Verify remote CI, record evidence and close 6C7-52 only if every postcondition passes.
-3. Refresh Linear and immediately start the next unblocked issue. 6C7-73 remains an urgent required correction before M2 can close.
+1. Implement 6C7-73's transport/runtime layer and wire it into the real `HomeBotApp` startup and update lifecycle.
+2. Verify local-server supervision, authentication/version negotiation, snapshot hydration, sequenced WebSocket replay/fallback and authenticated Bot/chat/approval/attachment/stop mutations.
+3. Add end-to-end tests for clean local launch, authentication/version failures, unavailable server, restart/resume without duplicates and graceful shutdown.
 
 ## Verification state
 
-Verified at the reconciled remote baseline:
+Verified at the latest remote baseline:
 
-- GitHub Actions run 32389096872 passed formatting/clippy/112 tests, dependency policy/audit, Linux, macOS Intel, macOS Apple Silicon, and 15 cross-platform visual goldens for commit `4a0736f`.
+- GitHub Actions run 32409841146 passed all nine jobs: formatting/clippy/114 tests, dependency policy/audit, Linux, macOS Intel, macOS Apple Silicon, and 15 cross-platform visual goldens for commit `82a2d11b`.
 - The remote commit author and committer resolve to GitHub account `luinbytes`.
 - 6C7-50's authenticated integration fixture proves Connect -> Waiting -> Connected discovery, then malformed MCP health -> Error with disablement and cleared tools; the child environment is cleared and MCP results remain explicitly untrusted.
 
@@ -65,13 +66,12 @@ Verified locally for the active issue:
 
 - Cargo-deny 0.20.2 reports advisories, bans, licenses, and sources all OK with only the existing documented warnings.
 
-6C7-51 completion evidence is recorded in Linear and the issue is Done.
-6C7-50 completion evidence is recorded in Linear and the issue is Done.
+6C7-52 completion evidence is recorded in Linear and the issue is Done.
 
 ## Known failures and incomplete implementation
 
 - Android app, skills, schedules/triggers, VCS/worktrees/checkpoints, device pairing/Tailscale, packaging, and release artifacts remain incomplete roadmap work.
-- 6C7-52 is still In Progress until the verification patch passes the full gate and remote CI. M2 is reopened and 6C7-73 is Todo.
+- M2 is reopened and 6C7-73 is In Progress; the native app still lacks its production authenticated transport and bundled-server lifecycle until this issue lands.
 - Real authenticated Codex/Claude round trips are unavailable in this environment. OpenAI-compatible and CDP behavior use protocol-faithful local fixtures.
 - No release artifact exists. Do not describe HomeBot as installable or v1-ready.
 

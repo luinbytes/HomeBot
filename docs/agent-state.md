@@ -7,9 +7,9 @@ This file is operational state for coding agents. It is not user-facing product 
 ## Current state
 
 - Current milestone: M1, Local Runtime Foundation
-- Current Linear issue: 6C7-40 Claude Code adapter and generic BYOK backends
+- Current Linear issue: 6C7-72 local computer capability layer
 - Current Git branch: `feat/m0-contracts`
-- Latest verified remote commit: `6df35a721a8a93cede297418a112faa19de2c7b8`
+- Latest verified remote commit: `5c7cf444e879984f48ccc787647ec5c4d54125ce`
 - Public repository: `https://github.com/luinbytes/HomeBot`
 - Repository owner and commit identity: `luinbytes <42706009+luinbytes@users.noreply.github.com>`
 
@@ -35,7 +35,8 @@ Current blockers:
 - 6C7-37 is Done. GitHub Actions run 32352700967 passed all six Linux, macOS Intel, macOS arm64, quality, dependency-policy, and audit jobs.
 - 6C7-38 is Done. GitHub Actions run 32354047604 passed the full six-job matrix.
 - 6C7-39 is Done. GitHub Actions run 32355805077 passed the full six-job matrix. The current environment has no `codex` binary, so the real-binary smoke test skips with an explicit reason; fake executable App Server fixtures verify structured start, resume, streaming, approval, and interruption round trips.
-- 6C7-40 is In Progress. The Claude, OpenAI-compatible BYOK and generic process adapters are published at `d43d662`. The full local quality gate passes. GitHub Actions run 32357798823 exposed one dependency-policy failure because reqwest's Mozilla-maintained `webpki-roots` data package uses the permissive CDLA-Permissive-2.0 license, which was not yet in the explicit allowlist. The exact next action is to publish the reviewed allowlist addition and verify the replacement CI run before closing the issue.
+- 6C7-40 is Done. GitHub Actions run 32358033480 passed the full six-job matrix after the dependency policy explicitly admitted webpki-roots' permissive CDLA-Permissive-2.0 license.
+- 6C7-72 is In Progress. The exact next action is to implement the server-enforced capability policy and scoped operation foundation in `homebot-tools`, then layer hardened filesystem, terminal/process and local browser-session services over it with hostile-input tests.
 
 ## Completed work
 
@@ -52,18 +53,19 @@ Current blockers:
 - Authenticated HTTP/WebSocket transport, verified attachments, reconnect/replay, cancellation, heartbeat, idempotency, and bounded slow-client handling completed; Linear 6C7-37 is Done.
 - ProviderAdapter lifecycle/runtime and bounded child-process supervision completed; Linear 6C7-38 is Done.
 - Codex App Server adapter implemented with profile-scoped binary/environment configuration, auth and model discovery, structured threads/turns, streaming activities, approvals, usage, cancellation, compaction, normalized failures, and fixture-backed protocol tests; Linear 6C7-39 is Done.
+- Claude Code, OpenAI-compatible BYOK and constrained generic process adapters implemented with normalized streaming, cancellation, failures and request-time secret references; Linear 6C7-40 is Done.
 
 ## Immediate next work
 
-1. Publish the CDLA-Permissive-2.0 dependency-policy allowlist fix and verify every replacement GitHub Actions job succeeds.
-2. Add verification evidence to 6C7-40 and mark it Done only after remote CI passes.
-3. Refresh the dependency graph and begin 6C7-72, the local computer capability layer, if it remains the highest-priority unblocked issue.
+1. Define capability requests, policy decisions, single-use expiring approvals and structured activity/result contracts in `homebot-tools`.
+2. Implement descriptor-safe scoped filesystem operations and bounded cancellable terminal/process execution with filtered environments.
+3. Implement local-only browser profile/session control and automation behind the same policy boundary, then add hostile path, symlink, command, timeout, output and browser-state tests.
 
 ## Verification state
 
 Verified:
 
-- Local and remote Git trees matched at `6df35a7` before the current coherent 6C7-40 change.
+- Local and remote Git trees match at `5c7cf44`.
 - All three remote commits are attributed to GitHub account `luinbytes`.
 - Working tree was clean before `feat/m0-contracts` was created.
 - All committed TOML files parse with Python `tomllib`.

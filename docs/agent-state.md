@@ -7,9 +7,9 @@ This file is operational state for coding agents. It is not user-facing product 
 ## Current state
 
 - Current milestone: M2, Grok Bot Desktop Parity
-- Current Linear issue: 6C7-43 Bot roster, identity editor and lifecycle
+- Current Linear issue: 6C7-44 Direct chat timeline, composer, streaming and activities
 - Current Git branch: `feat/m0-contracts`
-- Latest verified remote commit: `ea2d4ace6466516744a756dc6a286dbd190fa3c6`
+- Latest verified remote commit: `790a2854ad2ad15d55cb5f8b600da4f6ac742ba5`
 - Public repository: `https://github.com/luinbytes/HomeBot`
 - Repository owner and commit identity: `luinbytes <42706009+luinbytes@users.noreply.github.com>`
 
@@ -41,7 +41,8 @@ Current blockers:
 - 6C7-40 is Done. GitHub Actions run 32358033480 passed the full six-job matrix after the dependency policy explicitly admitted webpki-roots' permissive CDLA-Permissive-2.0 license.
 - M1 is complete. 6C7-72 and epic 6C7-34 are Done after GitHub Actions run 32361115615 passed all six jobs.
 - 6C7-42 is Done. GitHub Actions run 32363729132 passed all nine quality, dependency, platform-build and cross-platform visual-golden jobs after the bounded executable-busy retry fix.
-- 6C7-43 is In Progress. The exact next action is to extend the Bot domain and migration-backed storage lifecycle, expose authoritative server operations, then wire the roster/editor UI states through a client model with reconnect and provider-health handling.
+- 6C7-43 is Done. GitHub Actions run 32366996632 passed all nine jobs with the native eframe executable and cross-platform visual goldens.
+- 6C7-44 is In Progress. The exact next action is to define durable chat/message/message-part/activity/approval state and protocol projections, then implement server-authoritative direct-chat mutations and an event-reconciling desktop timeline/composer model before extending the native UI.
 - egui 0.32.3 transitively uses unmaintained `ttf-parser` 0.25.1. RUSTSEC-2026-0192 reports no known vulnerability and no safe upgrade; the exact advisory is documented and temporarily ignored, with mandatory review in 6C7-69.
 
 ## Completed work
@@ -63,18 +64,19 @@ Current blockers:
 - Scoped filesystem, PTY/process and loopback CDP browser capabilities with server-side policy, approvals, activity and hostile-input tests completed; Linear 6C7-72 is Done.
 - M1 epic 6C7-34 is Done.
 - Semantic egui tokens, reusable shell components, deterministic CPU-rendered visual goldens and Linux/macOS visual CI are complete; Linear 6C7-42 is Done.
+- Validated Bot identity, owner-scoped SQLite lifecycle, authenticated APIs, durable Bot events/snapshots, native eframe roster/editor interactions and six visual states are complete; Linear 6C7-43 is Done.
 
 ## Immediate next work
 
-1. Define validated Bot name/title/shape/color/lifecycle semantics without exposing provider implementation vocabulary.
-2. Add transactional create/edit/archive/restore persistence, duplicate-name handling and restart tests with a migration fixture.
-3. Add server-authoritative Bot operations plus desktop roster/editor states for empty, disconnected, provider unavailable, unread and attention behavior.
+1. Define provider-neutral direct-chat, message-part, activity, approval, queue and streaming reconciliation state.
+2. Add migration-backed chat/message persistence plus atomic outbox mutations, idempotency and restart/reconnect tests.
+3. Add the desktop timeline/composer interactions for streaming, attachments, activity, approvals, retry, steering, stop/cancel, queued prompts, scroll anchoring and unread state.
 
 ## Verification state
 
 Verified:
 
-- Local and remote Git trees match at `ea2d4ac`. GitHub Actions run 32363729132 passed all nine jobs, including exact visual comparison on Linux, macOS Intel and macOS Apple Silicon.
+- Local and remote Git trees match at `790a285`. GitHub Actions run 32366996632 passed all nine jobs, including native eframe workspace builds and exact visual comparison on Linux, macOS Intel and macOS Apple Silicon.
 - Remote commits are attributed to GitHub account `luinbytes`; the latest verified commit exposes the expected noreply identity.
 - Working tree was clean before `feat/m0-contracts` was created.
 - All committed TOML files parse with Python `tomllib`.
@@ -89,7 +91,7 @@ Verified:
 - `./scripts/check.sh` passes locally with formatting, workspace clippy, 51 Rust tests, protocol schema drift and generated Android binding drift checks.
 - `homebot-providers` has 22 passing tests. Codex coverage includes JSONL fixture normalization, profile isolation and redaction, explicit binary discovery, auth/error and interruption normalization, fake App Server start/resume, streaming, approval resolution, cancellation, and an explicit real-binary skip when Codex is absent. Claude fixtures verify normalized init/content/tool/usage/result records, resume-oriented CLI arguments, streaming and cancellation. OpenAI-compatible tests verify request-time bearer resolution, model discovery, streamed Responses events, HTTPS/loopback policy, redaction and cancellation. Generic process tests verify its JSONL contract, bounded normalized streaming, redaction and cancellation.
 - `homebot-tools` has 12 unit and 3 hostile-input integration tests covering actor-scoped deny/allow policy, single-use/expiring/digest-bound approvals, policy revision invalidation, content substitution, traversal, symlinks, atomic and bounded filesystem operations, real PTY output/input lifecycle, duplicate IDs, filtered environment, cancellation, timeout, output limits, loopback-only browser control, profile confinement and normalized CDP actions.
-- The full workspace now has 71 passing Rust tests, including three pixel-exact CPU-rendered desktop goldens and a deterministic transient executable-busy regression. The full 23-test provider suite also passed 100 consecutive stress iterations. Local cargo-deny 0.20.2 reports advisories, bans, licenses and sources all OK with the documented exact unmaintained-font-parser exception.
+- The full workspace now has 77 passing Rust test cases, including six pixel-exact CPU-rendered desktop goldens and a deterministic transient executable-busy regression. The full 23-test provider suite also passed 100 consecutive stress iterations. Local cargo-deny 0.20.2 reports advisories, bans, licenses and sources all OK with the documented exact unmaintained-font-parser exception.
 
 Not yet verified:
 
@@ -101,7 +103,7 @@ Not yet verified:
 
 - `homebot-server` covers every stated 6C7-37 transport behaviour locally and in the passing remote matrix.
 - The first-class Codex and Claude adapters cannot perform real authenticated provider messages in this environment because neither CLI binary is installed. Their structured protocol fixtures pass. The OpenAI-compatible adapter is verified against a local protocol-faithful HTTP/SSE fixture, not a user credential. The local computer capability layer is implemented but no real Chrome process is installed in this environment, so CDP behavior is verified against a protocol-faithful loopback fixture. Desktop egui, Android, routines, plugins, VCS, pairing, and packaging are not implemented.
-- Desktop Bot lifecycle, server CRUD, unread/attention state and editor interaction remain unimplemented and are the active 6C7-43 work.
+- Direct chat persistence, timeline streaming reconciliation, composer operations and native chat interactions remain unimplemented and are the active 6C7-44 work.
 - No release artifact exists. Do not describe the project as installable or v1-ready.
 
 ## Environment notes

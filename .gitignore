@@ -1,0 +1,12 @@
+/target
+/.idea
+/.vscode
+*.iml
+.DS_Store
+local.properties
+.gradle
+android/**/build
+*.db
+*.db-shm
+*.db-wal
+.env

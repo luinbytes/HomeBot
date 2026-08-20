@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://homebot.dev/protocol/v1/homebot.schema.json",
+  "title": "HomeBot protocol v1 envelope",
+  "type": "object",
+  "required": ["protocol_version", "sequence", "event_id", "kind"],
+  "properties": {
+    "protocol_version": { "const": 1 },
+    "sequence": { "type": "integer", "minimum": 1 },
+    "event_id": { "type": "string", "format": "uuid" },
+    "kind": {
+      "enum": ["hello", "snapshot", "command_accepted", "command_completed", "command_failed", "ping"]
+    }
+  },
+  "additionalProperties": true
+}

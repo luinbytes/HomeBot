@@ -16,7 +16,7 @@ use homebot_protocol::{
     ClientMessage, ErrorCode, ErrorEnvelope, ProtocolRange, ResumeDisposition, ServerEvent,
     ServerEventBody, Snapshot,
 };
-use homebot_storage::{IdempotencyClaim, Storage};
+use homebot_storage::{IdempotencyClaim, ReplayWindow, Storage};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
@@ -129,16 +129,19 @@ async fn initial_sync(socket: &mut WebSocket, state: &AppState) -> bool {
     }
 
     let cursor = resume_after.unwrap_or(0);
-    let retained = if resume_after.is_some() {
-        state
+    let replay = if resume_after.is_some() {
+        match state
             .storage
-            .events_after(state.owner_id, cursor, 1_000)
+            .replay_after(state.owner_id, cursor, 1_000)
             .await
-            .ok()
+        {
+            Ok(window @ ReplayWindow::Available(_)) => Some(window),
+            Ok(ReplayWindow::Unavailable) | Err(_) => None,
+        }
     } else {
         None
     };
-    let disposition = if retained.is_some() {
+    let disposition = if replay.is_some() {
         ResumeDisposition::Replayed
     } else {
         ResumeDisposition::SnapshotRequired
@@ -163,11 +166,27 @@ async fn initial_sync(socket: &mut WebSocket, state: &AppState) -> bool {
     if send_json(socket, &hello).await.is_err() {
         return false;
     }
-    if let Some(events) = retained {
-        for event in events {
-            if send_json(socket, &event.payload).await.is_err() {
-                return false;
+    if let Some(ReplayWindow::Available(mut events)) = replay {
+        loop {
+            let batch_is_full = events.len() == 1_000;
+            let mut next_cursor = cursor;
+            for event in events {
+                next_cursor = event.sequence;
+                if send_json(socket, &event.payload).await.is_err() {
+                    return false;
+                }
             }
+            if !batch_is_full {
+                break;
+            }
+            events = match state
+                .storage
+                .replay_after(state.owner_id, next_cursor, 1_000)
+                .await
+            {
+                Ok(ReplayWindow::Available(events)) => events,
+                Ok(ReplayWindow::Unavailable) | Err(_) => return false,
+            };
         }
     } else {
         let boundary = state
@@ -582,6 +601,56 @@ mod tests {
             }
         ));
         assert_eq!(replayed, replay);
+        task.abort();
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn reconnect_uses_snapshot_when_cursor_falls_outside_retention()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let storage = Storage::open(&directory.path().join("homebot.db")).await?;
+        let replay = ServerEvent {
+            protocol_version: homebot_protocol::PROTOCOL_VERSION,
+            sequence: 0,
+            event_id: Uuid::now_v7(),
+            body: ServerEventBody::Ping {
+                nonce: Uuid::now_v7(),
+            },
+        };
+        storage
+            .append_event(Uuid::nil(), "ping", &serde_json::to_value(&replay)?, 1)
+            .await?;
+        storage.prune_events_through(Uuid::nil(), 1, 2).await?;
+        let (address, task, _guard) = spawn_app(storage).await?;
+        let mut request = format!("ws://{address}/api/v1/events").into_client_request()?;
+        request
+            .headers_mut()
+            .insert("authorization", "Bearer correct-token".parse()?);
+        let (mut socket, _) = connect_async(request).await?;
+        socket
+            .send(tokio_tungstenite::tungstenite::Message::Text(
+                serde_json::to_string(&ClientMessage::Hello {
+                    protocol_version: homebot_protocol::PROTOCOL_VERSION,
+                    client_version: "test".to_owned(),
+                    device_session: "test-device".to_owned(),
+                    resume_after: Some(0),
+                })?
+                .into(),
+            ))
+            .await?;
+        let hello: ServerEvent =
+            serde_json::from_str(socket.next().await.ok_or("missing hello")??.to_text()?)?;
+        let snapshot: ServerEvent =
+            serde_json::from_str(socket.next().await.ok_or("missing snapshot")??.to_text()?)?;
+        assert!(matches!(
+            hello.body,
+            ServerEventBody::Hello {
+                resume: ResumeDisposition::SnapshotRequired,
+                ..
+            }
+        ));
+        assert!(matches!(snapshot.body, ServerEventBody::Snapshot { .. }));
         task.abort();
         Ok(())
     }

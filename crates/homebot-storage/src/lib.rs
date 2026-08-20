@@ -9,7 +9,7 @@ use sqlx::{
 use std::{path::Path, str::FromStr, time::Duration};
 use uuid::Uuid;
 
-pub const SCHEMA_VERSION: u32 = 1;
+pub const SCHEMA_VERSION: u32 = 2;
 static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
 
 #[derive(Debug, thiserror::Error)]
@@ -46,6 +46,12 @@ pub enum IdempotencyClaim {
     Claimed { operation_id: Uuid },
     Replayed { operation_id: Uuid },
     Conflict,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ReplayWindow {
+    Available(Vec<OutboxEvent>),
+    Unavailable,
 }
 
 impl Storage {
@@ -211,6 +217,71 @@ impl Storage {
         rows.iter().map(row_to_event).collect()
     }
 
+    /// Returns retained events after a cursor, or reports that a snapshot is required.
+    ///
+    /// A cursor is unavailable when retention has advanced past it or when it is
+    /// ahead of the durable stream. This prevents silently accepting a gap.
+    ///
+    /// # Errors
+    ///
+    /// Returns a storage error when retention metadata or events cannot be read.
+    pub async fn replay_after(
+        &self,
+        owner_id: Uuid,
+        sequence: u64,
+        limit: u32,
+    ) -> Result<ReplayWindow, StorageError> {
+        let sequence_i64 = i64::try_from(sequence).map_err(|_| {
+            StorageError::Integrity("outbox cursor exceeds SQLite range".to_owned())
+        })?;
+        let minimum: Option<i64> = sqlx::query_scalar(
+            "SELECT minimum_resume_sequence FROM event_retention_cursors WHERE owner_id = ?",
+        )
+        .bind(owner_id.to_string())
+        .fetch_optional(&self.pool)
+        .await?;
+        let floor = minimum.map_or(0, |value| u64::try_from(value).unwrap_or(0));
+        let latest = self.latest_sequence(owner_id).await?.max(floor);
+        if minimum.is_some_and(|floor| sequence_i64 < floor) || sequence > latest {
+            return Ok(ReplayWindow::Unavailable);
+        }
+        Ok(ReplayWindow::Available(
+            self.events_after(owner_id, sequence, limit).await?,
+        ))
+    }
+
+    /// Prunes an owner's events through a sequence and advances its resume floor atomically.
+    ///
+    /// # Errors
+    ///
+    /// Returns a storage error if the retention boundary cannot be committed.
+    pub async fn prune_events_through(
+        &self,
+        owner_id: Uuid,
+        sequence: u64,
+        updated_at_ms: i64,
+    ) -> Result<(), StorageError> {
+        let sequence = i64::try_from(sequence).map_err(|_| {
+            StorageError::Integrity("outbox cursor exceeds SQLite range".to_owned())
+        })?;
+        let mut transaction = self.pool.begin().await?;
+        sqlx::query(
+            "INSERT INTO event_retention_cursors (owner_id, minimum_resume_sequence, updated_at_ms) VALUES (?, ?, ?) ON CONFLICT(owner_id) DO UPDATE SET minimum_resume_sequence = max(minimum_resume_sequence, excluded.minimum_resume_sequence), updated_at_ms = excluded.updated_at_ms",
+        )
+        .bind(owner_id.to_string())
+        .bind(sequence)
+        .bind(updated_at_ms)
+        .execute(&mut *transaction)
+        .await?;
+        sqlx::query("DELETE FROM event_outbox WHERE owner_id = ? AND sequence <= ?")
+            .bind(owner_id.to_string())
+            .bind(sequence)
+            .execute(&mut *transaction)
+            .await?;
+        transaction.commit().await?;
+        Ok(())
+    }
+
     /// Returns the latest global outbox sequence visible to an owner.
     ///
     /// # Errors
@@ -361,6 +432,7 @@ mod tests {
             "bots",
             "chats",
             "event_outbox",
+            "event_retention_cursors",
             "messages",
             "paired_devices",
             "plugins",
@@ -453,6 +525,39 @@ mod tests {
                 .claim_idempotency(key, "hash-b", Uuid::now_v7(), 3)
                 .await?,
             IdempotencyClaim::Conflict
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn replay_window_detects_pruned_and_future_cursors() -> Result<(), StorageError> {
+        let directory = tempfile::tempdir()?;
+        let storage = Storage::open(&directory.path().join("homebot.db")).await?;
+        let owner = Uuid::now_v7();
+        storage
+            .append_event(owner, "one", &json!({"sequence": 0}), 1)
+            .await?;
+        let second = storage
+            .append_event(owner, "two", &json!({"sequence": 0}), 2)
+            .await?;
+        storage.prune_events_through(owner, 1, 3).await?;
+
+        assert_eq!(
+            storage.replay_after(owner, 0, 100).await?,
+            ReplayWindow::Unavailable
+        );
+        assert_eq!(
+            storage.replay_after(owner, 1, 100).await?,
+            ReplayWindow::Available(vec![second])
+        );
+        storage.prune_events_through(owner, 2, 4).await?;
+        assert_eq!(
+            storage.replay_after(owner, 2, 100).await?,
+            ReplayWindow::Available(Vec::new())
+        );
+        assert_eq!(
+            storage.replay_after(owner, 3, 100).await?,
+            ReplayWindow::Unavailable
         );
         Ok(())
     }

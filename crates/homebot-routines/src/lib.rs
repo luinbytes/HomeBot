@@ -371,4 +371,25 @@ mod tests {
         );
         Ok(())
     }
+
+    #[tokio::test]
+    async fn recording_preserves_approval_boundaries_across_replay() -> Result<(), RoutineError> {
+        let definition = definition_from_recording(vec![RecordedAction {
+            actor: RecordedActor::Bot,
+            step: RoutineStep::BotPrompt {
+                bot_id: Uuid::nil(),
+                prompt_template: "Publish the reviewed result".to_owned(),
+                requires_approval: true,
+            },
+        }])?;
+        assert!(definition.steps[0].requires_approval());
+        let executor = FixtureExecutor(AtomicUsize::new(0));
+        let result = replay(&executor, &definition, &serde_json::json!({}), false).await?;
+        assert_eq!(
+            result.first().map(|step| step.status),
+            Some(RoutineStepStatus::ApprovalRequired)
+        );
+        assert_eq!(executor.0.load(Ordering::SeqCst), 0);
+        Ok(())
+    }
 }

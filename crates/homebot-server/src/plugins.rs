@@ -130,11 +130,7 @@ pub(super) async fn connect(
         )
         .await?;
     publish(&state, summary(&state, &waiting).await?).await?;
-    let config: LocalConfiguration =
-        serde_json::from_value(record.configuration).map_err(|_| ApiError::internal())?;
-    let mut profile = LocalMcpProfile::new(config.program);
-    profile.arguments = config.arguments.into_iter().map(OsString::from).collect();
-    let adapter = LocalMcpAdapter::new(profile);
+    let adapter = adapter_for(&record)?;
     let updated = match adapter.discover_tools().await {
         Ok(discovered) => {
             let tools = discovered
@@ -184,6 +180,14 @@ pub(super) async fn connect(
     let plugin = summary(&state, &updated).await?;
     publish(&state, plugin.clone()).await?;
     Ok(Json(plugin))
+}
+
+pub(super) fn adapter_for(record: &PluginRecord) -> Result<LocalMcpAdapter, ApiError> {
+    let config: LocalConfiguration =
+        serde_json::from_value(record.configuration.clone()).map_err(|_| ApiError::internal())?;
+    let mut profile = LocalMcpProfile::new(config.program);
+    profile.arguments = config.arguments.into_iter().map(OsString::from).collect();
+    Ok(LocalMcpAdapter::new(profile))
 }
 
 pub(super) async fn enable(

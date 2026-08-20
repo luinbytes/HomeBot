@@ -96,6 +96,12 @@ pub enum PluginError {
 pub trait PluginAdapter: Send + Sync {
     async fn discover_tools(&self) -> Result<Vec<McpToolDescriptor>, PluginError>;
     async fn health(&self) -> Result<(), PluginError>;
+    async fn call_tool(
+        &self,
+        plugin_id: uuid::Uuid,
+        name: &str,
+        arguments: &Value,
+    ) -> Result<UntrustedMcpOutput, PluginError>;
 }
 
 #[derive(Clone, Debug)]
@@ -195,6 +201,67 @@ impl PluginAdapter for LocalMcpAdapter {
 
     async fn health(&self) -> Result<(), PluginError> {
         self.session(false).await.map(drop)
+    }
+
+    async fn call_tool(
+        &self,
+        plugin_id: uuid::Uuid,
+        name: &str,
+        arguments: &Value,
+    ) -> Result<UntrustedMcpOutput, PluginError> {
+        if name.is_empty() || name.len() > 128 || !name.is_ascii() || !arguments.is_object() {
+            return Err(PluginError::Protocol);
+        }
+        let mut spec = ProcessSpec::new(&self.profile.program);
+        for argument in &self.profile.arguments {
+            spec = spec.arg(argument);
+        }
+        for (key, value) in &self.profile.environment {
+            spec = spec.environment(key, value);
+        }
+        let mut process = SupervisedProcess::spawn(spec).map_err(|_| PluginError::Spawn)?;
+        let mut input = process.take_stdin().ok_or(PluginError::Protocol)?;
+        let output = process.take_stdout().ok_or(PluginError::Protocol)?;
+        let mut reader = BufReader::new(output);
+        write_message(
+            &mut input,
+            &json!({
+                "jsonrpc": "2.0", "id": 1, "method": "initialize",
+                "params": {
+                    "protocolVersion": MCP_PROTOCOL_VERSION,
+                    "capabilities": {},
+                    "clientInfo": {"name": "HomeBot", "version": env!("CARGO_PKG_VERSION")}
+                }
+            }),
+        )
+        .await?;
+        validate_response(&read_message(&mut reader, self.profile.timeout).await?, 1)?;
+        write_message(
+            &mut input,
+            &json!({"jsonrpc":"2.0","method":"notifications/initialized"}),
+        )
+        .await?;
+        write_message(
+            &mut input,
+            &json!({
+                "jsonrpc":"2.0", "id":2, "method":"tools/call",
+                "params":{"name":name,"arguments":arguments}
+            }),
+        )
+        .await?;
+        let response = read_message(&mut reader, self.profile.timeout).await?;
+        validate_response(&response, 2)?;
+        let content = response
+            .get("result")
+            .cloned()
+            .ok_or(PluginError::Protocol)?;
+        drop(input);
+        process.shutdown().await.map_err(|_| PluginError::Io)?;
+        Ok(UntrustedMcpOutput {
+            plugin_id,
+            tool_name: name.to_owned(),
+            content,
+        })
     }
 }
 
@@ -298,14 +365,13 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let directory = tempfile::tempdir()?;
         let server = directory.path().join("fixture-mcp");
-        let script = "#!/bin/sh\nif [ \"${HOME+x}\" = x ]; then exit 9; fi\nwhile IFS= read -r line; do\ncase \"$line\" in\n*\\\"method\\\":\\\"initialize\\\"*) printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":\"2025-11-25\",\"capabilities\":{\"tools\":{}},\"serverInfo\":{\"name\":\"fixture\",\"version\":\"1\"}}}' ;;\n*\\\"method\\\":\\\"tools/list\\\"*) printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"tools\":[{\"name\":\"zeta\",\"inputSchema\":{\"type\":\"object\"}},{\"name\":\"alpha\",\"description\":\"safe metadata\",\"inputSchema\":{\"type\":\"object\"}}]}}' ;;\nesac\ndone\n";
+        let script = "#!/bin/sh\nif [ \"${HOME+x}\" = x ]; then exit 9; fi\nwhile IFS= read -r line; do\ncase \"$line\" in\n*\\\"method\\\":\\\"initialize\\\"*) printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":\"2025-11-25\",\"capabilities\":{\"tools\":{}},\"serverInfo\":{\"name\":\"fixture\",\"version\":\"1\"}}}' ;;\n*\\\"method\\\":\\\"tools/list\\\"*) printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"tools\":[{\"name\":\"zeta\",\"inputSchema\":{\"type\":\"object\"}},{\"name\":\"alpha\",\"description\":\"safe metadata\",\"inputSchema\":{\"type\":\"object\"}}]}}' ;;\n*\\\"method\\\":\\\"tools/call\\\"*) printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"fixture result\"}]}}' ;;\nesac\ndone\n";
         std::fs::write(&server, script)?;
         let mut permissions = std::fs::metadata(&server)?.permissions();
         permissions.set_mode(0o700);
         std::fs::set_permissions(&server, permissions)?;
-        let tools = LocalMcpAdapter::new(LocalMcpProfile::new(server))
-            .discover_tools()
-            .await?;
+        let adapter = LocalMcpAdapter::new(LocalMcpProfile::new(server));
+        let tools = adapter.discover_tools().await?;
         assert_eq!(
             tools
                 .iter()
@@ -313,6 +379,11 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["alpha", "zeta"]
         );
+        let output = adapter
+            .call_tool(uuid::Uuid::nil(), "alpha", &json!({"value":1}))
+            .await?;
+        assert_eq!(output.tool_name, "alpha");
+        assert_eq!(output.content["content"][0]["text"], "fixture result");
         Ok(())
     }
 }

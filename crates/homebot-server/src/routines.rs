@@ -11,6 +11,7 @@ use axum::{
     extract::{Path, State},
     http::StatusCode,
 };
+use homebot_plugins::PluginAdapter;
 use homebot_protocol::{
     AppendRoutineRecordingRequest, BotMutationRequest, CreateRoutineRequest,
     DuplicateRoutineRequest, PluginMutationRequest, RoutineRecordingSummary, RoutineRunSummary,
@@ -292,7 +293,7 @@ pub(super) async fn finish_recording(
     }
     let recording = state
         .storage
-        .close_routine_recording(state.owner_id, recording_id, true, unix_time_ms())
+        .routine_recording(state.owner_id, recording_id)
         .await?;
     let definition =
         definition_from_recording(recording.actions).map_err(|error| routine_validation(&error))?;
@@ -312,6 +313,10 @@ pub(super) async fn finish_recording(
         updated_at_ms: now,
     };
     state.storage.create_routine(&record).await?;
+    let _ = state
+        .storage
+        .close_routine_recording(state.owner_id, recording_id, true, unix_time_ms())
+        .await?;
     let routine = summary(&record);
     publish_routine(&state, routine.clone()).await?;
     Ok((StatusCode::CREATED, Json(routine)))
@@ -385,19 +390,23 @@ async fn execute(
         state,
         routine_bot_id: routine.bot_id,
     };
-    let results = replay(&executor, &routine.definition, &request.inputs, dry_run)
-        .await
-        .map_err(|error| routine_validation(&error))?;
-    let status = if results
-        .iter()
-        .any(|step| step.status == RoutineStepStatus::ApprovalRequired)
-    {
-        "waiting_approval"
-    } else if dry_run {
-        "dry_run_succeeded"
-    } else {
-        "succeeded"
-    };
+    let (results, status, error_message) =
+        match replay(&executor, &routine.definition, &request.inputs, dry_run).await {
+            Ok(results) => {
+                let status = if results
+                    .iter()
+                    .any(|step| step.status == RoutineStepStatus::ApprovalRequired)
+                {
+                    "waiting_approval"
+                } else if dry_run {
+                    "dry_run_succeeded"
+                } else {
+                    "succeeded"
+                };
+                (results, status, None)
+            }
+            Err(error) => (Vec::new(), "failed", Some(routine_error_message(&error))),
+        };
     let record = RoutineRunRecord {
         id: request.idempotency_key,
         owner_id: state.owner_id,
@@ -407,7 +416,7 @@ async fn execute(
         dry_run,
         inputs: redacted_input_metadata(&routine.definition, &request.inputs),
         results: Some(results),
-        error_message: None,
+        error_message,
         started_at_ms: started,
         finished_at_ms: Some(unix_time_ms()),
     };
@@ -570,15 +579,48 @@ impl RoutineActionExecutor for ServerExecutor<'_> {
             RoutineStep::PluginTool {
                 plugin_id,
                 tool_name,
+                arguments,
                 ..
             } => {
-                json!({"kind":"plugin_tool","plugin_id":plugin_id,"tool_name":tool_name,"status":"dispatched","trust":"untrusted"})
+                let plugin = self
+                    .state
+                    .storage
+                    .plugin(self.state.owner_id, *plugin_id)
+                    .await
+                    .map_err(|_| RoutineError::StepFailed)?;
+                let adapter =
+                    super::plugins::adapter_for(&plugin).map_err(|_| RoutineError::StepFailed)?;
+                let rendered_arguments = render_value_templates(arguments, inputs);
+                let _untrusted = adapter
+                    .call_tool(*plugin_id, tool_name, &rendered_arguments)
+                    .await
+                    .map_err(|_| RoutineError::StepFailed)?;
+                json!({"kind":"plugin_tool","plugin_id":plugin_id,"tool_name":tool_name,"status":"succeeded","trust":"untrusted"})
             }
             RoutineStep::RecordOutput {
                 output_key,
                 value_template,
             } => json!({"kind":"output","key":output_key,"value":value_template}),
         })
+    }
+}
+
+fn render_value_templates(value: &Value, inputs: &Value) -> Value {
+    match value {
+        Value::String(text) => Value::String(render_template(text, inputs)),
+        Value::Array(values) => Value::Array(
+            values
+                .iter()
+                .map(|value| render_value_templates(value, inputs))
+                .collect(),
+        ),
+        Value::Object(values) => Value::Object(
+            values
+                .iter()
+                .map(|(key, value)| (key.clone(), render_value_templates(value, inputs)))
+                .collect(),
+        ),
+        other => other.clone(),
     }
 }
 
@@ -671,12 +713,15 @@ async fn publish_run(state: &AppState, run: RoutineRunSummary) -> Result<(), Api
     .map_err(|()| ApiError::internal())
 }
 fn routine_validation(error: &RoutineError) -> ApiError {
-    let message = match error {
+    ApiError::validation(&routine_error_message(error))
+}
+
+fn routine_error_message(error: &RoutineError) -> String {
+    match error {
         RoutineError::Empty => "routine must contain at least one structured step".to_owned(),
         RoutineError::Invalid(detail) => format!("routine definition is invalid: {detail}"),
         RoutineError::StepFailed => "routine step failed".to_owned(),
-    };
-    ApiError::validation(&message)
+    }
 }
 fn visible(value: &str, max: usize, label: &str) -> Result<String, ApiError> {
     let value = value.trim();

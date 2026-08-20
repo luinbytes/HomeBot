@@ -2,6 +2,67 @@
 
 use crate::tokens::HomeBotTheme;
 use egui::{Align, Frame, Layout, RichText, Stroke, Ui};
+use homebot_protocol::{
+    RoutineRecordingSummary, RoutineRunSummary, RoutineSummary, ServerEvent, ServerEventBody,
+};
+use std::collections::BTreeMap;
+use uuid::Uuid;
+
+/// Read-only desktop cache hydrated from authenticated server responses/events.
+#[derive(Clone, Debug, Default)]
+pub struct RoutineProjection {
+    routines: BTreeMap<Uuid, RoutineSummary>,
+    recordings: BTreeMap<Uuid, RoutineRecordingSummary>,
+    runs: BTreeMap<Uuid, Vec<RoutineRunSummary>>,
+}
+
+impl RoutineProjection {
+    pub fn hydrate(&mut self, routines: Vec<RoutineSummary>) {
+        self.routines = routines
+            .into_iter()
+            .map(|routine| (routine.id, routine))
+            .collect();
+    }
+
+    pub fn apply(&mut self, event: &ServerEvent) {
+        match &event.body {
+            ServerEventBody::RoutineChanged { routine } => {
+                self.routines.insert(routine.id, routine.clone());
+            }
+            ServerEventBody::RoutineRemoved { routine_id } => {
+                self.routines.remove(routine_id);
+                self.runs.remove(routine_id);
+            }
+            ServerEventBody::RoutineRecordingChanged { recording } => {
+                self.recordings.insert(recording.id, recording.clone());
+            }
+            ServerEventBody::RoutineRunChanged { run } => {
+                let runs = self.runs.entry(run.routine_id).or_default();
+                if let Some(existing) = runs.iter_mut().find(|existing| existing.id == run.id) {
+                    *existing = run.clone();
+                } else {
+                    runs.push(run.clone());
+                }
+                runs.sort_by_key(|item| std::cmp::Reverse(item.started_at_unix_ms));
+            }
+            _ => {}
+        }
+    }
+
+    pub fn routines(&self) -> impl Iterator<Item = &RoutineSummary> {
+        self.routines.values()
+    }
+
+    #[must_use]
+    pub fn recording(&self, id: Uuid) -> Option<&RoutineRecordingSummary> {
+        self.recordings.get(&id)
+    }
+
+    #[must_use]
+    pub fn runs(&self, routine_id: Uuid) -> &[RoutineRunSummary] {
+        self.runs.get(&routine_id).map_or(&[], Vec::as_slice)
+    }
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RoutineSurface {
@@ -160,4 +221,59 @@ fn recording(ui: &mut Ui, theme: HomeBotTheme) {
         let _ = ui.button("Cancel");
         let _ = ui.button("Stop and review");
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use homebot_protocol::{PROTOCOL_VERSION, RoutineDefinition};
+
+    fn routine(id: Uuid, name: &str) -> RoutineSummary {
+        RoutineSummary {
+            id,
+            bot_id: Uuid::nil(),
+            name: name.to_owned(),
+            description: String::new(),
+            enabled: false,
+            draft: true,
+            active_version_id: Uuid::now_v7(),
+            version: 1,
+            definition: RoutineDefinition {
+                inputs: Vec::new(),
+                steps: Vec::new(),
+                expected_outputs: Vec::new(),
+            },
+            created_at_unix_ms: 1,
+            updated_at_unix_ms: 1,
+        }
+    }
+
+    fn event(body: ServerEventBody) -> ServerEvent {
+        ServerEvent {
+            protocol_version: PROTOCOL_VERSION,
+            sequence: 1,
+            event_id: Uuid::now_v7(),
+            body,
+        }
+    }
+
+    #[test]
+    fn projection_is_hydrated_and_changed_only_by_server_contracts() {
+        let id = Uuid::now_v7();
+        let mut projection = RoutineProjection::default();
+        projection.hydrate(vec![routine(id, "Morning brief")]);
+        assert_eq!(
+            projection.routines().next().map(|item| item.name.as_str()),
+            Some("Morning brief")
+        );
+        projection.apply(&event(ServerEventBody::RoutineChanged {
+            routine: routine(id, "Morning intelligence"),
+        }));
+        assert_eq!(
+            projection.routines().next().map(|item| item.name.as_str()),
+            Some("Morning intelligence")
+        );
+        projection.apply(&event(ServerEventBody::RoutineRemoved { routine_id: id }));
+        assert_eq!(projection.routines().count(), 0);
+    }
 }

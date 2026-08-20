@@ -12,12 +12,13 @@ use homebot_protocol::{
     BotProviderStatus, BotResponse, BotShape, ChatTimelineResponse, CreateAttachmentRequest,
     CreateAttachmentResponse, CreateBotRequest, CreateDirectChatRequest, CreateDirectChatResponse,
     CreateGroupChatRequest, CreateGroupChatResponse, CreateLocalMcpPluginRequest,
-    DuplicateRoutineRequest, FinalizeAttachmentRequest, GroupBotStatus, GroupTimelineResponse,
-    HandoffGroupRequest, PluginConnectionState, PluginMutationRequest, PluginSummary,
-    RecordedAction, RecordedActor, RoutineRecordingSummary, RoutineRunSummary, RoutineStep,
-    RoutineStepStatus, RoutineSummary, RunRoutineRequest, SecretSummary, SendGroupMessageRequest,
-    SendMessageRequest, SendMessageResponse, StartRoutineRecordingRequest, UpdateBotRequest,
-    UpdateGroupParticipantRequest, UpdateRoutineRequest,
+    CreateRoutineRequest, DuplicateRoutineRequest, FinalizeAttachmentRequest, GroupBotStatus,
+    GroupTimelineResponse, HandoffGroupRequest, PluginConnectionState, PluginMutationRequest,
+    PluginSummary, RecordedAction, RecordedActor, RoutineDefinition, RoutineRecordingSummary,
+    RoutineRunSummary, RoutineStep, RoutineStepStatus, RoutineSummary, RunRoutineRequest,
+    SecretSummary, SendGroupMessageRequest, SendMessageRequest, SendMessageResponse,
+    StartRoutineRecordingRequest, UpdateBotRequest, UpdateGroupParticipantRequest,
+    UpdateRoutineRequest,
 };
 use homebot_providers::{
     ActivityKind, ActivityStatus as ProviderActivityStatus, ApprovalDecision, CompactRequest,
@@ -441,6 +442,122 @@ async fn recorded_routine_edits_versions_dry_runs_and_replays_deterministically(
             .len(),
         2
     );
+    Ok(())
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn routine_failures_are_durable_and_invalid_finish_keeps_recording_editable()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let database = directory.path().join("homebot.db");
+    let storage = Storage::open(&database).await?;
+    let bot = storage
+        .create_bot(
+            Uuid::nil(),
+            homebot_domain::Bot::create("Nova", "Research")?,
+            1,
+        )
+        .await?;
+    let app = router(AppState::new(storage.clone(), "correct-token"));
+
+    let recording_id = Uuid::now_v7();
+    let start = StartRoutineRecordingRequest {
+        request_id: Uuid::now_v7(),
+        idempotency_key: recording_id,
+        bot_id: bot.id.0,
+        name: "Recoverable recording".to_owned(),
+        description: String::new(),
+    };
+    let _ = app
+        .clone()
+        .oneshot(json_request("POST", "/api/v1/routine-recordings", &start))
+        .await?;
+    let finish = BotMutationRequest {
+        request_id: Uuid::now_v7(),
+        idempotency_key: Uuid::now_v7(),
+    };
+    let invalid_finish = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            &format!("/api/v1/routine-recordings/{recording_id}/finish"),
+            &finish,
+        ))
+        .await?;
+    assert_eq!(invalid_finish.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let append = AppendRoutineRecordingRequest {
+        request_id: Uuid::now_v7(),
+        idempotency_key: Uuid::now_v7(),
+        action: RecordedAction {
+            actor: RecordedActor::User,
+            step: RoutineStep::BotPrompt {
+                bot_id: bot.id.0,
+                prompt_template: "Try again".to_owned(),
+                requires_approval: false,
+            },
+        },
+    };
+    let still_editable = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            &format!("/api/v1/routine-recordings/{recording_id}/actions"),
+            &append,
+        ))
+        .await?;
+    assert_eq!(still_editable.status(), StatusCode::OK);
+
+    let routine_id = Uuid::now_v7();
+    let create = CreateRoutineRequest {
+        request_id: Uuid::now_v7(),
+        idempotency_key: routine_id,
+        bot_id: bot.id.0,
+        name: "Unavailable Bot fixture".to_owned(),
+        description: String::new(),
+        definition: RoutineDefinition {
+            inputs: Vec::new(),
+            steps: vec![RoutineStep::BotPrompt {
+                bot_id: Uuid::now_v7(),
+                prompt_template: "Cannot dispatch".to_owned(),
+                requires_approval: false,
+            }],
+            expected_outputs: Vec::new(),
+        },
+        draft: false,
+    };
+    let created = app
+        .clone()
+        .oneshot(json_request("POST", "/api/v1/routines", &create))
+        .await?;
+    assert_eq!(created.status(), StatusCode::CREATED);
+    let run_id = Uuid::now_v7();
+    let failed = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            &format!("/api/v1/routines/{routine_id}/run"),
+            &RunRoutineRequest {
+                request_id: Uuid::now_v7(),
+                idempotency_key: run_id,
+                inputs: json!({}),
+            },
+        ))
+        .await?;
+    let failed: RoutineRunSummary = response_json(failed).await?;
+    assert_eq!(failed.status, "failed");
+    assert_eq!(
+        failed.error_message.as_deref(),
+        Some("routine definition is invalid: step Bot differs from routine Bot")
+    );
+    drop(app);
+    storage.pool().close().await;
+
+    let reopened = Storage::open(&database).await?;
+    let runs = reopened.routine_runs(Uuid::nil(), routine_id).await?;
+    assert_eq!(runs.len(), 1);
+    assert_eq!(runs[0].id, run_id);
+    assert_eq!(runs[0].status, "failed");
     Ok(())
 }
 

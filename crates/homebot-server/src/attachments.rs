@@ -262,7 +262,7 @@ pub(super) async fn finalize_attachment(
     }
     match complete_pending_attachment(&state, record, request.request_id).await {
         Ok(record) => Json(protocol_attachment(&record)).into_response(),
-        Err(response) => response,
+        Err(response) => *response,
     }
 }
 
@@ -270,31 +270,31 @@ async fn complete_pending_attachment(
     state: &AppState,
     record: AttachmentRecord,
     request_id: Uuid,
-) -> Result<AttachmentRecord, Response> {
+) -> Result<AttachmentRecord, Box<Response>> {
     if record.status != "pending" || record.expires_at_ms < unix_time_ms() {
-        return Err(api_error(
+        return Err(Box::new(api_error(
             StatusCode::GONE,
             ErrorCode::NotFound,
             "Attachment upload expired".to_owned(),
             Some(request_id),
-        ));
+        )));
     }
     let partial = partial_path(&state.artifact_root, record.id);
     let Ok((actual_size, actual_sha)) = digest_file(&partial).await else {
-        return Err(api_error(
+        return Err(Box::new(api_error(
             StatusCode::CONFLICT,
             ErrorCode::Conflict,
             "Attachment content has not been uploaded".to_owned(),
             Some(request_id),
-        ));
+        )));
     };
     if actual_size != record.size_bytes || actual_sha != record.sha256 {
-        return Err(api_error(
+        return Err(Box::new(api_error(
             StatusCode::UNPROCESSABLE_ENTITY,
             ErrorCode::ValidationFailed,
             "Stored attachment failed final integrity verification".to_owned(),
             Some(request_id),
-        ));
+        )));
     }
     let relative = PathBuf::from("objects")
         .join(&record.sha256[..2])
@@ -303,21 +303,21 @@ async fn complete_pending_attachment(
     if let Some(parent) = target.parent()
         && tokio::fs::create_dir_all(parent).await.is_err()
     {
-        return Err(internal_error(Some(request_id)));
+        return Err(Box::new(internal_error(Some(request_id))));
     }
     if tokio::fs::try_exists(&target).await.unwrap_or(false) {
         let Ok((existing_size, existing_sha)) = digest_file(&target).await else {
-            return Err(internal_error(Some(request_id)));
+            return Err(Box::new(internal_error(Some(request_id))));
         };
         if existing_size != record.size_bytes || existing_sha != record.sha256 {
-            return Err(internal_error(Some(request_id)));
+            return Err(Box::new(internal_error(Some(request_id))));
         }
         remove_file_if_present(&partial).await;
     } else if tokio::fs::rename(&partial, &target).await.is_err() {
-        return Err(internal_error(Some(request_id)));
+        return Err(Box::new(internal_error(Some(request_id))));
     }
     let Some(storage_path) = relative.to_str() else {
-        return Err(internal_error(Some(request_id)));
+        return Err(Box::new(internal_error(Some(request_id))));
     };
     match state
         .storage
@@ -325,7 +325,7 @@ async fn complete_pending_attachment(
         .await
     {
         Ok(true) => {}
-        Ok(false) | Err(_) => return Err(internal_error(Some(request_id))),
+        Ok(false) | Err(_) => return Err(Box::new(internal_error(Some(request_id)))),
     }
     Ok(AttachmentRecord {
         status: "ready".to_owned(),

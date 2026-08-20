@@ -22,11 +22,16 @@ use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 use uuid::Uuid;
 
+const HEARTBEAT_INTERVAL: std::time::Duration = std::time::Duration::from_secs(15);
+const HEARTBEAT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(45);
+
 #[derive(Clone, Debug)]
 pub struct AppState {
     storage: Storage,
     bearer_digest: [u8; 32],
     owner_id: Uuid,
+    heartbeat_interval: std::time::Duration,
+    heartbeat_timeout: std::time::Duration,
 }
 
 impl AppState {
@@ -36,12 +41,25 @@ impl AppState {
             storage,
             bearer_digest: Sha256::digest(bearer_token.as_bytes()).into(),
             owner_id: Uuid::nil(),
+            heartbeat_interval: HEARTBEAT_INTERVAL,
+            heartbeat_timeout: HEARTBEAT_TIMEOUT,
         }
     }
 
     #[must_use]
     pub fn storage(&self) -> &Storage {
         &self.storage
+    }
+
+    #[must_use]
+    pub fn with_heartbeat(
+        mut self,
+        interval: std::time::Duration,
+        timeout: std::time::Duration,
+    ) -> Self {
+        self.heartbeat_interval = interval;
+        self.heartbeat_timeout = timeout;
+        self
     }
 }
 
@@ -64,11 +82,29 @@ async fn serve_events(mut socket: WebSocket, state: AppState) {
     if !initial_sync(&mut socket, &state).await {
         return;
     }
-    while let Some(Ok(Message::Text(text))) = socket.next().await {
-        if let Ok(message) = serde_json::from_str::<ClientMessage>(&text)
-            && !handle_client_message(&mut socket, &state, message).await
-        {
-            return;
+    let mut heartbeat = tokio::time::interval(state.heartbeat_interval);
+    heartbeat.tick().await;
+    let mut last_pong = tokio::time::Instant::now();
+    loop {
+        tokio::select! {
+            _ = heartbeat.tick() => {
+                if last_pong.elapsed() >= state.heartbeat_timeout { return; }
+                let sequence = state.storage.latest_sequence(state.owner_id).await.unwrap_or(0);
+                let ping = ServerEvent {
+                    protocol_version: homebot_protocol::PROTOCOL_VERSION,
+                    sequence,
+                    event_id: Uuid::now_v7(),
+                    body: ServerEventBody::Ping { nonce: Uuid::now_v7() },
+                };
+                if send_json(&mut socket, &ping).await.is_err() { return; }
+            }
+            message = socket.next() => {
+                let Some(Ok(Message::Text(text))) = message else { return; };
+                if let Ok(message) = serde_json::from_str::<ClientMessage>(&text) {
+                    if matches!(message, ClientMessage::Pong { .. }) { last_pong = tokio::time::Instant::now(); }
+                    if !handle_client_message(&mut socket, &state, message).await { return; }
+                }
+            }
         }
     }
 }
@@ -118,8 +154,10 @@ async fn initial_sync(socket: &mut WebSocket, state: &AppState) -> bool {
                 maximum: homebot_protocol::PROTOCOL_VERSION,
             },
             resume: disposition,
-            heartbeat_interval_ms: 15_000,
-            heartbeat_timeout_ms: 45_000,
+            heartbeat_interval_ms: u32::try_from(state.heartbeat_interval.as_millis())
+                .unwrap_or(u32::MAX),
+            heartbeat_timeout_ms: u32::try_from(state.heartbeat_timeout.as_millis())
+                .unwrap_or(u32::MAX),
         },
     };
     if send_json(socket, &hello).await.is_err() {
@@ -375,12 +413,19 @@ mod tests {
     ) -> Result<(std::net::SocketAddr, JoinHandle<()>, tempfile::TempDir), Box<dyn std::error::Error>>
     {
         let directory = tempfile::tempdir()?;
+        let (address, task) = spawn_state(AppState::new(storage, "correct-token")).await?;
+        Ok((address, task, directory))
+    }
+
+    async fn spawn_state(
+        state: AppState,
+    ) -> Result<(std::net::SocketAddr, JoinHandle<()>), Box<dyn std::error::Error>> {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
         let address = listener.local_addr()?;
         let task = tokio::spawn(async move {
-            let _ = axum::serve(listener, router(AppState::new(storage, "correct-token"))).await;
+            let _ = axum::serve(listener, router(state)).await;
         });
-        Ok((address, task, directory))
+        Ok((address, task))
     }
 
     #[tokio::test]
@@ -627,6 +672,51 @@ mod tests {
                 ..
             }
         ));
+        task.abort();
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn heartbeat_closes_clients_that_never_pong() -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let storage = Storage::open(&directory.path().join("homebot.db")).await?;
+        let state = AppState::new(storage, "correct-token").with_heartbeat(
+            std::time::Duration::from_millis(15),
+            std::time::Duration::from_millis(45),
+        );
+        let (address, task) = spawn_state(state).await?;
+        let mut request = format!("ws://{address}/api/v1/events").into_client_request()?;
+        request
+            .headers_mut()
+            .insert("authorization", "Bearer correct-token".parse()?);
+        let (mut socket, _) = connect_async(request).await?;
+        socket
+            .send(tokio_tungstenite::tungstenite::Message::Text(
+                serde_json::to_string(&ClientMessage::Hello {
+                    protocol_version: homebot_protocol::PROTOCOL_VERSION,
+                    client_version: "test".to_owned(),
+                    device_session: "test-device".to_owned(),
+                    resume_after: None,
+                })?
+                .into(),
+            ))
+            .await?;
+        let _hello = socket.next().await.ok_or("missing hello")??;
+        let _snapshot = socket.next().await.ok_or("missing snapshot")??;
+        let closed = tokio::time::timeout(std::time::Duration::from_millis(150), async {
+            while let Some(message) = socket.next().await {
+                if message.is_err()
+                    || matches!(
+                        message,
+                        Ok(tokio_tungstenite::tungstenite::Message::Close(_))
+                    )
+                {
+                    break;
+                }
+            }
+        })
+        .await;
+        assert!(closed.is_ok());
         task.abort();
         Ok(())
     }

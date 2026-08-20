@@ -10,10 +10,17 @@ rust-version.workspace = true
 anyhow.workspace = true
 axum.workspace = true
 homebot-protocol.workspace = true
+homebot-storage = { version = "=0.0.1", path = "../homebot-storage" }
 serde_json.workspace = true
+sha2.workspace = true
+subtle.workspace = true
 tokio.workspace = true
+tower.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+
+[dev-dependencies]
+tempfile = "3.20"
 
 [lints]
 workspace = true

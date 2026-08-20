@@ -1,5 +1,5 @@
-use axum::{Json, Router, routing::get};
-use serde_json::{Value, json};
+use homebot_server::{AppState, router};
+use homebot_storage::Storage;
 use tokio::net::TcpListener;
 
 const DEFAULT_BIND: &str = "127.0.0.1:7123";
@@ -10,7 +10,14 @@ async fn main() -> anyhow::Result<()> {
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
 
-    let app = Router::new().route("/health", get(health));
+    let data_path = std::env::var_os("HOMEBOT_DATABASE").map_or_else(
+        || std::path::PathBuf::from("homebot.db"),
+        std::path::PathBuf::from,
+    );
+    let token = std::env::var("HOMEBOT_DEVICE_TOKEN")
+        .map_err(|_| anyhow::anyhow!("HOMEBOT_DEVICE_TOKEN must be set"))?;
+    let storage = Storage::open(&data_path).await?;
+    let app = router(AppState::new(storage, &token));
     let listener = TcpListener::bind(DEFAULT_BIND).await?;
     tracing::info!(
         address = DEFAULT_BIND,
@@ -18,12 +25,4 @@ async fn main() -> anyhow::Result<()> {
     );
     axum::serve(listener, app).await?;
     Ok(())
-}
-
-async fn health() -> Json<Value> {
-    Json(json!({
-        "status": "ok",
-        "service": "homebot-server",
-        "protocol_version": homebot_protocol::PROTOCOL_VERSION
-    }))
 }

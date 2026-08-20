@@ -6,11 +6,10 @@ This file is operational state for coding agents. It is not user-facing product 
 
 ## Current state
 
-- Current milestone: M0, Product & Architecture Baseline
-- Current Linear issues: 6C7-35 CI verification and 6C7-36 SQLite persistence
-- Parallel scaffold issue: 6C7-35 remains In Progress but cannot close until compilation and CI are verified
+- Current milestone: M1, Local Runtime Foundation
+- Current Linear issue: 6C7-37 authenticated HTTP/WebSocket server and reconnect semantics
 - Current Git branch: `feat/m0-contracts`
-- Latest verified remote commit: `9b365871f76e815f646849b2775fd688e07ee90e`
+- Latest verified remote commit: `bf02b9913eaf0a1a46d2a329e80352659fbf033b`
 - Public repository: `https://github.com/luinbytes/HomeBot`
 - Repository owner and commit identity: `luinbytes <42706009+luinbytes@users.noreply.github.com>`
 
@@ -29,11 +28,8 @@ Architecture decisions currently frozen:
 Current blockers:
 
 - Rust is installed in isolated task paths under `/tmp/homebot-rustup` and `/tmp/homebot-cargo`.
-- GitHub Actions runs 1 and 2 are queued; CI success is unverified.
 - Exact current-app pixel captures remain deliberately gated to 6C7-42.
-- The first SQLx CI audit exposed an unused default MySQL/RSA dependency with RUSTSEC-2023-0071 and missing `checks: write` permission. The working tree disables SQLx default features, has verified `rsa` is absent from the graph, and grants only the check-report permission required by the audit action.
-- GitHub Actions at `4166431` verified Rust quality, Linux, macOS arm64, dependency audit, and dependency policy. The macOS Intel job exposed a retired `macos-13` label; the working tree now uses GitHub's documented `macos-15-intel` label.
-- 6C7-36 now has an initial transactional migration, WAL/integrity-safe storage open, monotonic outbox, replay, backup, non-overwriting restore, restart durability, migration rollback, corruption, and concurrent reader/writer tests in the working tree.
+- 6C7-37 is In Progress. The working tree has a server library/router, SHA-256 and constant-time bearer validation, public secret-free health, authenticated version negotiation, stale-version rejection, and server-side denial tests. WebSocket, replay, mutation, attachment, cancellation, and backpressure work remains.
 
 ## Completed work
 
@@ -45,13 +41,15 @@ Current blockers:
 - Grok Bot behavioural parity inventory and 56-state visual reference index completed; Linear 6C7-31 is Done.
 - Versioned protocol v1, machine schema, Android binding, and golden contract tests completed; Linear 6C7-32 is Done.
 - M0 epic 6C7-30 is Done.
+- Rust workspace and CI quality gates completed; Linear 6C7-35 is Done.
+- SQLite migrations, WAL persistence, event outbox, backup/restore, and recovery tests completed; Linear 6C7-36 is Done.
 
 ## Immediate next work
 
-1. Verify the queued macOS Intel job and close 6C7-35 when the entire run is green.
-2. Complete 6C7-36 migration failure/upgrade fixtures and storage documentation.
-3. Run full workspace quality checks, commit, push, and update Linear.
-4. Refresh the M1 dependency graph and begin the next unblocked issue.
+1. Commit and push the authenticated HTTP/version foundation for 6C7-37.
+2. Implement authenticated WebSocket hello, snapshot/replay cursors, heartbeat, and slow-client bounds.
+3. Implement idempotent command lifecycle, cancellation, and attachment upload with integration tests.
+4. Close 6C7-37 only after disconnect/replay and backpressure postconditions pass.
 
 ## Verification state
 
@@ -72,14 +70,14 @@ Verified:
 
 Not yet verified:
 
-- A fully green GitHub Actions run; only macOS Intel remains queued at the latest checkpoint.
+- GitHub Actions run 32346392738 passed all six quality, audit/policy, Linux, macOS Intel, and macOS arm64 jobs.
 - Android application build; the generated protocol source is not compiled until the M4 Gradle module lands.
 - Any end-user HomeBot behaviour beyond static contract inspection.
 
 ## Known failures and incomplete implementation
 
-- `homebot-server` is a development-only unauthenticated loopback health stub.
-- Storage, authentication, WebSocket replay, providers, desktop egui, Android, routines, plugins, tools, VCS, pairing, and packaging are not implemented.
+- `homebot-server` has authenticated health/version foundations but not the complete 6C7-37 transport.
+- WebSocket replay, providers, desktop egui, Android, routines, plugins, tools, VCS, pairing, and packaging are not implemented.
 - The protocol defines product-level v1 envelopes and lifecycle contracts; server persistence and transport behaviour remain implementation work in later issues.
 - No release artifact exists. Do not describe the project as installable or v1-ready.
 

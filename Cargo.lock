@@ -583,8 +583,13 @@ dependencies = [
  "anyhow",
  "axum",
  "homebot-protocol",
+ "homebot-storage",
  "serde_json",
+ "sha2",
+ "subtle",
+ "tempfile",
  "tokio",
+ "tower",
  "tracing",
  "tracing-subscriber",
 ]

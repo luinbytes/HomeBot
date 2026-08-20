@@ -1,16 +1,16 @@
 # HomeBot autonomous agent state
 
-Updated: 20 August 2026, Europe/London
+Updated: 21 August 2026, Europe/London
 
 This file is operational state for coding agents. It is not user-facing product documentation.
 
 ## Current state
 
 - Current milestone: M4, T3 Code Developer Superpowers. M2 and M3 are verified complete.
-- Current Linear issue: 6C7-57, source-control, commit and PR workflow surfaces (`In Progress`).
+- Current Linear issue: 6C7-58, queued steering, provider plan mode and context compaction (`In Progress`).
 - Current Git branch: `main`.
-- Latest verified implementation commit: `20412a03c61a2671a6bc42fa2ec04f9a710c9004` (6C7-56; exact tree `229c7d8761f1b3c408bf8be534c6815ff53ce085`).
-- Latest verified GitHub Actions run: `32425371202`, all nine jobs passed.
+- Latest verified implementation commit: `3224de00956d4c7b859630deb8554389db9ada16` (6C7-57; exact tree `b8e637cc89d69e19c060a30402628ed65b390022`).
+- Latest verified GitHub Actions run: `32429140362`, all nine jobs passed.
 - Public repository: `https://github.com/luinbytes/HomeBot`.
 - Required commit identity: `luinbytes <42706009+luinbytes@users.noreply.github.com>`.
 
@@ -27,6 +27,7 @@ Architecture decisions currently frozen:
 - Filesystem authority uses `cap-std`; terminal authority uses bounded `portable-pty`; browser authority uses loopback-only CDP.
 - Repository registrations and per-chat primary/isolated workspace associations are SQLite authority. `homebot-vcs` invokes a fixed Git executable without a shell, never mutates the primary checkout, and removes only clean canonical children of the server-managed worktree root.
 - Coding turns use alternate-index hidden-ref checkpoints. Restore captures a safety checkpoint, preserves the real branch/index, refuses ignored-content overwrite conflicts, and explicitly forks incompatible provider conversation mappings.
+- Source-control reads and mutations are server-owned and normalized. Commit/branch/push use a fixed shell-free Git executable with repository hooks suppressed; remote push and PR creation require digest-bound server approval, and exact idempotent results persist independently from remote side effects.
 
 Current blockers:
 
@@ -47,25 +48,26 @@ Current blockers:
 - M3 epic 6C7-48: plugins/MCP, OS-backed secrets, routine recording/replay, schedules/triggers/history, and reusable Skills.
 - 6C7-55, owner-scoped repository registration, primary/isolated per-chat workspaces, deterministic branches, guarded cleanup, authenticated protocol/events, desktop transport/projection and Android/schema parity.
 - 6C7-56, hidden-ref before/after turn checkpoints, exact binary-capable per-turn/full-chat diffs, safe restore, provider-conversation fork reconciliation, authenticated desktop/server contracts and Android/schema parity.
-- Most recent completed issue: 6C7-56.
+- 6C7-57, normalized status/staged and unstaged diff/commit/branch/push/PR workflows, server-side capability approvals, durable exact replay, hostile-repository hook denial, authenticated desktop projection and Android/schema parity.
+- Most recent completed issue: 6C7-57.
 
 ## Immediate next work
 
-1. Define one normalized server-owned VCS status/diff/branch/remote/PR contract for 6C7-57 and mechanically export it to Android.
-2. Implement shell-free status, staged/unstaged diff, commit and branch operations with detached-HEAD, dirty-baseline and merge-conflict fixtures.
-3. Put remote push and PR-affecting actions behind server-side structured approval policy, normalize no-remote/auth failures, then wire the authenticated desktop transport/projection.
+1. Audit the existing durable queue/steer behavior and provider capability/compaction contracts against all 6C7-58 postconditions.
+2. Add a server-owned interaction-mode and working-context contract, durable compaction boundaries/status and authenticated idempotent mutations without deleting Bot identity or transcript history.
+3. Wire compatible provider modes/compaction plus desktop projections and generated Android models; prove queued order, restart behavior, compaction history isolation and unsupported-provider errors.
 
 ## Verification state
 
 Verified at the latest remote baseline:
 
-- GitHub Actions run `32425371202` passed all nine jobs for commit `20412a0`: formatting, strict clippy, 142 Rust tests, dependency policy/audit, Linux, macOS Intel, macOS Apple Silicon, and 15 cross-platform visual fixtures.
-- Remote tree `229c7d8761f1b3c408bf8be534c6815ff53ce085` exactly matches the locally verified implementation tree. The remote author and committer resolve to GitHub account `luinbytes`.
+- GitHub Actions run `32429140362` passed all nine jobs for commit `3224de0`: formatting, strict clippy, 152 Rust tests, dependency policy/audit, Linux, macOS Intel, macOS Apple Silicon, and 15 cross-platform visual fixtures.
+- Remote tree `b8e637cc89d69e19c060a30402628ed65b390022` exactly matches the locally verified implementation tree. The remote author and committer resolve to GitHub account `luinbytes`.
 - 6C7-50's authenticated integration fixture proves Connect -> Waiting -> Connected discovery, then malformed MCP health -> Error with disablement and cleared tools; the child environment is cleared and MCP results remain explicitly untrusted.
 
 Verified locally at the current baseline:
 
-- `./scripts/check.sh` passes on Rust 1.98.0: formatting, strict clippy, the complete workspace suite with 142 tests, protocol/schema drift checks, generated Android binding drift checks, and all 15 exact desktop visual fixtures.
+- `./scripts/check.sh` passes on Rust 1.98.0: formatting, strict clippy, the complete workspace suite with 152 tests, protocol/schema drift checks, generated Android binding drift checks, and all 15 exact desktop visual fixtures. This environment requires `CARGO_BUILD_JOBS=1` for the test build after a transient parallel egui archive-mapping failure; the serial rerun passed fully.
 - Targeted routine/plugin/storage/server/desktop suites also pass independently.
 - The routine verification patch proves durable version 2 edits, recording conversion, dry-run side-effect freedom, real manual Bot dispatch, MCP `tools/call`, approval stops, safe durable failures, editable recovery after invalid finish, restart persistence and server-event-only desktop projection updates.
 - Secret-specific coverage passes: three vault tests, two policy-gated secret-tool tests, one authenticated API canary test, and two storage/migration tests.
@@ -81,12 +83,14 @@ Verified locally at the current baseline:
 - GitHub Actions run `32422748219` passed all nine jobs for exact remote tree `61f0efa`: Rust quality, dependency audit/policy, Linux and both macOS builds, and all three visual-golden platforms. Both remote commits resolve to GitHub account `luinbytes` as author and committer.
 - 6C7-56's full gate passes with 142 Rust tests and all 15 visual fixtures. Real-Git/server coverage proves dirty/staged/untracked/binary/rename capture, index preservation, exact diffs, ignored-content conflict denial, safety restore, idempotent audit persistence, and provider-conversation fork reconciliation.
 - GitHub Actions run `32425371202` passed all nine jobs for public commit `20412a0` and exact remote tree `229c7d8`: Rust quality, dependency audit/policy, Linux and both macOS builds, and all three visual-golden platforms. Author and committer resolve to GitHub account `luinbytes`.
+- 6C7-57's real Git/server fixtures prove normalized staged/unstaged/untracked/conflicted/detached status, bounded exact diffs, commit/clean branch/local bare push, no-remote and redacted auth failure, duplicate/deny/approve approval semantics, exact durable replay, PR metadata/create, migration restart safety and hostile Git-hook denial.
+- GitHub Actions run `32429140362` passed all nine jobs for public commit `3224de0` and exact remote tree `b8e637c`; both author and committer resolve to GitHub account `luinbytes`.
 
-6C7-73 and reopened M2 epic 6C7-41 completion evidence is recorded in Linear; both are Done. M3 epic 6C7-48, 6C7-55 and 6C7-56 are verified Done. M4 epic 6C7-54 and 6C7-57 are In Progress.
+6C7-73 and reopened M2 epic 6C7-41 completion evidence is recorded in Linear; both are Done. M3 epic 6C7-48 and M4 issues 6C7-55 through 6C7-57 are verified Done. M4 epic 6C7-54 and 6C7-58 are In Progress.
 
 ## Known failures and incomplete implementation
 
-- Android app, source-control workflows, device pairing/Tailscale, packaging, and release artifacts remain incomplete roadmap work.
+- Android app, queued steering/plan mode/context compaction, device pairing/Tailscale, packaging, and release artifacts remain incomplete roadmap work.
 - Real authenticated Codex/Claude round trips are unavailable in this environment. OpenAI-compatible and CDP behavior use protocol-faithful local fixtures.
 - No release artifact exists. Do not describe HomeBot as installable or v1-ready.
 

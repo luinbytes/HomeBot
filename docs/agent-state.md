@@ -9,7 +9,7 @@ This file is operational state for coding agents. It is not user-facing product 
 - Current milestone: M1, Local Runtime Foundation
 - Current Linear issue: 6C7-40 Claude Code adapter and generic BYOK backends
 - Current Git branch: `feat/m0-contracts`
-- Latest verified remote commit: `fc69b38172c9bd2d7c13be478b094ffd908ff35c`
+- Latest verified remote commit: `6df35a721a8a93cede297418a112faa19de2c7b8`
 - Public repository: `https://github.com/luinbytes/HomeBot`
 - Repository owner and commit identity: `luinbytes <42706009+luinbytes@users.noreply.github.com>`
 
@@ -23,6 +23,9 @@ Architecture decisions currently frozen:
 - The server binds to loopback by default; remote access is explicit and pairing uses short-lived single-use credentials.
 - Secret values use OS-backed credential storage and never ordinary SQLite rows.
 - Codex App Server uses structured stdio JSONL initially because its WebSocket transport is documented as experimental.
+- Claude Code uses its documented `stream-json` CLI bridge because Anthropic publishes TypeScript and Python Agent SDKs but no Rust SDK.
+- BYOK profiles persist opaque secret references only. Credentials are resolved at request time, redacted and zeroized; remote endpoints require HTTPS and redirects are disabled.
+- Community provider processes use a constrained direct-executable JSONL contract with a cleared environment, bounded records and no implicit shell.
 - T3 Code is MIT-licensed architectural inspiration; no proprietary Grok Bot source or assets are copied.
 
 Current blockers:
@@ -32,7 +35,7 @@ Current blockers:
 - 6C7-37 is Done. GitHub Actions run 32352700967 passed all six Linux, macOS Intel, macOS arm64, quality, dependency-policy, and audit jobs.
 - 6C7-38 is Done. GitHub Actions run 32354047604 passed the full six-job matrix.
 - 6C7-39 is Done. GitHub Actions run 32355805077 passed the full six-job matrix. The current environment has no `codex` binary, so the real-binary smoke test skips with an explicit reason; fake executable App Server fixtures verify structured start, resume, streaming, approval, and interruption round trips.
-- 6C7-40 is In Progress. Official Anthropic documentation identifies `claude -p --output-format stream-json --verbose --include-partial-messages` as the supported structured Rust subprocess route and `--resume` as the session continuation mechanism. OpenAI-compatible backends will resolve opaque secret references only at request time.
+- 6C7-40 is In Progress. The Claude, OpenAI-compatible BYOK and generic process adapters are implemented locally and pass the full local quality gate. The next postcondition is to publish the coherent commit and verify the complete remote CI matrix before closing the issue.
 
 ## Completed work
 
@@ -52,15 +55,15 @@ Current blockers:
 
 ## Immediate next work
 
-1. Implement a structured Claude Code `stream-json` adapter with explicit binary/profile configuration, session resume, streamed content/activity/usage normalization, process cancellation, and fixture tests.
-2. Implement an OpenAI-compatible Responses API adapter whose profiles contain only an opaque secret reference and whose injected resolver supplies credentials at request time without logging or persistence.
-3. Document and test a constrained generic structured-process adapter for community providers, then run local and remote quality gates for 6C7-40.
+1. Publish the completed 6C7-40 adapter implementation to `main` and verify every GitHub Actions job succeeds.
+2. Add verification evidence to 6C7-40 and mark it Done only after remote CI passes.
+3. Refresh the dependency graph and begin 6C7-72, the local computer capability layer, if it remains the highest-priority unblocked issue.
 
 ## Verification state
 
 Verified:
 
-- Local and remote Git trees match at `00cdca9`.
+- Local and remote Git trees matched at `6df35a7` before the current coherent 6C7-40 change.
 - All three remote commits are attributed to GitHub account `luinbytes`.
 - Working tree was clean before `feat/m0-contracts` was created.
 - All committed TOML files parse with Python `tomllib`.
@@ -72,7 +75,8 @@ Verified:
 - `cargo clippy --workspace --all-targets -- -D warnings` passes.
 - Rust JSON Schema and generated Android binding drift checks pass.
 - `homebot-storage` has ten passing tests covering clean install/table inventory, WAL mode, restart/outbox durability, backup/restore, migration rollback, corrupted startup, concurrent access, idempotency, replay retention, and attachment transitions.
-- `homebot-providers` has twelve passing tests. Codex coverage includes JSONL fixture normalization, profile isolation and redaction, explicit binary discovery, auth/error and interruption normalization, fake App Server start/resume, streaming, approval resolution, cancellation, and an explicit real-binary skip when Codex is absent. Provider-runtime and process-supervision coverage remains green.
+- `./scripts/check.sh` passes locally with formatting, workspace clippy, 51 Rust tests, protocol schema drift and generated Android binding drift checks.
+- `homebot-providers` has 22 passing tests. Codex coverage includes JSONL fixture normalization, profile isolation and redaction, explicit binary discovery, auth/error and interruption normalization, fake App Server start/resume, streaming, approval resolution, cancellation, and an explicit real-binary skip when Codex is absent. Claude fixtures verify normalized init/content/tool/usage/result records, resume-oriented CLI arguments, streaming and cancellation. OpenAI-compatible tests verify request-time bearer resolution, model discovery, streamed Responses events, HTTPS/loopback policy, redaction and cancellation. Generic process tests verify its JSONL contract, bounded normalized streaming, redaction and cancellation.
 
 Not yet verified:
 
@@ -83,7 +87,7 @@ Not yet verified:
 ## Known failures and incomplete implementation
 
 - `homebot-server` covers every stated 6C7-37 transport behaviour locally and in the passing remote matrix.
-- The first-class Codex adapter is implemented but cannot perform a real authenticated provider message in this environment because the `codex` binary is absent. Claude Code and OpenAI-compatible adapters, desktop egui, Android, routines, plugins, tools, VCS, pairing, and packaging are not implemented.
+- The first-class Codex and Claude adapters cannot perform real authenticated provider messages in this environment because neither CLI binary is installed. Their structured protocol fixtures pass. The OpenAI-compatible adapter is verified against a local protocol-faithful HTTP/SSE fixture, not a user credential. Desktop egui, Android, routines, plugins, tools, VCS, pairing, and packaging are not implemented.
 - The protocol defines product-level v1 envelopes and lifecycle contracts; server persistence and transport behaviour remain implementation work in later issues.
 - No release artifact exists. Do not describe the project as installable or v1-ready.
 

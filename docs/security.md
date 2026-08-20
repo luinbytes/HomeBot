@@ -46,6 +46,8 @@ Default bind is `127.0.0.1`. LAN and Tailscale require explicit configuration. P
 
 Secret values are created and resolved through a credential-store abstraction. They never appear in SQLite, normal chat, activity details, routine history, analytics, crash reports, CLI arguments, process listings, or ordinary environment inheritance. A secret-aware tool receives the minimum value at execution time and redacts exact and encoded canaries from captured output.
 
+Provider profiles store `SecretReference` identifiers, not credentials. The provider runtime resolves a short-lived redacted value only while constructing an authorized request and zeroes that allocation on drop. Remote BYOK endpoints require HTTPS; cleartext HTTP is accepted only for explicit loopback addresses, and HTTP redirects are disabled for credential-bearing requests.
+
 ## Audit
 
 Security-relevant events include authentication failure, pairing creation/exchange, device creation/revocation, policy change, approval request/decision/use, secret reference mutation/use, denied capability, remote bind change, plugin installation, external mutation, and destructive VCS operation. Audit records store identities, scopes, safe metadata, and outcomes, never secret values.

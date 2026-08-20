@@ -1,0 +1,5 @@
+{"type":"system","subtype":"init","session_id":"session_fixture","model":"claude-sonnet"}
+{"type":"stream_event","session_id":"session_fixture","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"Hello"}}}
+{"type":"assistant","session_id":"session_fixture","message":{"role":"assistant","content":[{"type":"tool_use","id":"tool_1","name":"Bash","input":{"command":"cargo test"}}]}}
+{"type":"user","session_id":"session_fixture","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tool_1","content":"ok","is_error":false}]}}
+{"type":"result","subtype":"success","is_error":false,"session_id":"session_fixture","usage":{"input_tokens":10,"output_tokens":3,"cache_read_input_tokens":2}}

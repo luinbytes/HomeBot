@@ -25,3 +25,25 @@ App Server notifications become provider-neutral content deltas, activities, usa
 Each `CodexAdapter` owns one `CodexProfile` with a stable adapter ID, explicit binary path, selected safe environment, and optional working directory. Registering more than one instance supports independent Codex accounts without binding Bot identity to a provider profile. The default environment allowlist includes discovery and Codex configuration paths but deliberately excludes API-key variables.
 
 Fixture tests exercise JSONL normalization and a complete fake App Server round trip including approval. A real-binary smoke test reports an explicit skip when `codex` is absent; it never pretends that provider messaging was verified without an installed and authenticated CLI.
+
+## Claude
+
+The Claude adapter follows Anthropic's documented non-interactive Agent SDK/CLI bridge. It launches `claude -p` with `stream-json` input and output, verbose partial messages, and user-message replay. Prompts enter through stdin rather than process arguments. `system/init`, partial message events, tool blocks, API retry notices, usage and result records are normalized into HomeBot conversation, content, activity, usage and terminal events. Resume uses the documented `--resume` session identifier, plan execution uses `--permission-mode plan`, and cancellation closes stdin before the supervisor's bounded shutdown.
+
+Profiles select an explicit executable, working directory and allowlisted environment. Health uses the structured `claude auth status` command. The built-in picker aliases are `sonnet`, `opus`, `haiku` and `fable`; callers may still request a full model ID. A real CLI smoke test skips explicitly when Claude is absent, while executable fixtures verify streaming and cancellation.
+
+## OpenAI-compatible BYOK
+
+An OpenAI-compatible profile contains an endpoint, API style, model and opaque `SecretReference`. It never contains the credential value. `ProviderSecretResolver` resolves that reference only immediately before an HTTP request; `ResolvedSecret` redacts debug output and zeroes its allocation on drop. SQLite and provider configuration therefore persist only the opaque reference. OS-backed implementations of the resolver land with the secret-store roadmap issue.
+
+Responses API profiles support streamed text, reasoning/tool activity, usage, cancellation and `previous_response_id` continuation. Chat Completions profiles support streamed text, usage and cancellation; they intentionally reject provider-native resume until the server transcript-replay layer supplies full message history. Model discovery uses `GET /models`. Remote endpoints require HTTPS, while explicit loopback endpoints may use HTTP for local Ollama, LM Studio and similar servers. Redirects are disabled so bearer credentials cannot be forwarded unexpectedly.
+
+## Community process contract
+
+`GenericProcessAdapter` is an opt-in JSONL bridge, not a shell command template. HomeBot launches the configured executable directly with a cleared environment, explicit arguments and selected environment variables. It writes exactly one request object to stdin:
+
+```json
+{"kind":"start","operation_id":"...","bot_id":"...","chat_id":"...","prompt":"...","model":null,"mode":"normal","attachments":[]}
+```
+
+Resume uses `kind: "resume"` and includes `conversation_id`. The child writes one serialized `ProviderEvent` per stdout line and must finish with exactly one `completed`, `cancelled` or `failed` event. Lines and event queues are bounded; malformed output fails closed; cancellation closes stdin and then enforces the supervisor deadline. Arguments and environment values are omitted from debug output. Community adapters that need a richer native protocol should implement `ProviderAdapter` directly instead of adding provider-specific fields to this contract.

@@ -371,6 +371,17 @@ impl From<StorageError> for ApiError {
                 ErrorCode::Conflict,
                 "Approval was not found or is no longer pending",
             ),
+            StorageError::InvalidGroupParticipants => Self::new(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                ErrorCode::ValidationFailed,
+                "Group chat requires at least three distinct active Bots",
+            ),
+            StorageError::CoordinationLimitReached => {
+                Self::conflict("Group coordination limit was reached or the group was stopped")
+            }
+            StorageError::InvalidOwnershipHandoff => {
+                Self::conflict("Group ownership handoff is no longer valid")
+            }
             StorageError::AttachmentUnavailable => Self::new(
                 StatusCode::UNPROCESSABLE_ENTITY,
                 ErrorCode::ValidationFailed,

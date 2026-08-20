@@ -43,6 +43,11 @@ fn desktop_shell_visual_goldens() {
         FixtureState::QueueError,
     );
     snapshot(
+        "desktop_group_chat_light",
+        HomeBotTheme::light(),
+        FixtureState::GroupChat,
+    );
+    snapshot(
         "desktop_bot_editor_light",
         HomeBotTheme::light(),
         FixtureState::BotEditor,

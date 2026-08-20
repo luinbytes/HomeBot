@@ -17,3 +17,19 @@ Exactly one participant has the owner role. A handoff validates the current owne
 ## Parallel state
 
 Every participant has a durable normalized state: idle, running, waiting, completed, failed or stopped. A running state may include an active operation ID. The server rejects transitions that would exceed the group's maximum parallel-Bot count.
+
+## Server contract
+
+The authenticated v1 API exposes group creation, durable timeline loading, user messages with mentions/shared context, participant status changes, coordination-turn claims, ownership handoff and visible stop:
+
+- `POST /api/v1/groups`
+- `GET /api/v1/groups/{chat_id}/timeline`
+- `POST /api/v1/groups/{chat_id}/messages`
+- `PUT /api/v1/groups/{chat_id}/participants/{bot_id}/status`
+- `POST /api/v1/groups/{chat_id}/participants`
+- `POST /api/v1/groups/{chat_id}/participants/{bot_id}/remove`
+- `POST /api/v1/groups/{chat_id}/coordination-turns`
+- `POST /api/v1/groups/{chat_id}/handoff`
+- `POST /api/v1/groups/{chat_id}/stop`
+
+All mutations are owner-scoped and idempotent. Group, participant, message and handoff events share the same durable monotonic outbox as direct chats, so reconnect replay and snapshot fallback use one ordering boundary.

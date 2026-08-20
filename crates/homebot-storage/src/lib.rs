@@ -557,6 +557,22 @@ impl Storage {
         group_chat_from_row(&row)
     }
 
+    /// Lists all owner-scoped groups in stable recency order.
+    ///
+    /// # Errors
+    ///
+    /// Returns database or integrity errors.
+    pub async fn list_group_chats(&self, owner_id: Uuid) -> Result<Vec<GroupChat>, StorageError> {
+        let rows = sqlx::query(
+            "SELECT * FROM chats WHERE owner_id = ? AND kind = 'group'
+             ORDER BY updated_at_ms DESC, id",
+        )
+        .bind(owner_id.to_string())
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter().map(group_chat_from_row).collect()
+    }
+
     /// Lists durable participants and their parallel execution state.
     ///
     /// # Errors
@@ -578,6 +594,83 @@ impl Storage {
         .fetch_all(&self.pool)
         .await?;
         rows.iter().map(group_participant_from_row).collect()
+    }
+
+    /// Adds one active owned Bot to an existing group.
+    ///
+    /// # Errors
+    ///
+    /// Rejects archived, foreign, or duplicate Bots and database failures.
+    pub async fn add_group_participant(
+        &self,
+        owner_id: Uuid,
+        chat_id: Uuid,
+        bot_id: Uuid,
+        now_ms: i64,
+    ) -> Result<GroupParticipant, StorageError> {
+        let _ = self.get_group_chat(owner_id, chat_id).await?;
+        let bot = self.get_bot(owner_id, bot_id).await?;
+        if bot.archived_at_ms.is_some()
+            || self
+                .group_participants(owner_id, chat_id)
+                .await?
+                .iter()
+                .any(|participant| participant.bot_id == bot_id)
+        {
+            return Err(StorageError::InvalidGroupParticipants);
+        }
+        let mut transaction = self.pool.begin().await?;
+        sqlx::query(
+            "INSERT INTO chat_participants (chat_id, bot_id, role) VALUES (?, ?, 'member')",
+        )
+        .bind(chat_id.to_string())
+        .bind(bot_id.to_string())
+        .execute(&mut *transaction)
+        .await?;
+        sqlx::query(
+            "INSERT INTO group_bot_states (chat_id, bot_id, status, updated_at_ms)
+             VALUES (?, ?, 'idle', ?)",
+        )
+        .bind(chat_id.to_string())
+        .bind(bot_id.to_string())
+        .bind(now_ms)
+        .execute(&mut *transaction)
+        .await?;
+        transaction.commit().await?;
+        self.group_participants(owner_id, chat_id)
+            .await?
+            .into_iter()
+            .find(|participant| participant.bot_id == bot_id)
+            .ok_or(StorageError::InvalidGroupParticipants)
+    }
+
+    /// Removes a non-owner Bot while preserving the three-Bot minimum.
+    ///
+    /// # Errors
+    ///
+    /// Rejects owner removal, fewer than three remaining Bots, or database failures.
+    pub async fn remove_group_participant(
+        &self,
+        owner_id: Uuid,
+        chat_id: Uuid,
+        bot_id: Uuid,
+    ) -> Result<(), StorageError> {
+        let group = self.get_group_chat(owner_id, chat_id).await?;
+        let participants = self.group_participants(owner_id, chat_id).await?;
+        if group.ownership_bot_id == bot_id
+            || participants.len() <= 3
+            || !participants
+                .iter()
+                .any(|participant| participant.bot_id == bot_id)
+        {
+            return Err(StorageError::InvalidGroupParticipants);
+        }
+        sqlx::query("DELETE FROM chat_participants WHERE chat_id = ? AND bot_id = ?")
+            .bind(chat_id.to_string())
+            .bind(bot_id.to_string())
+            .execute(&self.pool)
+            .await?;
+        Ok(())
     }
 
     /// Appends a completed Bot-to-Bot group message with validated shared context.
@@ -670,6 +763,83 @@ impl Storage {
             completed_at_ms: Some(now_ms),
             error_json: None,
         })
+    }
+
+    /// Appends a user message to a group with participant mentions and shared context.
+    ///
+    /// # Errors
+    ///
+    /// Rejects nonparticipant mentions, foreign context, empty content, or database failures.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn append_group_user_message(
+        &self,
+        owner_id: Uuid,
+        chat_id: Uuid,
+        message_id: Uuid,
+        content: &str,
+        mentioned_bot_ids: &[Uuid],
+        shared_context_message_ids: &[Uuid],
+        now_ms: i64,
+    ) -> Result<ChatMessage, StorageError> {
+        let _ = self.get_group_chat(owner_id, chat_id).await?;
+        let participants = self.group_participants(owner_id, chat_id).await?;
+        let participant_ids = participants
+            .iter()
+            .map(|participant| participant.bot_id)
+            .collect::<HashSet<_>>();
+        if mentioned_bot_ids
+            .iter()
+            .any(|bot_id| !participant_ids.contains(bot_id))
+        {
+            return Err(StorageError::InvalidGroupParticipants);
+        }
+        for context_id in shared_context_message_ids {
+            let referenced_message = self.message(owner_id, *context_id).await?;
+            if referenced_message.chat_id != chat_id {
+                return Err(StorageError::MessageNotFound);
+            }
+        }
+        let mut message = ChatMessage::user(
+            chat_id,
+            content,
+            &[],
+            None,
+            mentioned_bot_ids.to_vec(),
+            now_ms,
+        )?;
+        message.id = message_id;
+        message.shared_context_message_ids = shared_context_message_ids.to_vec();
+        let mut transaction = self.pool.begin().await?;
+        sqlx::query(
+            "INSERT INTO messages (
+                id, chat_id, author_kind, status, mentioned_bot_ids_json,
+                shared_context_message_ids_json, created_at_ms, completed_at_ms
+             ) VALUES (?, ?, 'user', 'completed', ?, ?, ?, ?)",
+        )
+        .bind(message_id.to_string())
+        .bind(chat_id.to_string())
+        .bind(serde_json::to_value(mentioned_bot_ids).map_err(|error| json_error(&error))?)
+        .bind(serde_json::to_value(shared_context_message_ids).map_err(|error| json_error(&error))?)
+        .bind(now_ms)
+        .bind(now_ms)
+        .execute(&mut *transaction)
+        .await?;
+        for part in &message.parts {
+            let (part_id, ordinal) = message_part_identity(part);
+            sqlx::query(
+                "INSERT INTO message_parts (id, message_id, ordinal, kind, content_json)
+                 VALUES (?, ?, ?, ?, ?)",
+            )
+            .bind(part_id.to_string())
+            .bind(message_id.to_string())
+            .bind(i64::from(ordinal))
+            .bind(message_part_kind(part))
+            .bind(serde_json::to_value(part).map_err(|error| json_error(&error))?)
+            .execute(&mut *transaction)
+            .await?;
+        }
+        transaction.commit().await?;
+        Ok(message)
     }
 
     /// Atomically consumes one coordination turn without exceeding the persisted budget.
@@ -826,6 +996,26 @@ impl Storage {
             reason: reason.to_owned(),
             created_at_ms: now_ms,
         })
+    }
+
+    /// Lists immutable ownership handoffs for a group.
+    ///
+    /// # Errors
+    ///
+    /// Returns ownership, database, or integrity errors.
+    pub async fn group_handoffs(
+        &self,
+        owner_id: Uuid,
+        chat_id: Uuid,
+    ) -> Result<Vec<OwnershipHandoff>, StorageError> {
+        let _ = self.get_group_chat(owner_id, chat_id).await?;
+        let rows = sqlx::query(
+            "SELECT * FROM group_handoffs WHERE chat_id = ? ORDER BY created_at_ms, id",
+        )
+        .bind(chat_id.to_string())
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter().map(group_handoff_from_row).collect()
     }
 
     /// Stops every active Bot state and prevents further coordination turns.
@@ -2050,6 +2240,23 @@ fn group_participant_from_row(
         status: status.parse()?,
         active_operation_id: operation_id.as_deref().map(parse_uuid).transpose()?,
         updated_at_ms: row.try_get("updated_at_ms")?,
+    })
+}
+
+fn group_handoff_from_row(row: &sqlx::sqlite::SqliteRow) -> Result<OwnershipHandoff, StorageError> {
+    let id: String = row.try_get("id")?;
+    let chat_id: String = row.try_get("chat_id")?;
+    let from_bot_id: String = row.try_get("from_bot_id")?;
+    let to_bot_id: String = row.try_get("to_bot_id")?;
+    let message_id: Option<String> = row.try_get("message_id")?;
+    Ok(OwnershipHandoff {
+        id: parse_uuid(&id)?,
+        chat_id: parse_uuid(&chat_id)?,
+        from_bot_id: parse_uuid(&from_bot_id)?,
+        to_bot_id: parse_uuid(&to_bot_id)?,
+        message_id: message_id.as_deref().map(parse_uuid).transpose()?,
+        reason: row.try_get("reason")?,
+        created_at_ms: row.try_get("created_at_ms")?,
     })
 }
 

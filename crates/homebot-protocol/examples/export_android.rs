@@ -115,6 +115,36 @@ data class ChatSummary(
 )
 
 @Serializable
+data class GroupChatSummary(val id: String, val title: String, val ownership_bot_id: String, val coordination_max_turns: Int, val coordination_turns_used: Int, val max_parallel_bots: Int, val stop_requested: Boolean)
+
+@Serializable
+data class GroupParticipantSummary(val chat_id: String, val bot_id: String, val role: String, val status: String, val active_operation_id: String? = null, val updated_at_ms: Long)
+
+@Serializable
+data class OwnershipHandoffSummary(val id: String, val chat_id: String, val from_bot_id: String, val to_bot_id: String, val message_id: String? = null, val reason: String, val created_at_ms: Long)
+
+@Serializable
+data class CreateGroupChatRequest(val request_id: String, val idempotency_key: String, val title: String, val bot_ids: List<String>, val ownership_bot_id: String, val coordination_max_turns: Int, val max_parallel_bots: Int)
+
+@Serializable
+data class CreateGroupChatResponse(val group: GroupChatSummary, val participants: List<GroupParticipantSummary>)
+
+@Serializable
+data class GroupTimelineResponse(val group: GroupChatSummary, val participants: List<GroupParticipantSummary>, val messages: List<MessageSummary>, val handoffs: List<OwnershipHandoffSummary>, val boundary_sequence: Long)
+
+@Serializable
+data class SendGroupMessageRequest(val request_id: String, val idempotency_key: String, val content: String, val mentioned_bot_ids: List<String>, val shared_context_message_ids: List<String>)
+
+@Serializable
+data class HandoffGroupRequest(val request_id: String, val idempotency_key: String, val from_bot_id: String, val to_bot_id: String, val message_id: String? = null, val reason: String)
+
+@Serializable
+data class UpdateGroupParticipantRequest(val request_id: String, val idempotency_key: String, val status: String, val operation_id: String? = null)
+
+@Serializable
+data class AddGroupParticipantRequest(val request_id: String, val idempotency_key: String, val bot_id: String)
+
+@Serializable
 sealed interface MessagePart {
     @Serializable @SerialName("text")
     data class Text(val id: String, val ordinal: Int, val text: String) : MessagePart

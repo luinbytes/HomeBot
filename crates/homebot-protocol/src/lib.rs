@@ -74,6 +74,19 @@ pub enum ServerEventBody {
     ChatChanged {
         chat: ChatSummary,
     },
+    GroupChatChanged {
+        group: GroupChatSummary,
+    },
+    GroupParticipantChanged {
+        participant: GroupParticipantSummary,
+    },
+    GroupParticipantRemoved {
+        chat_id: Uuid,
+        bot_id: Uuid,
+    },
+    GroupHandoffRecorded {
+        handoff: OwnershipHandoffSummary,
+    },
     MessageChanged {
         message: MessageSummary,
     },
@@ -126,6 +139,8 @@ pub enum ResumeDisposition {
 pub struct Snapshot {
     pub bots: Vec<BotSummary>,
     pub chats: Vec<ChatSummary>,
+    #[serde(default)]
+    pub group_chats: Vec<GroupChatSummary>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
@@ -248,6 +263,126 @@ pub struct ChatSummary {
     pub running: bool,
     pub queued_count: u32,
     pub last_sequence: u64,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct GroupChatSummary {
+    pub id: Uuid,
+    pub title: String,
+    pub ownership_bot_id: Uuid,
+    pub coordination_max_turns: u32,
+    pub coordination_turns_used: u32,
+    pub max_parallel_bots: u32,
+    pub stop_requested: bool,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GroupParticipantRole {
+    Owner,
+    Member,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GroupBotStatus {
+    Idle,
+    Running,
+    Waiting,
+    Completed,
+    Failed,
+    Stopped,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct GroupParticipantSummary {
+    pub chat_id: Uuid,
+    pub bot_id: Uuid,
+    pub role: GroupParticipantRole,
+    pub status: GroupBotStatus,
+    pub active_operation_id: Option<Uuid>,
+    pub updated_at_ms: i64,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct OwnershipHandoffSummary {
+    pub id: Uuid,
+    pub chat_id: Uuid,
+    pub from_bot_id: Uuid,
+    pub to_bot_id: Uuid,
+    pub message_id: Option<Uuid>,
+    pub reason: String,
+    pub created_at_ms: i64,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CreateGroupChatRequest {
+    pub request_id: Uuid,
+    pub idempotency_key: Uuid,
+    pub title: String,
+    pub bot_ids: Vec<Uuid>,
+    pub ownership_bot_id: Uuid,
+    pub coordination_max_turns: u32,
+    pub max_parallel_bots: u32,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CreateGroupChatResponse {
+    pub group: GroupChatSummary,
+    pub participants: Vec<GroupParticipantSummary>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct GroupTimelineResponse {
+    pub group: GroupChatSummary,
+    pub participants: Vec<GroupParticipantSummary>,
+    pub messages: Vec<MessageSummary>,
+    pub handoffs: Vec<OwnershipHandoffSummary>,
+    pub boundary_sequence: u64,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SendGroupMessageRequest {
+    pub request_id: Uuid,
+    pub idempotency_key: Uuid,
+    pub content: String,
+    pub mentioned_bot_ids: Vec<Uuid>,
+    pub shared_context_message_ids: Vec<Uuid>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct HandoffGroupRequest {
+    pub request_id: Uuid,
+    pub idempotency_key: Uuid,
+    pub from_bot_id: Uuid,
+    pub to_bot_id: Uuid,
+    pub message_id: Option<Uuid>,
+    pub reason: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct UpdateGroupParticipantRequest {
+    pub request_id: Uuid,
+    pub idempotency_key: Uuid,
+    pub status: GroupBotStatus,
+    pub operation_id: Option<Uuid>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AddGroupParticipantRequest {
+    pub request_id: Uuid,
+    pub idempotency_key: Uuid,
+    pub bot_id: Uuid,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]

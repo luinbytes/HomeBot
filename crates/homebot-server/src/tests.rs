@@ -7,10 +7,13 @@ use axum::{
 };
 use futures_util::{SinkExt, StreamExt};
 use homebot_protocol::{
-    ApprovalDecisionRequest, Attachment, BotColor, BotMutationRequest, BotPermissionProfile,
-    BotProviderStatus, BotResponse, BotShape, ChatTimelineResponse, CreateAttachmentRequest,
-    CreateAttachmentResponse, CreateBotRequest, CreateDirectChatRequest, CreateDirectChatResponse,
-    FinalizeAttachmentRequest, SendMessageRequest, SendMessageResponse, UpdateBotRequest,
+    AddGroupParticipantRequest, ApprovalDecisionRequest, Attachment, BotColor, BotMutationRequest,
+    BotPermissionProfile, BotProviderStatus, BotResponse, BotShape, ChatTimelineResponse,
+    CreateAttachmentRequest, CreateAttachmentResponse, CreateBotRequest, CreateDirectChatRequest,
+    CreateDirectChatResponse, CreateGroupChatRequest, CreateGroupChatResponse,
+    FinalizeAttachmentRequest, GroupBotStatus, GroupTimelineResponse, HandoffGroupRequest,
+    SendGroupMessageRequest, SendMessageRequest, SendMessageResponse, UpdateBotRequest,
+    UpdateGroupParticipantRequest,
 };
 use homebot_providers::{
     ActivityKind, ActivityStatus as ProviderActivityStatus, ApprovalDecision, CompactRequest,
@@ -858,6 +861,227 @@ async fn failed_provider_message_can_be_retried_idempotently()
     assert_eq!(
         fetch_timeline(&app, chat.id).await?.messages.len(),
         timeline.messages.len()
+    );
+    Ok(())
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn group_chat_contract_coordinates_three_bots_with_bounded_handoff()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let storage = Storage::open(&directory.path().join("homebot.db")).await?;
+    let mut bot_ids = Vec::new();
+    for (index, name) in ["Nova", "Patch", "Scout", "Relay"].into_iter().enumerate() {
+        let bot = storage
+            .create_bot(
+                Uuid::nil(),
+                homebot_domain::Bot::create(name, "Group member")?,
+                i64::try_from(index).unwrap_or(i64::MAX),
+            )
+            .await?;
+        bot_ids.push(bot.id.0);
+    }
+    let app = router(AppState::new(storage.clone(), "correct-token"));
+    let chat_id = Uuid::now_v7();
+    let create = CreateGroupChatRequest {
+        request_id: Uuid::now_v7(),
+        idempotency_key: chat_id,
+        title: "Release team".to_owned(),
+        bot_ids: bot_ids[..3].to_vec(),
+        ownership_bot_id: bot_ids[0],
+        coordination_max_turns: 2,
+        max_parallel_bots: 2,
+    };
+    let response = app
+        .clone()
+        .oneshot(json_request("POST", "/api/v1/groups", &create))
+        .await?;
+    assert_eq!(response.status(), StatusCode::CREATED);
+    assert_eq!(
+        response_json::<CreateGroupChatResponse>(response)
+            .await?
+            .participants
+            .len(),
+        3
+    );
+    let replay = app
+        .clone()
+        .oneshot(json_request("POST", "/api/v1/groups", &create))
+        .await?;
+    assert_eq!(replay.status(), StatusCode::OK);
+
+    let response = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            &format!("/api/v1/groups/{chat_id}/participants"),
+            &AddGroupParticipantRequest {
+                request_id: Uuid::now_v7(),
+                idempotency_key: Uuid::now_v7(),
+                bot_id: bot_ids[3],
+            },
+        ))
+        .await?;
+    assert_eq!(response.status(), StatusCode::OK);
+    let response = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            &format!(
+                "/api/v1/groups/{chat_id}/participants/{}/remove",
+                bot_ids[3]
+            ),
+            &BotMutationRequest {
+                request_id: Uuid::now_v7(),
+                idempotency_key: Uuid::now_v7(),
+            },
+        ))
+        .await?;
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+
+    let first_message = Uuid::now_v7();
+    let response = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            &format!("/api/v1/groups/{chat_id}/messages"),
+            &SendGroupMessageRequest {
+                request_id: Uuid::now_v7(),
+                idempotency_key: first_message,
+                content: "Nova and Patch, investigate together".to_owned(),
+                mentioned_bot_ids: vec![bot_ids[0], bot_ids[1]],
+                shared_context_message_ids: Vec::new(),
+            },
+        ))
+        .await?;
+    assert_eq!(response.status(), StatusCode::OK);
+    storage
+        .append_group_bot_message(
+            Uuid::nil(),
+            chat_id,
+            Uuid::now_v7(),
+            bot_ids[0],
+            "Patch, use the user's request as shared context.",
+            &[bot_ids[1]],
+            &[first_message],
+            unix_time_ms() + 1,
+        )
+        .await?;
+
+    for bot_id in &bot_ids[..2] {
+        let response = app
+            .clone()
+            .oneshot(json_request(
+                "PUT",
+                &format!("/api/v1/groups/{chat_id}/participants/{bot_id}/status"),
+                &UpdateGroupParticipantRequest {
+                    request_id: Uuid::now_v7(),
+                    idempotency_key: Uuid::now_v7(),
+                    status: GroupBotStatus::Running,
+                    operation_id: Some(Uuid::now_v7()),
+                },
+            ))
+            .await?;
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+    let response = app
+        .clone()
+        .oneshot(json_request(
+            "PUT",
+            &format!(
+                "/api/v1/groups/{chat_id}/participants/{}/status",
+                bot_ids[2]
+            ),
+            &UpdateGroupParticipantRequest {
+                request_id: Uuid::now_v7(),
+                idempotency_key: Uuid::now_v7(),
+                status: GroupBotStatus::Running,
+                operation_id: Some(Uuid::now_v7()),
+            },
+        ))
+        .await?;
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+
+    for expected in 1..=2 {
+        let response = app
+            .clone()
+            .oneshot(json_request(
+                "POST",
+                &format!("/api/v1/groups/{chat_id}/coordination-turns"),
+                &BotMutationRequest {
+                    request_id: Uuid::now_v7(),
+                    idempotency_key: Uuid::now_v7(),
+                },
+            ))
+            .await?;
+        assert_eq!(
+            response_json::<homebot_protocol::GroupChatSummary>(response)
+                .await?
+                .coordination_turns_used,
+            expected
+        );
+    }
+    let response = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            &format!("/api/v1/groups/{chat_id}/coordination-turns"),
+            &BotMutationRequest {
+                request_id: Uuid::now_v7(),
+                idempotency_key: Uuid::now_v7(),
+            },
+        ))
+        .await?;
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+
+    let response = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            &format!("/api/v1/groups/{chat_id}/handoff"),
+            &HandoffGroupRequest {
+                request_id: Uuid::now_v7(),
+                idempotency_key: Uuid::now_v7(),
+                from_bot_id: bot_ids[0],
+                to_bot_id: bot_ids[2],
+                message_id: Some(first_message),
+                reason: "Scout owns final verification".to_owned(),
+            },
+        ))
+        .await?;
+    assert_eq!(response.status(), StatusCode::OK);
+    let timeline = app
+        .clone()
+        .oneshot(
+            Request::get(format!("/api/v1/groups/{chat_id}/timeline"))
+                .header("authorization", "Bearer correct-token")
+                .body(Body::empty())?,
+        )
+        .await?;
+    let timeline = response_json::<GroupTimelineResponse>(timeline).await?;
+    assert_eq!(timeline.group.ownership_bot_id, bot_ids[2]);
+    assert_eq!(timeline.messages.len(), 2);
+    assert_eq!(
+        timeline.messages[1].shared_context_message_ids,
+        vec![first_message]
+    );
+    assert_eq!(timeline.handoffs.len(), 1);
+
+    let response = app
+        .oneshot(json_request(
+            "POST",
+            &format!("/api/v1/groups/{chat_id}/stop"),
+            &BotMutationRequest {
+                request_id: Uuid::now_v7(),
+                idempotency_key: Uuid::now_v7(),
+            },
+        ))
+        .await?;
+    assert!(
+        response_json::<homebot_protocol::GroupChatSummary>(response)
+            .await?
+            .stop_requested
     );
     Ok(())
 }

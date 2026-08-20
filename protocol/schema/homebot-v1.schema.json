@@ -859,6 +859,106 @@
         "sha256"
       ]
     },
+    "GroupBotStatus": {
+      "type": "string",
+      "enum": [
+        "idle",
+        "running",
+        "waiting",
+        "completed",
+        "failed",
+        "stopped"
+      ]
+    },
+    "GroupChatSummary": {
+      "type": "object",
+      "properties": {
+        "coordination_max_turns": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "coordination_turns_used": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "max_parallel_bots": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "ownership_bot_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "stop_requested": {
+          "type": "boolean"
+        },
+        "title": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "title",
+        "ownership_bot_id",
+        "coordination_max_turns",
+        "coordination_turns_used",
+        "max_parallel_bots",
+        "stop_requested"
+      ]
+    },
+    "GroupParticipantRole": {
+      "type": "string",
+      "enum": [
+        "owner",
+        "member"
+      ]
+    },
+    "GroupParticipantSummary": {
+      "type": "object",
+      "properties": {
+        "active_operation_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid"
+        },
+        "bot_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "chat_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "role": {
+          "$ref": "#/$defs/GroupParticipantRole"
+        },
+        "status": {
+          "$ref": "#/$defs/GroupBotStatus"
+        },
+        "updated_at_ms": {
+          "type": "integer",
+          "format": "int64"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "chat_id",
+        "bot_id",
+        "role",
+        "status",
+        "updated_at_ms"
+      ]
+    },
     "MessageAuthor": {
       "type": "string",
       "enum": [
@@ -1062,6 +1162,50 @@
         "parts",
         "mentioned_bot_ids",
         "shared_context_message_ids",
+        "created_at_ms"
+      ]
+    },
+    "OwnershipHandoffSummary": {
+      "type": "object",
+      "properties": {
+        "chat_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "created_at_ms": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "from_bot_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "message_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "to_bot_id": {
+          "type": "string",
+          "format": "uuid"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "chat_id",
+        "from_bot_id",
+        "to_bot_id",
+        "reason",
         "created_at_ms"
       ]
     },
@@ -1329,6 +1473,76 @@
         {
           "type": "object",
           "properties": {
+            "group": {
+              "$ref": "#/$defs/GroupChatSummary"
+            },
+            "kind": {
+              "type": "string",
+              "const": "group_chat_changed"
+            }
+          },
+          "required": [
+            "kind",
+            "group"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "group_participant_changed"
+            },
+            "participant": {
+              "$ref": "#/$defs/GroupParticipantSummary"
+            }
+          },
+          "required": [
+            "kind",
+            "participant"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "bot_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "chat_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "kind": {
+              "type": "string",
+              "const": "group_participant_removed"
+            }
+          },
+          "required": [
+            "kind",
+            "chat_id",
+            "bot_id"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "handoff": {
+              "$ref": "#/$defs/OwnershipHandoffSummary"
+            },
+            "kind": {
+              "type": "string",
+              "const": "group_handoff_recorded"
+            }
+          },
+          "required": [
+            "kind",
+            "handoff"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
             "kind": {
               "type": "string",
               "const": "message_changed"
@@ -1547,6 +1761,13 @@
           "type": "array",
           "items": {
             "$ref": "#/$defs/ChatSummary"
+          }
+        },
+        "group_chats": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/GroupChatSummary"
           }
         }
       },

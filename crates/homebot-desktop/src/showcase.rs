@@ -14,6 +14,7 @@ pub enum FixtureState {
     DirectChat,
     Approval,
     QueueError,
+    GroupChat,
     BotEditor,
     Disconnected,
     ProviderUnavailable,
@@ -138,6 +139,7 @@ pub fn render_fixture(context: &egui::Context, theme: HomeBotTheme, state: Fixtu
             FixtureState::DirectChat => chat_state(ui, theme, false),
             FixtureState::Approval => chat_state(ui, theme, true),
             FixtureState::QueueError => queue_error_state(ui, theme),
+            FixtureState::GroupChat => group_chat_state(ui, theme),
             FixtureState::BotEditor => bot_editor(ui, theme),
             FixtureState::Disconnected => disconnected_state(ui, theme),
             FixtureState::ProviderUnavailable => provider_unavailable(ui, theme),
@@ -247,6 +249,72 @@ fn queue_error_state(ui: &mut egui::Ui, theme: HomeBotTheme) {
                         .strong(),
                 );
                 ui.label("Open the failing test output and propose a fix.");
+            });
+    });
+}
+
+fn group_chat_state(ui: &mut egui::Ui, theme: HomeBotTheme) {
+    ui.vertical_centered(|ui| {
+        ui.set_max_width(theme.layout.content_max_width);
+        ui.add_space(theme.spacing.lg);
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("Release team").strong());
+            ui.label(RichText::new("Nova owns this task").color(theme.palette.text_secondary));
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                let _ = ui.button("Stop all");
+            });
+        });
+        ui.horizontal(|ui| {
+            for (name, status, color) in [
+                ("Nova", "working", theme.palette.bot_nova),
+                ("Patch", "working", theme.palette.bot_patch),
+                ("Scout", "waiting", theme.palette.bot_scout),
+            ] {
+                Frame::NONE
+                    .fill(theme.palette.surface)
+                    .corner_radius(egui::CornerRadius::same(theme.radii.sm))
+                    .inner_margin(egui::Margin::same(theme.insets.sm))
+                    .show(ui, |ui| {
+                        ui.colored_label(color, format!("● {name}"));
+                        ui.label(RichText::new(status).color(theme.palette.text_secondary));
+                    });
+            }
+        });
+        ui.add_space(theme.spacing.xl);
+        message(
+            ui,
+            theme,
+            None,
+            "@Nova @Patch review the release blockers together.",
+        );
+        ui.add_space(theme.spacing.lg);
+        message(
+            ui,
+            theme,
+            Some(nova(theme)),
+            "@Patch I found a migration risk. Please validate it against the test fixture.",
+        );
+        ui.add_space(theme.spacing.md);
+        activity_card(
+            ui,
+            theme,
+            "Parallel work",
+            "Nova · Patch · 2 of 3 active",
+            false,
+        );
+        ui.add_space(theme.spacing.md);
+        Frame::NONE
+            .fill(theme.palette.surface_hover)
+            .corner_radius(egui::CornerRadius::same(theme.radii.sm))
+            .inner_margin(egui::Margin::same(theme.insets.md))
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("Ownership handoff").strong());
+                    ui.label("Nova to Scout");
+                    ui.label(
+                        RichText::new("Final verification").color(theme.palette.text_secondary),
+                    );
+                });
             });
     });
 }
@@ -369,6 +437,7 @@ mod tests {
                 FixtureState::DirectChat,
                 FixtureState::Approval,
                 FixtureState::QueueError,
+                FixtureState::GroupChat,
                 FixtureState::BotEditor,
                 FixtureState::Disconnected,
                 FixtureState::ProviderUnavailable,

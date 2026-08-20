@@ -3,6 +3,7 @@
 mod attachments;
 mod bots;
 mod chats;
+mod groups;
 mod provider_turn;
 
 use axum::{
@@ -156,6 +157,30 @@ pub fn router(state: AppState) -> Router {
             "/api/v1/approvals/{approval_id}/decision",
             post(chats::decide_approval),
         )
+        .route("/api/v1/groups", post(groups::create))
+        .route("/api/v1/groups/{chat_id}/timeline", get(groups::timeline))
+        .route(
+            "/api/v1/groups/{chat_id}/messages",
+            post(groups::send_message),
+        )
+        .route("/api/v1/groups/{chat_id}/handoff", post(groups::handoff))
+        .route(
+            "/api/v1/groups/{chat_id}/participants/{bot_id}/status",
+            put(groups::update_participant),
+        )
+        .route(
+            "/api/v1/groups/{chat_id}/participants",
+            post(groups::add_participant),
+        )
+        .route(
+            "/api/v1/groups/{chat_id}/participants/{bot_id}/remove",
+            post(groups::remove_participant),
+        )
+        .route(
+            "/api/v1/groups/{chat_id}/coordination-turns",
+            post(groups::record_turn),
+        )
+        .route("/api/v1/groups/{chat_id}/stop", post(groups::stop))
         .route("/api/v1/attachments", post(attachments::create_attachment))
         .route(
             "/api/v1/attachments/{attachment_id}/content",
@@ -443,9 +468,18 @@ async fn current_snapshot(state: &AppState) -> Snapshot {
         .into_iter()
         .map(chats::chat_summary)
         .collect();
+    let group_chats = state
+        .storage
+        .list_group_chats(state.owner_id)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(groups::group_summary)
+        .collect();
     Snapshot {
         bots: summaries,
         chats,
+        group_chats,
     }
 }
 

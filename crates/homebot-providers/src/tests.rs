@@ -137,6 +137,14 @@ impl ProviderAdapter for FakeAdapter {
             .map_err(|_| ProviderError::internal("Operation is no longer active"))
     }
 
+    async fn resolve_approval(
+        &self,
+        _approval_id: Uuid,
+        _decision: ApprovalDecision,
+    ) -> Result<(), ProviderError> {
+        Ok(())
+    }
+
     async fn compact(&self, request: CompactRequest) -> Result<(), ProviderError> {
         self.compacted.lock().await.push(request.conversation_id);
         Ok(())

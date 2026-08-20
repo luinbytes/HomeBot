@@ -221,6 +221,11 @@ impl SupervisedProcess {
     }
 
     #[must_use]
+    pub fn take_stdin(&mut self) -> Option<ChildStdin> {
+        self.stdin.take()
+    }
+
+    #[must_use]
     pub fn take_stdout(&mut self) -> Option<ChildStdout> {
         self.stdout.take()
     }

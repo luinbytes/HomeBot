@@ -1,8 +1,8 @@
 //! Adapter registry and operation routing owned by the `HomeBot` server.
 
 use crate::{
-    CompactRequest, ProviderAdapter, ProviderAdapterId, ProviderDescriptor, ProviderError,
-    ProviderHealth, ProviderModel, ProviderRun, ResumeRequest, StartRequest,
+    ApprovalDecision, CompactRequest, ProviderAdapter, ProviderAdapterId, ProviderDescriptor,
+    ProviderError, ProviderHealth, ProviderModel, ProviderRun, ResumeRequest, StartRequest,
 };
 use std::{collections::HashMap, sync::Arc};
 use tokio::sync::RwLock;
@@ -175,6 +175,24 @@ impl ProviderRuntime {
         self.adapter(&adapter_id)
             .await?
             .cancel(operation_id)
+            .await
+            .map_err(ProviderRuntimeError::Provider)
+    }
+
+    /// Resolves a provider approval without exposing provider-native decision payloads.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the adapter is unknown or the approval is no longer pending.
+    pub async fn resolve_approval(
+        &self,
+        adapter_id: &ProviderAdapterId,
+        approval_id: Uuid,
+        decision: ApprovalDecision,
+    ) -> Result<(), ProviderRuntimeError> {
+        self.adapter(adapter_id)
+            .await?
+            .resolve_approval(approval_id, decision)
             .await
             .map_err(ProviderRuntimeError::Provider)
     }

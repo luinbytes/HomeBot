@@ -185,6 +185,15 @@ pub struct ProviderApproval {
     pub reason: String,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ApprovalDecision {
+    AllowOnce,
+    AllowForSession,
+    Deny,
+    Cancel,
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ProviderEvent {
@@ -214,7 +223,8 @@ pub enum ProviderErrorCode {
     Internal,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, thiserror::Error)]
+#[error("{message}")]
 pub struct ProviderError {
     pub code: ProviderErrorCode,
     pub message: String,
@@ -270,6 +280,12 @@ pub trait ProviderAdapter: Send + Sync {
     async fn resume(&self, request: ResumeRequest) -> Result<ProviderRun, ProviderError>;
 
     async fn cancel(&self, operation_id: Uuid) -> Result<(), ProviderError>;
+
+    async fn resolve_approval(
+        &self,
+        approval_id: Uuid,
+        decision: ApprovalDecision,
+    ) -> Result<(), ProviderError>;
 
     async fn compact(&self, request: CompactRequest) -> Result<(), ProviderError>;
 

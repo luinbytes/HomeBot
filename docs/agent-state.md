@@ -9,7 +9,7 @@ This file is operational state for coding agents. It is not user-facing product 
 - Current milestone: M1, Local Runtime Foundation
 - Current Linear issue: 6C7-39 Codex CLI adapter via structured App Server protocol
 - Current Git branch: `feat/m0-contracts`
-- Latest verified remote commit: `97482ca0fc7f4ff8adabaea29e3686ce4bbb44e0`
+- Latest verified remote commit: `6aff44602636362d23a6db028f604b37b77d40fb`
 - Public repository: `https://github.com/luinbytes/HomeBot`
 - Repository owner and commit identity: `luinbytes <42706009+luinbytes@users.noreply.github.com>`
 
@@ -31,7 +31,7 @@ Current blockers:
 - Exact current-app pixel captures remain deliberately gated to 6C7-42.
 - 6C7-37 is Done. GitHub Actions run 32352700967 passed all six Linux, macOS Intel, macOS arm64, quality, dependency-policy, and audit jobs.
 - 6C7-38 is Done. GitHub Actions run 32354047604 passed the full six-job matrix.
-- 6C7-39 is In Progress. The current environment has no `codex` binary, so the mandatory end-to-end smoke test must skip with an explicit reason here. Official App Server documentation confirms stdio JSONL is the default structured transport and the WebSocket transport is experimental/unsupported.
+- 6C7-39 implementation and local verification are complete; remote CI is the remaining completion gate. The current environment has no `codex` binary, so the real-binary smoke test skips with an explicit reason. A fake executable App Server fixture verifies complete structured start, resume, streaming, approval, and interruption round trips. Official App Server documentation confirms stdio JSONL is the default structured transport and the WebSocket transport is experimental/unsupported.
 
 ## Completed work
 
@@ -47,12 +47,13 @@ Current blockers:
 - SQLite migrations, WAL persistence, event outbox, backup/restore, and recovery tests completed; Linear 6C7-36 is Done.
 - Authenticated HTTP/WebSocket transport, verified attachments, reconnect/replay, cancellation, heartbeat, idempotency, and bounded slow-client handling completed; Linear 6C7-37 is Done.
 - ProviderAdapter lifecycle/runtime and bounded child-process supervision completed; Linear 6C7-38 is Done.
+- Codex App Server adapter implemented with profile-scoped binary/environment configuration, auth and model discovery, structured threads/turns, streaming activities, approvals, usage, cancellation, compaction, normalized failures, and fixture-backed protocol tests; 6C7-39 awaits remote CI before Done.
 
 ## Immediate next work
 
-1. Implement the Codex stdio JSONL client lifecycle: initialize, thread start/resume, turn start, notifications, server requests, and interruption.
-2. Normalize Codex content, tool/activity, approval, models/capabilities, auth, usage, and errors into `ProviderAdapter` types with fixture tests.
-3. Support explicit binary paths and independent adapter instances for multiple provider profiles; add a skipped-with-reason smoke test when Codex is unavailable.
+1. Commit and push the verified 6C7-39 implementation, then require the full GitHub Actions matrix to pass.
+2. Add verification evidence to Linear and mark 6C7-39 Done only after remote CI succeeds.
+3. Refresh dependencies, move the next unblocked M1 issue to In Progress, update this file, and continue immediately.
 
 ## Verification state
 
@@ -70,7 +71,7 @@ Verified:
 - `cargo clippy --workspace --all-targets -- -D warnings` passes.
 - Rust JSON Schema and generated Android binding drift checks pass.
 - `homebot-storage` has ten passing tests covering clean install/table inventory, WAL mode, restart/outbox durability, backup/restore, migration rollback, corrupted startup, concurrent access, idempotency, replay retention, and attachment transitions.
-- `homebot-providers` has five passing tests covering normalized lifecycle routing, duplicate-operation rejection, cancellation/recovery, redacted bounded crash diagnostics, clean shutdown, and forced cleanup.
+- `homebot-providers` has twelve passing tests. Codex coverage includes JSONL fixture normalization, profile isolation and redaction, explicit binary discovery, auth/error and interruption normalization, fake App Server start/resume, streaming, approval resolution, cancellation, and an explicit real-binary skip when Codex is absent. Provider-runtime and process-supervision coverage remains green.
 
 Not yet verified:
 
@@ -81,7 +82,7 @@ Not yet verified:
 ## Known failures and incomplete implementation
 
 - `homebot-server` covers every stated 6C7-37 transport behaviour locally and in the passing remote matrix.
-- First-class Codex, Claude Code, and OpenAI-compatible adapters, desktop egui, Android, routines, plugins, tools, VCS, pairing, and packaging are not implemented.
+- The first-class Codex adapter is implemented but cannot perform a real authenticated provider message in this environment because the `codex` binary is absent. Claude Code and OpenAI-compatible adapters, desktop egui, Android, routines, plugins, tools, VCS, pairing, and packaging are not implemented.
 - The protocol defines product-level v1 envelopes and lifecycle contracts; server persistence and transport behaviour remain implementation work in later issues.
 - No release artifact exists. Do not describe the project as installable or v1-ready.
 

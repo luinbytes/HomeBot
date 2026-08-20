@@ -132,6 +132,7 @@ data class MessageSummary(
     val parts: List<MessagePart>,
     val reply_to_message_id: String? = null,
     val mentioned_bot_ids: List<String>,
+    val shared_context_message_ids: List<String>,
     val created_at_ms: Long,
     val completed_at_ms: Long? = null,
     val error: ErrorEnvelope? = null,

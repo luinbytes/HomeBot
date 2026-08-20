@@ -115,6 +115,7 @@ pub struct ChatMessage {
     pub parts: Vec<MessagePart>,
     pub reply_to_message_id: Option<Uuid>,
     pub mentioned_bot_ids: Vec<Uuid>,
+    pub shared_context_message_ids: Vec<Uuid>,
     pub created_at_ms: i64,
     pub completed_at_ms: Option<i64>,
     pub error_json: Option<serde_json::Value>,
@@ -128,6 +129,111 @@ pub struct QueuedPrompt {
     pub content: String,
     pub attachment_ids: Vec<Uuid>,
     pub position: u32,
+    pub created_at_ms: i64,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct GroupChat {
+    pub id: Uuid,
+    pub owner_id: Uuid,
+    pub title: String,
+    pub ownership_bot_id: Uuid,
+    pub coordination_max_turns: u32,
+    pub coordination_turns_used: u32,
+    pub max_parallel_bots: u32,
+    pub stop_requested: bool,
+    pub created_at_ms: i64,
+    pub updated_at_ms: i64,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GroupParticipantRole {
+    Owner,
+    Member,
+}
+
+impl GroupParticipantRole {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Owner => "owner",
+            Self::Member => "member",
+        }
+    }
+}
+
+impl std::str::FromStr for GroupParticipantRole {
+    type Err = ChatDomainError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "owner" => Ok(Self::Owner),
+            "member" => Ok(Self::Member),
+            _ => Err(ChatDomainError::InvalidParticipantRole),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct GroupParticipant {
+    pub chat_id: Uuid,
+    pub bot_id: Uuid,
+    pub role: GroupParticipantRole,
+    pub status: GroupBotStatus,
+    pub active_operation_id: Option<Uuid>,
+    pub updated_at_ms: i64,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GroupBotStatus {
+    Idle,
+    Running,
+    Waiting,
+    Completed,
+    Failed,
+    Stopped,
+}
+
+impl GroupBotStatus {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Idle => "idle",
+            Self::Running => "running",
+            Self::Waiting => "waiting",
+            Self::Completed => "completed",
+            Self::Failed => "failed",
+            Self::Stopped => "stopped",
+        }
+    }
+}
+
+impl std::str::FromStr for GroupBotStatus {
+    type Err = ChatDomainError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "idle" => Ok(Self::Idle),
+            "running" => Ok(Self::Running),
+            "waiting" => Ok(Self::Waiting),
+            "completed" => Ok(Self::Completed),
+            "failed" => Ok(Self::Failed),
+            "stopped" => Ok(Self::Stopped),
+            _ => Err(ChatDomainError::InvalidGroupBotStatus),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct OwnershipHandoff {
+    pub id: Uuid,
+    pub chat_id: Uuid,
+    pub from_bot_id: Uuid,
+    pub to_bot_id: Uuid,
+    pub message_id: Option<Uuid>,
+    pub reason: String,
     pub created_at_ms: i64,
 }
 
@@ -278,6 +384,7 @@ impl ChatMessage {
             parts,
             reply_to_message_id,
             mentioned_bot_ids,
+            shared_context_message_ids: Vec::new(),
             created_at_ms: now_ms,
             completed_at_ms: Some(now_ms),
             error_json: None,
@@ -295,6 +402,10 @@ pub enum ChatDomainError {
     InvalidAuthor,
     #[error("Message status is invalid")]
     InvalidStatus,
+    #[error("group participant role is invalid")]
+    InvalidParticipantRole,
+    #[error("group Bot status is invalid")]
+    InvalidGroupBotStatus,
     #[error("Activity status is invalid")]
     InvalidActivityStatus,
     #[error("Approval status is invalid")]

@@ -1042,6 +1042,13 @@
           ],
           "format": "uuid"
         },
+        "shared_context_message_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
         "status": {
           "$ref": "#/$defs/MessageStatus"
         }
@@ -1054,6 +1061,7 @@
         "status",
         "parts",
         "mentioned_bot_ids",
+        "shared_context_message_ids",
         "created_at_ms"
       ]
     },

@@ -299,6 +299,7 @@ pub struct MessageSummary {
     pub parts: Vec<MessagePart>,
     pub reply_to_message_id: Option<Uuid>,
     pub mentioned_bot_ids: Vec<Uuid>,
+    pub shared_context_message_ids: Vec<Uuid>,
     pub created_at_ms: i64,
     pub completed_at_ms: Option<i64>,
     pub error: Option<ErrorEnvelope>,

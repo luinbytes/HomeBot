@@ -533,6 +533,7 @@ pub(super) async fn message_summary(
         parts,
         reply_to_message_id: message.reply_to_message_id,
         mentioned_bot_ids: message.mentioned_bot_ids,
+        shared_context_message_ids: message.shared_context_message_ids,
         created_at_ms: message.created_at_ms,
         completed_at_ms: message.completed_at_ms,
         error: message

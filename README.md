@@ -24,7 +24,7 @@ The hosted cloud VM is the one intentional Grok Bot parity exclusion. Your HomeB
 
 ## Status and installation
 
-HomeBot is in active M1 local-runtime development. There are no supported release packages yet. Follow [INSTALL.md](INSTALL.md) for human installation status or [AGENT_INSTALL.md](AGENT_INSTALL.md) for deterministic automation instructions. Release readiness is tracked against [the parity matrix](docs/parity-matrix.md).
+HomeBot is in active M2 desktop-parity development. There are no supported release packages yet. Follow [INSTALL.md](INSTALL.md) for human installation status or [AGENT_INSTALL.md](AGENT_INSTALL.md) for deterministic automation instructions. Release readiness is tracked against [the parity matrix](docs/parity-matrix.md).
 
 Supported v1 targets are macOS x86_64 and arm64, Linux x86_64 with Arch/Omarchy first-class, headless macOS/Linux, and Android.
 
@@ -55,6 +55,7 @@ Read the deeper contracts:
 - [Architecture](docs/architecture.md)
 - [Desktop visual system](docs/desktop-visual-system.md)
 - [Protocol](docs/protocol.md)
+- [Group chats and coordination](docs/group-chats.md)
 - [Providers](docs/providers.md)
 - [Local computer capabilities](docs/tools.md)
 - [Security and threat model](docs/security.md)

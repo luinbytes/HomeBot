@@ -7,9 +7,9 @@ This file is operational state for coding agents. It is not user-facing product 
 ## Current state
 
 - Current milestone: M1, Local Runtime Foundation
-- Current Linear issue: 6C7-39 Codex CLI adapter via structured App Server protocol
+- Current Linear issue: 6C7-40 Claude Code adapter and generic BYOK backends
 - Current Git branch: `feat/m0-contracts`
-- Latest verified remote commit: `6aff44602636362d23a6db028f604b37b77d40fb`
+- Latest verified remote commit: `fc69b38172c9bd2d7c13be478b094ffd908ff35c`
 - Public repository: `https://github.com/luinbytes/HomeBot`
 - Repository owner and commit identity: `luinbytes <42706009+luinbytes@users.noreply.github.com>`
 
@@ -31,7 +31,8 @@ Current blockers:
 - Exact current-app pixel captures remain deliberately gated to 6C7-42.
 - 6C7-37 is Done. GitHub Actions run 32352700967 passed all six Linux, macOS Intel, macOS arm64, quality, dependency-policy, and audit jobs.
 - 6C7-38 is Done. GitHub Actions run 32354047604 passed the full six-job matrix.
-- 6C7-39 implementation and local verification are complete; remote CI is the remaining completion gate. The current environment has no `codex` binary, so the real-binary smoke test skips with an explicit reason. A fake executable App Server fixture verifies complete structured start, resume, streaming, approval, and interruption round trips. Official App Server documentation confirms stdio JSONL is the default structured transport and the WebSocket transport is experimental/unsupported.
+- 6C7-39 is Done. GitHub Actions run 32355805077 passed the full six-job matrix. The current environment has no `codex` binary, so the real-binary smoke test skips with an explicit reason; fake executable App Server fixtures verify structured start, resume, streaming, approval, and interruption round trips.
+- 6C7-40 is In Progress. Official Anthropic documentation identifies `claude -p --output-format stream-json --verbose --include-partial-messages` as the supported structured Rust subprocess route and `--resume` as the session continuation mechanism. OpenAI-compatible backends will resolve opaque secret references only at request time.
 
 ## Completed work
 
@@ -47,13 +48,13 @@ Current blockers:
 - SQLite migrations, WAL persistence, event outbox, backup/restore, and recovery tests completed; Linear 6C7-36 is Done.
 - Authenticated HTTP/WebSocket transport, verified attachments, reconnect/replay, cancellation, heartbeat, idempotency, and bounded slow-client handling completed; Linear 6C7-37 is Done.
 - ProviderAdapter lifecycle/runtime and bounded child-process supervision completed; Linear 6C7-38 is Done.
-- Codex App Server adapter implemented with profile-scoped binary/environment configuration, auth and model discovery, structured threads/turns, streaming activities, approvals, usage, cancellation, compaction, normalized failures, and fixture-backed protocol tests; 6C7-39 awaits remote CI before Done.
+- Codex App Server adapter implemented with profile-scoped binary/environment configuration, auth and model discovery, structured threads/turns, streaming activities, approvals, usage, cancellation, compaction, normalized failures, and fixture-backed protocol tests; Linear 6C7-39 is Done.
 
 ## Immediate next work
 
-1. Commit and push the verified 6C7-39 implementation, then require the full GitHub Actions matrix to pass.
-2. Add verification evidence to Linear and mark 6C7-39 Done only after remote CI succeeds.
-3. Refresh dependencies, move the next unblocked M1 issue to In Progress, update this file, and continue immediately.
+1. Implement a structured Claude Code `stream-json` adapter with explicit binary/profile configuration, session resume, streamed content/activity/usage normalization, process cancellation, and fixture tests.
+2. Implement an OpenAI-compatible Responses API adapter whose profiles contain only an opaque secret reference and whose injected resolver supplies credentials at request time without logging or persistence.
+3. Document and test a constrained generic structured-process adapter for community providers, then run local and remote quality gates for 6C7-40.
 
 ## Verification state
 

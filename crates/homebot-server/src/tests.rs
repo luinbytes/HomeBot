@@ -7,13 +7,13 @@ use axum::{
 };
 use futures_util::{SinkExt, StreamExt};
 use homebot_protocol::{
-    AddGroupParticipantRequest, ApprovalDecisionRequest, Attachment, BotColor, BotMutationRequest,
-    BotPermissionProfile, BotProviderStatus, BotResponse, BotShape, ChatTimelineResponse,
-    CreateAttachmentRequest, CreateAttachmentResponse, CreateBotRequest, CreateDirectChatRequest,
-    CreateDirectChatResponse, CreateGroupChatRequest, CreateGroupChatResponse,
-    FinalizeAttachmentRequest, GroupBotStatus, GroupTimelineResponse, HandoffGroupRequest,
-    SendGroupMessageRequest, SendMessageRequest, SendMessageResponse, UpdateBotRequest,
-    UpdateGroupParticipantRequest,
+    AddGroupParticipantRequest, ApprovalDecisionRequest, ArtifactSummary, Attachment, BotColor,
+    BotMutationRequest, BotPermissionProfile, BotProviderStatus, BotResponse, BotShape,
+    ChatTimelineResponse, CreateAttachmentRequest, CreateAttachmentResponse, CreateBotRequest,
+    CreateDirectChatRequest, CreateDirectChatResponse, CreateGroupChatRequest,
+    CreateGroupChatResponse, FinalizeAttachmentRequest, GroupBotStatus, GroupTimelineResponse,
+    HandoffGroupRequest, SendGroupMessageRequest, SendMessageRequest, SendMessageResponse,
+    UpdateBotRequest, UpdateGroupParticipantRequest,
 };
 use homebot_providers::{
     ActivityKind, ActivityStatus as ProviderActivityStatus, ApprovalDecision, CompactRequest,
@@ -1710,5 +1710,85 @@ async fn invalid_attachment_bytes_are_deleted_and_cannot_be_finalized()
         )
         .await?;
     assert_eq!(finalize_response.status(), StatusCode::CONFLICT);
+    Ok(())
+}
+
+#[tokio::test]
+async fn generated_artifacts_are_server_owned_authenticated_and_remotely_addressable()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let storage = Storage::open(&directory.path().join("homebot.db")).await?;
+    let bot = storage
+        .create_bot(
+            Uuid::nil(),
+            homebot_domain::Bot::create("Nova", "Research")?,
+            1,
+        )
+        .await?;
+    let chat_id = Uuid::now_v7();
+    storage
+        .create_direct_chat(Uuid::nil(), bot.id.0, chat_id, 2)
+        .await?;
+    let state = AppState::new(storage.clone(), "correct-token")
+        .with_artifact_root(directory.path().join("artifacts"));
+    let content = b"# Release audit\n\nAll checks passed.\n";
+    let artifact = artifacts::persist_generated_artifact(
+        &state,
+        artifacts::GeneratedArtifact {
+            chat_id,
+            message_id: None,
+            activity_id: None,
+            name: "release-audit.md",
+            kind: "report",
+            media_type: "text/markdown",
+            bytes: content,
+        },
+    )
+    .await?;
+    let app = router(state);
+    let metadata_url = format!("/api/v1/artifacts/{}", artifact.id);
+    let unauthorized = app
+        .clone()
+        .oneshot(Request::get(&metadata_url).body(Body::empty())?)
+        .await?;
+    assert_eq!(unauthorized.status(), StatusCode::UNAUTHORIZED);
+
+    let metadata = app
+        .clone()
+        .oneshot(
+            Request::get(&metadata_url)
+                .header("authorization", "Bearer correct-token")
+                .body(Body::empty())?,
+        )
+        .await?;
+    assert_eq!(metadata.status(), StatusCode::OK);
+    let encoded = to_bytes(metadata.into_body(), 16 * 1024).await?;
+    let decoded: ArtifactSummary = serde_json::from_slice(&encoded)?;
+    assert_eq!(decoded, artifact);
+    assert!(!String::from_utf8(encoded.to_vec())?.contains("storage_path"));
+
+    let content_response = app
+        .clone()
+        .oneshot(
+            Request::get(format!("{metadata_url}/content"))
+                .header("authorization", "Bearer correct-token")
+                .body(Body::empty())?,
+        )
+        .await?;
+    assert_eq!(content_response.status(), StatusCode::OK);
+    assert_eq!(content_response.headers()["content-type"], "text/markdown");
+    assert_eq!(
+        to_bytes(content_response.into_body(), 16 * 1024).await?,
+        content.as_slice()
+    );
+
+    let missing = app
+        .oneshot(
+            Request::get(format!("/api/v1/artifacts/{}/content", Uuid::now_v7()))
+                .header("authorization", "Bearer correct-token")
+                .body(Body::empty())?,
+        )
+        .await?;
+    assert_eq!(missing.status(), StatusCode::NOT_FOUND);
     Ok(())
 }

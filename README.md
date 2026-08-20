@@ -56,6 +56,7 @@ Read the deeper contracts:
 - [Desktop visual system](docs/desktop-visual-system.md)
 - [Protocol](docs/protocol.md)
 - [Group chats and coordination](docs/group-chats.md)
+- [Activity and artifact surfaces](docs/activity-surfaces.md)
 - [Providers](docs/providers.md)
 - [Local computer capabilities](docs/tools.md)
 - [Security and threat model](docs/security.md)

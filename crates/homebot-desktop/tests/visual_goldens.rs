@@ -62,4 +62,9 @@ fn desktop_shell_visual_goldens() {
         HomeBotTheme::light(),
         FixtureState::ProviderUnavailable,
     );
+    snapshot(
+        "desktop_activity_surfaces_dark",
+        HomeBotTheme::dark(),
+        FixtureState::ActivitySurfaces,
+    );
 }

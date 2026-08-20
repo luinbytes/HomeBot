@@ -36,6 +36,12 @@ Required common codes include `unauthenticated`, `forbidden`, `approval_required
 
 Attachments are uploaded over authenticated HTTP with size/type limits, streaming digest verification, an idempotency key, and an explicit finalise step. WebSocket messages refer to completed attachment IDs. Partial uploads expire and cannot be consumed.
 
+## Activity and generated artifacts
+
+Execution activity crosses the protocol as a provider-neutral kind, lifecycle status, risk level and typed presentation detail. File and terminal locations must be normalized workspace-relative display paths. Browser screenshots and generated outputs use artifact UUIDs; clients never receive or construct a server filesystem path.
+
+Generated artifact metadata and content are fetched through authenticated owner-scoped HTTP routes. `ArtifactSummary` exposes safe name, kind, media type, size and SHA-256 digest while deliberately omitting the internal content-addressed storage path. See [activity-surfaces.md](activity-surfaces.md).
+
 ## Bot lifecycle
 
 The authenticated Bot collection exposes list, create, update, archive, restore and mark-read operations under /api/v1/bots. Create and update bodies carry the user-facing identity plus advanced provider-profile and permission settings. Responses normalize provider health and include unread, attention and archive state. Successful changes emit durable bot-changed events and appear in subsequent reconnect snapshots.

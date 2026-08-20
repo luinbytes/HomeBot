@@ -249,6 +249,15 @@ async fn consume(state: AppState, chat_id: Uuid, mut run: ProviderRun) -> Result
                     kind: format!("{:?}", activity.kind).to_ascii_lowercase(),
                     title: activity.title.clone(),
                     detail: activity.title,
+                    presentation_json: serde_json::json!({
+                        "risk": "low",
+                        "detail": {
+                            "kind": "generic",
+                            "summary": "Provider activity"
+                        },
+                        "copy_text": null,
+                        "open_artifact_id": null
+                    }),
                     status,
                     requires_attention: matches!(status, ActivityStatus::Failed),
                     started_at_ms: now,

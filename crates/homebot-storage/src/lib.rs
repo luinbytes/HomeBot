@@ -17,7 +17,7 @@ use sqlx::{
 use std::{collections::HashSet, path::Path, str::FromStr, time::Duration};
 use uuid::Uuid;
 
-pub const SCHEMA_VERSION: u32 = 6;
+pub const SCHEMA_VERSION: u32 = 7;
 static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
 
 #[derive(Debug, thiserror::Error)]
@@ -99,6 +99,22 @@ pub struct AttachmentRecord {
     pub expires_at_ms: i64,
     pub created_at_ms: i64,
     pub finalized_at_ms: Option<i64>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ArtifactRecord {
+    pub id: Uuid,
+    pub owner_id: Uuid,
+    pub chat_id: Uuid,
+    pub message_id: Option<Uuid>,
+    pub activity_id: Option<Uuid>,
+    pub name: String,
+    pub kind: String,
+    pub media_type: String,
+    pub size_bytes: u64,
+    pub sha256: String,
+    pub storage_path: String,
+    pub created_at_ms: i64,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1639,11 +1655,12 @@ impl Storage {
             "INSERT INTO execution_activities (
                 id, chat_id, message_id, kind, status, detail_json, title, detail,
                 requires_attention, started_at_ms, finished_at_ms
-             ) VALUES (?, ?, ?, ?, ?, '{}', ?, ?, ?, ?, ?)
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT(id) DO UPDATE SET
                 status = excluded.status,
                 title = excluded.title,
                 detail = excluded.detail,
+                detail_json = excluded.detail_json,
                 requires_attention = excluded.requires_attention,
                 finished_at_ms = excluded.finished_at_ms
              WHERE execution_activities.chat_id = excluded.chat_id",
@@ -1653,6 +1670,7 @@ impl Storage {
         .bind(activity.message_id.map(|id| id.to_string()))
         .bind(&activity.kind)
         .bind(activity.status.as_str())
+        .bind(&activity.presentation_json)
         .bind(&activity.title)
         .bind(&activity.detail)
         .bind(activity.requires_attention)
@@ -2001,6 +2019,63 @@ impl Storage {
         Ok(updated == 1)
     }
 
+    /// Stores server-created artifact metadata after its content has been verified.
+    ///
+    /// # Errors
+    ///
+    /// Returns an ownership, range, or database error.
+    pub async fn insert_artifact(&self, artifact: &ArtifactRecord) -> Result<(), StorageError> {
+        let _ = self
+            .get_direct_chat(artifact.owner_id, artifact.chat_id)
+            .await?;
+        let size_bytes = i64::try_from(artifact.size_bytes).map_err(|_| {
+            StorageError::Integrity("artifact size exceeds SQLite range".to_owned())
+        })?;
+        sqlx::query(
+            "INSERT INTO artifacts (
+                id, owner_id, chat_id, message_id, activity_id, name, kind, media_type,
+                size_bytes, sha256, storage_path, created_at_ms
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(artifact.id.to_string())
+        .bind(artifact.owner_id.to_string())
+        .bind(artifact.chat_id.to_string())
+        .bind(artifact.message_id.map(|id| id.to_string()))
+        .bind(artifact.activity_id.map(|id| id.to_string()))
+        .bind(&artifact.name)
+        .bind(&artifact.kind)
+        .bind(&artifact.media_type)
+        .bind(size_bytes)
+        .bind(&artifact.sha256)
+        .bind(&artifact.storage_path)
+        .bind(artifact.created_at_ms)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Returns server-created artifact metadata visible to an owner.
+    ///
+    /// # Errors
+    ///
+    /// Returns a storage error if metadata cannot be decoded.
+    pub async fn artifact(
+        &self,
+        owner_id: Uuid,
+        artifact_id: Uuid,
+    ) -> Result<Option<ArtifactRecord>, StorageError> {
+        let row = sqlx::query(
+            "SELECT id, owner_id, chat_id, message_id, activity_id, name, kind, media_type,
+                    size_bytes, sha256, storage_path, created_at_ms
+             FROM artifacts WHERE id = ? AND owner_id = ?",
+        )
+        .bind(artifact_id.to_string())
+        .bind(owner_id.to_string())
+        .fetch_optional(&self.pool)
+        .await?;
+        row.map(|row| artifact_from_row(&row)).transpose()
+    }
+
     /// Replays owner-authorised events strictly after `sequence`.
     ///
     /// # Errors
@@ -2318,6 +2393,7 @@ fn activity_from_row(row: &sqlx::sqlite::SqliteRow) -> Result<ExecutionActivity,
         kind: row.try_get("kind")?,
         title: row.try_get("title")?,
         detail: row.try_get("detail")?,
+        presentation_json: row.try_get("detail_json")?,
         status: status.parse()?,
         requires_attention: row.try_get("requires_attention")?,
         started_at_ms: row.try_get("started_at_ms")?,
@@ -2445,6 +2521,31 @@ where
         })
     })
     .transpose()
+}
+
+fn artifact_from_row(row: &sqlx::sqlite::SqliteRow) -> Result<ArtifactRecord, StorageError> {
+    let size_bytes: i64 = row.try_get("size_bytes")?;
+    Ok(ArtifactRecord {
+        id: parse_uuid(row.try_get("id")?)?,
+        owner_id: parse_uuid(row.try_get("owner_id")?)?,
+        chat_id: parse_uuid(row.try_get("chat_id")?)?,
+        message_id: row
+            .try_get::<Option<&str>, _>("message_id")?
+            .map(parse_uuid)
+            .transpose()?,
+        activity_id: row
+            .try_get::<Option<&str>, _>("activity_id")?
+            .map(parse_uuid)
+            .transpose()?,
+        name: row.try_get("name")?,
+        kind: row.try_get("kind")?,
+        media_type: row.try_get("media_type")?,
+        size_bytes: u64::try_from(size_bytes)
+            .map_err(|_| StorageError::Integrity("negative artifact size".to_owned()))?,
+        sha256: row.try_get("sha256")?,
+        storage_path: row.try_get("storage_path")?,
+        created_at_ms: row.try_get("created_at_ms")?,
+    })
 }
 
 fn parse_uuid(value: &str) -> Result<Uuid, StorageError> {
@@ -2580,6 +2681,12 @@ mod tests {
             kind: "search".to_owned(),
             title: "Searching sources".to_owned(),
             detail: "Local index".to_owned(),
+            presentation_json: serde_json::json!({
+                "risk": "low",
+                "detail": {"kind": "generic", "summary": "Local index"},
+                "copy_text": null,
+                "open_artifact_id": null
+            }),
             status: ActivityStatus::Running,
             requires_attention: false,
             started_at_ms: 8,

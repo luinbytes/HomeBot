@@ -450,6 +450,95 @@ pub enum ActivityStatus {
     Cancelled,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ActivityKind {
+    Reasoning,
+    Search,
+    Tool,
+    Filesystem,
+    Terminal,
+    Browser,
+    Artifact,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RiskLevel {
+    Low,
+    Elevated,
+    High,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ActivityDetail {
+    Generic {
+        summary: String,
+    },
+    File {
+        action: String,
+        workspace_path: String,
+        bytes_changed: Option<u64>,
+        sha256: Option<String>,
+    },
+    Terminal {
+        command: String,
+        working_directory: String,
+        output_preview: String,
+        exit_code: Option<i32>,
+        truncated: bool,
+    },
+    Browser {
+        action: String,
+        url: String,
+        page_title: Option<String>,
+        screenshot_artifact_id: Option<Uuid>,
+    },
+    Artifact {
+        artifact_id: Uuid,
+        name: String,
+        media_type: String,
+        size_bytes: u64,
+    },
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ActivityPresentation {
+    pub risk: RiskLevel,
+    pub detail: ActivityDetail,
+    pub copy_text: Option<String>,
+    pub open_artifact_id: Option<Uuid>,
+}
+
+impl ActivityPresentation {
+    /// Returns whether every client-visible path is a normalized workspace-relative path.
+    #[must_use]
+    pub fn is_remote_safe(&self) -> bool {
+        match &self.detail {
+            ActivityDetail::File { workspace_path, .. } => {
+                normalized_workspace_path(workspace_path)
+            }
+            ActivityDetail::Terminal {
+                working_directory, ..
+            } => normalized_workspace_path(working_directory),
+            ActivityDetail::Generic { .. }
+            | ActivityDetail::Browser { .. }
+            | ActivityDetail::Artifact { .. } => true,
+        }
+    }
+}
+
+fn normalized_workspace_path(value: &str) -> bool {
+    !value.is_empty()
+        && !value.starts_with('/')
+        && !value.contains(['\\', '\0'])
+        && value
+            .split('/')
+            .all(|component| !component.is_empty() && component != "." && component != "..")
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ActivitySummary {
@@ -458,10 +547,27 @@ pub struct ActivitySummary {
     pub message_id: Option<Uuid>,
     pub title: String,
     pub detail: String,
+    pub kind: ActivityKind,
+    pub presentation: ActivityPresentation,
     pub status: ActivityStatus,
     pub requires_attention: bool,
     pub started_at_ms: i64,
     pub finished_at_ms: Option<i64>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ArtifactSummary {
+    pub id: Uuid,
+    pub chat_id: Uuid,
+    pub message_id: Option<Uuid>,
+    pub activity_id: Option<Uuid>,
+    pub name: String,
+    pub kind: String,
+    pub media_type: String,
+    pub size_bytes: u64,
+    pub sha256: String,
+    pub created_at_ms: i64,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
@@ -632,6 +738,7 @@ pub struct ProtocolV1Schema {
     pub create_attachment_response: CreateAttachmentResponse,
     pub finalize_attachment_request: FinalizeAttachmentRequest,
     pub attachment: Attachment,
+    pub artifact: ArtifactSummary,
     pub create_bot_request: CreateBotRequest,
     pub update_bot_request: UpdateBotRequest,
     pub bot_mutation_request: BotMutationRequest,
@@ -737,6 +844,25 @@ mod tests {
             include_str!("../../../tests/fixtures/protocol/command-cancelled-v1.json"),
         ] {
             assert!(serde_json::from_str::<ServerEvent>(fixture).is_ok());
+        }
+    }
+
+    #[test]
+    fn activity_paths_must_be_normalized_and_workspace_relative() {
+        let presentation = |workspace_path: &str| ActivityPresentation {
+            risk: RiskLevel::Low,
+            detail: ActivityDetail::File {
+                action: "read".to_owned(),
+                workspace_path: workspace_path.to_owned(),
+                bytes_changed: None,
+                sha256: None,
+            },
+            copy_text: None,
+            open_artifact_id: None,
+        };
+        assert!(presentation("docs/protocol.md").is_remote_safe());
+        for unsafe_path in ["/etc/passwd", "../secret", "docs//file", "C:\\secret"] {
+            assert!(!presentation(unsafe_path).is_remote_safe(), "{unsafe_path}");
         }
     }
 }

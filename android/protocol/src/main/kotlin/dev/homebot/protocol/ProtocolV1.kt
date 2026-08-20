@@ -169,7 +169,13 @@ data class MessageSummary(
 )
 
 @Serializable
-data class ActivitySummary(val id: String, val chat_id: String, val message_id: String? = null, val title: String, val detail: String, val status: String, val requires_attention: Boolean, val started_at_ms: Long, val finished_at_ms: Long? = null)
+data class ActivityPresentation(val risk: String, val detail: JsonElement, val copy_text: String? = null, val open_artifact_id: String? = null)
+
+@Serializable
+data class ActivitySummary(val id: String, val chat_id: String, val message_id: String? = null, val title: String, val detail: String, val kind: String, val presentation: ActivityPresentation, val status: String, val requires_attention: Boolean, val started_at_ms: Long, val finished_at_ms: Long? = null)
+
+@Serializable
+data class ArtifactSummary(val id: String, val chat_id: String, val message_id: String? = null, val activity_id: String? = null, val name: String, val kind: String, val media_type: String, val size_bytes: Long, val sha256: String, val created_at_ms: Long)
 
 @Serializable
 data class ApprovalSummary(val id: String, val chat_id: String, val message_id: String? = null, val title: String, val detail: String, val status: String, val created_at_ms: Long, val decided_at_ms: Long? = null)

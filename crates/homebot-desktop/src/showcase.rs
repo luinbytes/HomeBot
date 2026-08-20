@@ -1,6 +1,11 @@
 use egui::{Align, CentralPanel, Frame, Layout, RichText, SidePanel, Stroke, TopBottomPanel};
+use homebot_protocol::{
+    ActivityDetail, ActivityKind, ActivityPresentation, ActivityStatus, ActivitySummary, RiskLevel,
+};
+use uuid::Uuid;
 
 use crate::{
+    activity_surfaces::{ActivityCardModel, activity_surface},
     components::{
         AvatarShape, BotIdentity, activity_card, approval_card, composer, message, roster_row,
         section_label,
@@ -18,6 +23,7 @@ pub enum FixtureState {
     BotEditor,
     Disconnected,
     ProviderUnavailable,
+    ActivitySurfaces,
 }
 
 fn nova(theme: HomeBotTheme) -> BotIdentity<'static> {
@@ -104,6 +110,7 @@ pub fn render_fixture(context: &egui::Context, theme: HomeBotTheme, state: Fixtu
                     RichText::new(match state {
                         FixtureState::Empty => "Bots",
                         FixtureState::BotEditor => "New Bot",
+                        FixtureState::ActivitySurfaces => "Nova · activity",
                         _ => "Nova",
                     })
                     .font(theme.typography.font(theme.typography.body_compact))
@@ -116,7 +123,10 @@ pub fn render_fixture(context: &egui::Context, theme: HomeBotTheme, state: Fixtu
             });
         });
 
-    if !matches!(state, FixtureState::Empty | FixtureState::BotEditor) {
+    if !matches!(
+        state,
+        FixtureState::Empty | FixtureState::BotEditor | FixtureState::ActivitySurfaces
+    ) {
         TopBottomPanel::bottom("homebot_composer")
             .exact_height(theme.layout.composer_min_height + theme.spacing.xl)
             .frame(
@@ -143,7 +153,108 @@ pub fn render_fixture(context: &egui::Context, theme: HomeBotTheme, state: Fixtu
             FixtureState::BotEditor => bot_editor(ui, theme),
             FixtureState::Disconnected => disconnected_state(ui, theme),
             FixtureState::ProviderUnavailable => provider_unavailable(ui, theme),
+            FixtureState::ActivitySurfaces => activity_surfaces_state(ui, theme),
         });
+}
+
+fn fixture_activity(
+    kind: ActivityKind,
+    title: &str,
+    detail: &str,
+    risk: RiskLevel,
+    presentation: ActivityDetail,
+    open_artifact_id: Option<Uuid>,
+) -> ActivityCardModel {
+    ActivityCardModel {
+        activity: ActivitySummary {
+            id: Uuid::now_v7(),
+            chat_id: Uuid::now_v7(),
+            message_id: None,
+            title: title.to_owned(),
+            detail: detail.to_owned(),
+            kind,
+            presentation: ActivityPresentation {
+                risk,
+                detail: presentation,
+                copy_text: Some(detail.to_owned()),
+                open_artifact_id,
+            },
+            status: ActivityStatus::Succeeded,
+            requires_attention: risk != RiskLevel::Low,
+            started_at_ms: 1,
+            finished_at_ms: Some(2),
+        },
+        expanded: true,
+    }
+}
+
+fn activity_surfaces_state(ui: &mut egui::Ui, theme: HomeBotTheme) {
+    ui.vertical_centered(|ui| {
+        ui.set_max_width(theme.layout.content_max_width);
+        ui.add_space(theme.spacing.lg);
+        let artifact_id = Uuid::from_u128(4);
+        let mut cards = [
+            fixture_activity(
+                ActivityKind::Filesystem,
+                "Updated release notes",
+                "docs/releasing.md · 184 bytes",
+                RiskLevel::Low,
+                ActivityDetail::File {
+                    action: "write".to_owned(),
+                    workspace_path: "docs/releasing.md".to_owned(),
+                    bytes_changed: Some(184),
+                    sha256: Some("b87d…2a10".to_owned()),
+                },
+                None,
+            ),
+            fixture_activity(
+                ActivityKind::Terminal,
+                "Ran release checks",
+                "cargo test --workspace · exit 0",
+                RiskLevel::Elevated,
+                ActivityDetail::Terminal {
+                    command: "cargo test --workspace".to_owned(),
+                    working_directory: "HomeBot".to_owned(),
+                    output_preview: "87 tests passed".to_owned(),
+                    exit_code: Some(0),
+                    truncated: false,
+                },
+                None,
+            ),
+            fixture_activity(
+                ActivityKind::Browser,
+                "Checked provider documentation",
+                "docs.rs · screenshot saved",
+                RiskLevel::Low,
+                ActivityDetail::Browser {
+                    action: "navigate".to_owned(),
+                    url: "https://docs.rs/axum".to_owned(),
+                    page_title: Some("axum documentation".to_owned()),
+                    screenshot_artifact_id: Some(artifact_id),
+                },
+                Some(artifact_id),
+            ),
+            fixture_activity(
+                ActivityKind::Artifact,
+                "Generated audit report",
+                "release-audit.md · 18 KB",
+                RiskLevel::Low,
+                ActivityDetail::Artifact {
+                    artifact_id,
+                    name: "release-audit.md".to_owned(),
+                    media_type: "text/markdown".to_owned(),
+                    size_bytes: 18_432,
+                },
+                Some(artifact_id),
+            ),
+        ];
+        cards[2].expanded = false;
+        cards[3].expanded = false;
+        for card in &mut cards {
+            let _ = activity_surface(ui, theme, card);
+            ui.add_space(theme.spacing.sm);
+        }
+    });
 }
 
 fn empty_state(ui: &mut egui::Ui, theme: HomeBotTheme) {
@@ -441,6 +552,7 @@ mod tests {
                 FixtureState::BotEditor,
                 FixtureState::Disconnected,
                 FixtureState::ProviderUnavailable,
+                FixtureState::ActivitySurfaces,
             ] {
                 let context = egui::Context::default();
                 let _ = context.run(egui::RawInput::default(), |context| {

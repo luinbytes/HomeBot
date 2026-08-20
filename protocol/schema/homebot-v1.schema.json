@@ -7,6 +7,9 @@
     "approval_decision_request": {
       "$ref": "#/$defs/ApprovalDecisionRequest"
     },
+    "artifact": {
+      "$ref": "#/$defs/ArtifactSummary"
+    },
     "attachment": {
       "$ref": "#/$defs/Attachment"
     },
@@ -67,6 +70,7 @@
     "create_attachment_response",
     "finalize_attachment_request",
     "attachment",
+    "artifact",
     "create_bot_request",
     "update_bot_request",
     "bot_mutation_request",
@@ -80,6 +84,200 @@
     "approval_decision_request"
   ],
   "$defs": {
+    "ActivityDetail": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "generic"
+            },
+            "summary": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "summary"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "action": {
+              "type": "string"
+            },
+            "bytes_changed": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint64",
+              "minimum": 0
+            },
+            "kind": {
+              "type": "string",
+              "const": "file"
+            },
+            "sha256": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "workspace_path": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "action",
+            "workspace_path"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "command": {
+              "type": "string"
+            },
+            "exit_code": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "int32"
+            },
+            "kind": {
+              "type": "string",
+              "const": "terminal"
+            },
+            "output_preview": {
+              "type": "string"
+            },
+            "truncated": {
+              "type": "boolean"
+            },
+            "working_directory": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "command",
+            "working_directory",
+            "output_preview",
+            "truncated"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "action": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "const": "browser"
+            },
+            "page_title": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "screenshot_artifact_id": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "format": "uuid"
+            },
+            "url": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "action",
+            "url"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "artifact_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "kind": {
+              "type": "string",
+              "const": "artifact"
+            },
+            "media_type": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            },
+            "size_bytes": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            }
+          },
+          "required": [
+            "kind",
+            "artifact_id",
+            "name",
+            "media_type",
+            "size_bytes"
+          ]
+        }
+      ]
+    },
+    "ActivityKind": {
+      "type": "string",
+      "enum": [
+        "reasoning",
+        "search",
+        "tool",
+        "filesystem",
+        "terminal",
+        "browser",
+        "artifact"
+      ]
+    },
+    "ActivityPresentation": {
+      "type": "object",
+      "properties": {
+        "copy_text": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "detail": {
+          "$ref": "#/$defs/ActivityDetail"
+        },
+        "open_artifact_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid"
+        },
+        "risk": {
+          "$ref": "#/$defs/RiskLevel"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "risk",
+        "detail"
+      ]
+    },
     "ActivityStatus": {
       "type": "string",
       "enum": [
@@ -111,12 +309,18 @@
           "type": "string",
           "format": "uuid"
         },
+        "kind": {
+          "$ref": "#/$defs/ActivityKind"
+        },
         "message_id": {
           "type": [
             "string",
             "null"
           ],
           "format": "uuid"
+        },
+        "presentation": {
+          "$ref": "#/$defs/ActivityPresentation"
         },
         "requires_attention": {
           "type": "boolean"
@@ -138,6 +342,8 @@
         "chat_id",
         "title",
         "detail",
+        "kind",
+        "presentation",
         "status",
         "requires_attention",
         "started_at_ms"
@@ -220,6 +426,65 @@
         "title",
         "detail",
         "status",
+        "created_at_ms"
+      ]
+    },
+    "ArtifactSummary": {
+      "type": "object",
+      "properties": {
+        "activity_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid"
+        },
+        "chat_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "created_at_ms": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "kind": {
+          "type": "string"
+        },
+        "media_type": {
+          "type": "string"
+        },
+        "message_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid"
+        },
+        "name": {
+          "type": "string"
+        },
+        "sha256": {
+          "type": "string"
+        },
+        "size_bytes": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "chat_id",
+        "name",
+        "kind",
+        "media_type",
+        "size_bytes",
+        "sha256",
         "created_at_ms"
       ]
     },
@@ -1277,6 +1542,14 @@
       "enum": [
         "replayed",
         "snapshot_required"
+      ]
+    },
+    "RiskLevel": {
+      "type": "string",
+      "enum": [
+        "low",
+        "elevated",
+        "high"
       ]
     },
     "SendMessageRequest": {

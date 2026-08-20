@@ -1,5 +1,6 @@
 //! Authoritative authenticated HTTP and WebSocket transport.
 
+pub mod artifacts;
 mod attachments;
 mod bots;
 mod chats;
@@ -189,6 +190,11 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/v1/attachments/{attachment_id}/finalize",
             post(attachments::finalize_attachment),
+        )
+        .route("/api/v1/artifacts/{artifact_id}", get(artifacts::metadata))
+        .route(
+            "/api/v1/artifacts/{artifact_id}/content",
+            get(artifacts::content),
         )
         .route_layer(middleware::from_fn_with_state(state.clone(), authenticate));
     Router::new()

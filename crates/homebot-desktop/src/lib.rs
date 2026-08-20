@@ -1,3 +1,4 @@
+pub mod activity_surfaces;
 pub mod app;
 pub mod bot_roster;
 pub mod components;

@@ -283,6 +283,7 @@ pub struct ExecutionActivity {
     pub kind: String,
     pub title: String,
     pub detail: String,
+    pub presentation_json: serde_json::Value,
     pub status: ActivityStatus,
     pub requires_attention: bool,
     pub started_at_ms: i64,

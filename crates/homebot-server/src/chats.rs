@@ -10,10 +10,11 @@ use homebot_domain::chat::{
     MessageStatus as DomainStatus, QueuedPrompt as DomainPrompt,
 };
 use homebot_protocol::{
-    ActivityStatus, ActivitySummary, ApprovalDecisionRequest, ApprovalStatus, ApprovalSummary,
-    Attachment, BotMutationRequest, ChatSummary, ChatTimelineResponse, CreateDirectChatRequest,
-    CreateDirectChatResponse, MessageAuthor, MessagePart, MessageStatus, MessageSummary,
-    QueuedPromptSummary, SendMessageRequest, SendMessageResponse, ServerEventBody,
+    ActivityDetail, ActivityKind, ActivityPresentation, ActivityStatus, ActivitySummary,
+    ApprovalDecisionRequest, ApprovalStatus, ApprovalSummary, Attachment, BotMutationRequest,
+    ChatSummary, ChatTimelineResponse, CreateDirectChatRequest, CreateDirectChatResponse,
+    MessageAuthor, MessagePart, MessageStatus, MessageSummary, QueuedPromptSummary,
+    SendMessageRequest, SendMessageResponse, ServerEventBody,
 };
 use homebot_storage::IdempotencyClaim;
 use uuid::Uuid;
@@ -556,12 +557,34 @@ fn prompt_summary(prompt: DomainPrompt) -> QueuedPromptSummary {
 }
 
 pub(super) fn activity_summary(activity: DomainActivity) -> ActivitySummary {
+    let presentation = serde_json::from_value(activity.presentation_json)
+        .ok()
+        .filter(ActivityPresentation::is_remote_safe)
+        .unwrap_or_else(|| ActivityPresentation {
+            risk: homebot_protocol::RiskLevel::Low,
+            detail: ActivityDetail::Generic {
+                summary: activity.detail.clone(),
+            },
+            copy_text: None,
+            open_artifact_id: None,
+        });
+
     ActivitySummary {
         id: activity.id,
         chat_id: activity.chat_id,
         message_id: activity.message_id,
         title: activity.title,
         detail: activity.detail,
+        kind: match activity.kind.as_str() {
+            "reasoning" => ActivityKind::Reasoning,
+            "search" => ActivityKind::Search,
+            "filesystem" => ActivityKind::Filesystem,
+            "terminal" => ActivityKind::Terminal,
+            "browser" => ActivityKind::Browser,
+            "artifact" => ActivityKind::Artifact,
+            _ => ActivityKind::Tool,
+        },
+        presentation,
         status: match activity.status {
             DomainActivityStatus::Pending => ActivityStatus::Pending,
             DomainActivityStatus::Running => ActivityStatus::Running,

@@ -9,7 +9,7 @@ This file is operational state for coding agents. It is not user-facing product 
 - Current milestone: M1, Local Runtime Foundation
 - Current Linear issue: 6C7-72 local computer capability layer
 - Current Git branch: `feat/m0-contracts`
-- Latest verified remote commit: `5c7cf444e879984f48ccc787647ec5c4d54125ce`
+- Latest verified remote commit: `1d2ce03685bcafa0acc224e372832a15bc4418c1`
 - Public repository: `https://github.com/luinbytes/HomeBot`
 - Repository owner and commit identity: `luinbytes <42706009+luinbytes@users.noreply.github.com>`
 
@@ -26,6 +26,9 @@ Architecture decisions currently frozen:
 - Claude Code uses its documented `stream-json` CLI bridge because Anthropic publishes TypeScript and Python Agent SDKs but no Rust SDK.
 - BYOK profiles persist opaque secret references only. Credentials are resolved at request time, redacted and zeroized; remote endpoints require HTTPS and redirects are disabled.
 - Community provider processes use a constrained direct-executable JSONL contract with a cleared environment, bounded records and no implicit shell.
+- Local filesystem access uses `cap-std` capability directories plus traversal and symlink rejection; content digests bind approved writes.
+- Terminal execution uses `portable-pty` with explicit executables, canonical workspace working directories, a cleared allowlisted environment, concurrency/input/output/runtime bounds and kill-and-reap cancellation.
+- Browser automation uses loopback-only Chrome DevTools Protocol endpoints and targets; browser profile files remain in a server-owned local directory and are never copied into SQLite or synchronized to clients.
 - T3 Code is MIT-licensed architectural inspiration; no proprietary Grok Bot source or assets are copied.
 
 Current blockers:
@@ -36,7 +39,7 @@ Current blockers:
 - 6C7-38 is Done. GitHub Actions run 32354047604 passed the full six-job matrix.
 - 6C7-39 is Done. GitHub Actions run 32355805077 passed the full six-job matrix. The current environment has no `codex` binary, so the real-binary smoke test skips with an explicit reason; fake executable App Server fixtures verify structured start, resume, streaming, approval, and interruption round trips.
 - 6C7-40 is Done. GitHub Actions run 32358033480 passed the full six-job matrix after the dependency policy explicitly admitted webpki-roots' permissive CDLA-Permissive-2.0 license.
-- 6C7-72 is In Progress. The exact next action is to implement the server-enforced capability policy and scoped operation foundation in `homebot-tools`, then layer hardened filesystem, terminal/process and local browser-session services over it with hostile-input tests.
+- 6C7-72 is In Progress. The complete local capability layer is implemented locally and passes the full workspace quality gate plus cargo-deny. The exact next action is to publish the coherent change, verify the full remote CI matrix, add evidence to Linear and close the issue only after every job passes.
 
 ## Completed work
 
@@ -57,15 +60,15 @@ Current blockers:
 
 ## Immediate next work
 
-1. Define capability requests, policy decisions, single-use expiring approvals and structured activity/result contracts in `homebot-tools`.
-2. Implement descriptor-safe scoped filesystem operations and bounded cancellable terminal/process execution with filtered environments.
-3. Implement local-only browser profile/session control and automation behind the same policy boundary, then add hostile path, symlink, command, timeout, output and browser-state tests.
+1. Publish the completed 6C7-72 local capability layer to `main` under the `luinbytes` identity.
+2. Verify Rust quality, dependency policy/audit and all three platform build jobs remotely, then update and close 6C7-72.
+3. Refresh Linear, close M1 epic 6C7-34 if all of its children remain verified, and immediately start the highest-priority unblocked M2 issue.
 
 ## Verification state
 
 Verified:
 
-- Local and remote Git trees match at `5c7cf44`.
+- Local and remote Git trees matched at `1d2ce03` before the current coherent 6C7-72 change. GitHub Actions run 32358417587 passed all six jobs for that transition commit.
 - All three remote commits are attributed to GitHub account `luinbytes`.
 - Working tree was clean before `feat/m0-contracts` was created.
 - All committed TOML files parse with Python `tomllib`.
@@ -79,6 +82,8 @@ Verified:
 - `homebot-storage` has ten passing tests covering clean install/table inventory, WAL mode, restart/outbox durability, backup/restore, migration rollback, corrupted startup, concurrent access, idempotency, replay retention, and attachment transitions.
 - `./scripts/check.sh` passes locally with formatting, workspace clippy, 51 Rust tests, protocol schema drift and generated Android binding drift checks.
 - `homebot-providers` has 22 passing tests. Codex coverage includes JSONL fixture normalization, profile isolation and redaction, explicit binary discovery, auth/error and interruption normalization, fake App Server start/resume, streaming, approval resolution, cancellation, and an explicit real-binary skip when Codex is absent. Claude fixtures verify normalized init/content/tool/usage/result records, resume-oriented CLI arguments, streaming and cancellation. OpenAI-compatible tests verify request-time bearer resolution, model discovery, streamed Responses events, HTTPS/loopback policy, redaction and cancellation. Generic process tests verify its JSONL contract, bounded normalized streaming, redaction and cancellation.
+- `homebot-tools` has 12 unit and 3 hostile-input integration tests covering actor-scoped deny/allow policy, single-use/expiring/digest-bound approvals, policy revision invalidation, content substitution, traversal, symlinks, atomic and bounded filesystem operations, real PTY output/input lifecycle, duplicate IDs, filtered environment, cancellation, timeout, output limits, loopback-only browser control, profile confinement and normalized CDP actions.
+- The full workspace now has 66 passing Rust tests. Local cargo-deny 0.20.2 reports advisories, bans, licenses and sources all OK.
 
 Not yet verified:
 
@@ -89,7 +94,7 @@ Not yet verified:
 ## Known failures and incomplete implementation
 
 - `homebot-server` covers every stated 6C7-37 transport behaviour locally and in the passing remote matrix.
-- The first-class Codex and Claude adapters cannot perform real authenticated provider messages in this environment because neither CLI binary is installed. Their structured protocol fixtures pass. The OpenAI-compatible adapter is verified against a local protocol-faithful HTTP/SSE fixture, not a user credential. Desktop egui, Android, routines, plugins, tools, VCS, pairing, and packaging are not implemented.
+- The first-class Codex and Claude adapters cannot perform real authenticated provider messages in this environment because neither CLI binary is installed. Their structured protocol fixtures pass. The OpenAI-compatible adapter is verified against a local protocol-faithful HTTP/SSE fixture, not a user credential. The local computer capability layer is implemented but no real Chrome process is installed in this environment, so CDP behavior is verified against a protocol-faithful loopback fixture. Desktop egui, Android, routines, plugins, VCS, pairing, and packaging are not implemented.
 - The protocol defines product-level v1 envelopes and lifecycle contracts; server persistence and transport behaviour remain implementation work in later issues.
 - No release artifact exists. Do not describe the project as installable or v1-ready.
 

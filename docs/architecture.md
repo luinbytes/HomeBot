@@ -1,6 +1,6 @@
 # Architecture
 
-Status: M1 implementation in progress, 20 August 2026.
+Status: M1 local runtime foundation, 20 August 2026.
 
 ## Product boundary
 
@@ -32,6 +32,8 @@ Client-owned responsibilities:
 ## Bounded crates
 
 Dependencies point inward toward `homebot-domain` and `homebot-protocol`. Domain code cannot depend on transport, SQL, egui, Android, or a provider SDK. Provider adapters cannot expose provider-native payloads through client contracts. Tools and VCS return normalised activities and structured approval requests.
+
+`homebot-tools` owns the local-computer authority boundary. Its policy engine evaluates authenticated owner/device, Bot, chat, workspace, capability, canonical target and action before any side effect. Filesystem operations use a capability directory, terminal operations use a supervised real PTY with a cleared environment, and browser operations use a loopback-only CDP session whose profile remains on the server. See [tools.md](tools.md).
 
 ## Identity and conversations
 

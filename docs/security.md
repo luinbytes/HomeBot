@@ -20,6 +20,8 @@ Capabilities are evaluated server-side against authenticated owner/device, Bot, 
 
 Policy modes are deny, require approval, and allow. Deny wins over allow. High-risk operations such as deletion, credential access, external sending/publishing, payments, permission changes, remote Git mutation, arbitrary execution, and public-network exposure require a structured target-and-effect approval unless an equally specific persistent rule authorises them. Approval IDs are single-use, scoped, expiring, and bound to the canonical operation digest.
 
+The implemented `PolicyEngine` defaults unmatched requests to approval and evaluates authenticated owner/device, Bot, chat, workspace, capability and action scopes. Its private authorization proof cannot be supplied by a client. Approval records bind the full canonical request digest, expire, are consumed once, and become invalid after any policy revision. Filesystem write digests include the proposed content; terminal digests include executable, arguments, working directory and filtered environment; browser digests include the complete action. This prevents payload substitution after approval.
+
 ## Abuse cases and required mitigations
 
 | Threat | Required control | Negative verification |
@@ -47,6 +49,8 @@ Default bind is `127.0.0.1`. LAN and Tailscale require explicit configuration. P
 Secret values are created and resolved through a credential-store abstraction. They never appear in SQLite, normal chat, activity details, routine history, analytics, crash reports, CLI arguments, process listings, or ordinary environment inheritance. A secret-aware tool receives the minimum value at execution time and redacts exact and encoded canaries from captured output.
 
 Provider profiles store `SecretReference` identifiers, not credentials. The provider runtime resolves a short-lived redacted value only while constructing an authorized request and zeroes that allocation on drop. Remote BYOK endpoints require HTTPS; cleartext HTTP is accepted only for explicit loopback addresses, and HTTP redirects are disabled for credential-bearing requests.
+
+The local computer layer opens workspace roots as `cap-std` capability directories, rejects absolute/parent paths and symlink components, and bounds reads, writes and listings. PTY commands use an explicit executable and structured arguments, clear inherited environment state, admit only configured keys, and enforce input, output and runtime limits with kill-and-reap cancellation. Browser control and target WebSockets must be loopback, profile directories stay beneath the server-owned profile root, redirects are disabled, protocol messages are bounded, and navigation rejects non-HTTP schemes and embedded credentials.
 
 ## Audit
 

@@ -22,6 +22,8 @@ rust-version = "1.85"
 anyhow = "1.0"
 async-trait = "0.1"
 axum = { version = "0.8", features = ["json", "ws"] }
+base64 = "0.22"
+cap-std = "4.0"
 futures-util = "0.3"
 homebot-domain = { version = "=0.0.1", path = "crates/homebot-domain" }
 homebot-protocol = { version = "=0.0.1", path = "crates/homebot-protocol" }
@@ -34,11 +36,13 @@ sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio",
 subtle = "2.6"
 thiserror = "2.0"
 tokio = { version = "1.47", features = ["fs", "io-util", "macros", "process", "rt-multi-thread", "signal", "sync", "time"] }
+tokio-tungstenite = "0.29"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 tower = { version = "0.5", features = ["util"] }
 uuid = { version = "1.18", features = ["serde", "v7"] }
 zeroize = "1.8"
+portable-pty = "0.9"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

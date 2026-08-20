@@ -7,10 +7,10 @@ This file is operational state for coding agents. It is not user-facing product 
 ## Current state
 
 - Current milestone: M3, Skills, Plugins, Routines & Secrets. M2 is verified complete after corrective integration.
-- Current Linear issue: 6C7-53, routine scheduler, event triggers and run history (`In Progress`).
+- Current Linear issue: 6C7-49, Skill model, library, import/export and Bot assignment (`In Progress`).
 - Current Git branch: `main`.
-- Latest verified remote commit: `d8666ddf906c34acdaca8119a4e6c43c96306d71`.
-- Latest verified GitHub Actions run: `32412350360`, all nine jobs passed.
+- Latest verified implementation commit: `7405c8c47d3963085e4375eccfbce86daf246985`.
+- Latest verified GitHub Actions run: `32416289234`, all nine jobs passed.
 - Public repository: `https://github.com/luinbytes/HomeBot`.
 - Required commit identity: `luinbytes <42706009+luinbytes@users.noreply.github.com>`.
 
@@ -40,13 +40,14 @@ Current blockers:
 - 6C7-50, local MCP/plugin registry, exact client recovery states, health/discovery, enablement/removal and per-Bot assignment.
 - 6C7-52, durable routine create/edit/versioning, structured recording conversion, deterministic Bot/MCP replay, dry run, Run now, approval preservation, restart persistence, durable failures and server-driven desktop projections.
 - 6C7-73, real `HomeBotApp` authenticated transport, local authoritative-server supervision, snapshot/replay reconnect, HTTP mutation routing and restart/failure verification. M2 epic 6C7-41 is Done again with corrective evidence.
-- Most recent completed issue: 6C7-73.
+- 6C7-53, durable headless one-shot/interval/timezone schedules, missed-run recovery, outbox-backed event/plugin triggers, deduplicated webhooks, version-pinned jobs, concurrency/overlap policy, retries, cancellation, redacted run history and v10→v11 migration safety.
+- Most recent completed issue: 6C7-53.
 
 ## Immediate next work
 
-1. Design 6C7-53's durable schedule/trigger state and migration, preserving exact routine versions and redacted input metadata.
-2. Implement headless one-shot/recurring execution, timezone/DST semantics, missed-run policy, webhook/plugin deduplication, concurrency, retries/backoff and cancellation.
-3. Expose authenticated schedule/trigger/run-history protocol and add restart, duplicate delivery, DST and overlap tests before the full gate.
+1. Define 6C7-49's versioned Skill instruction/context/tool-bundle contract and migration without leaking provider-specific prompt formats.
+2. Implement owner-scoped create/edit/duplicate/delete, import/export conflict handling and multi-Bot assignment through authenticated server APIs.
+3. Assemble assigned Skill versions deterministically into provider turns and persist the exact applied versions on historical messages before completing the protocol/desktop/Android drift gates.
 
 ## Verification state
 
@@ -58,7 +59,7 @@ Verified at the latest remote baseline:
 
 Verified locally for the active issue:
 
-- `./scripts/check.sh` passes on Rust 1.98.0: formatting, clippy, the complete workspace suite with 117 tests, protocol/schema drift checks, generated Android binding drift checks, and all 15 exact desktop visual fixtures.
+- `./scripts/check.sh` passes on Rust 1.98.0: formatting, clippy, the complete workspace suite with 123 tests, protocol/schema drift checks, generated Android binding drift checks, and all 15 exact desktop visual fixtures.
 - Targeted routine/plugin/storage/server/desktop suites also pass independently.
 - The routine verification patch proves durable version 2 edits, recording conversion, dry-run side-effect freedom, real manual Bot dispatch, MCP `tools/call`, approval stops, safe durable failures, editable recovery after invalid finish, restart persistence and server-event-only desktop projection updates.
 - Secret-specific coverage passes: three vault tests, two policy-gated secret-tool tests, one authenticated API canary test, and two storage/migration tests.
@@ -67,13 +68,14 @@ Verified locally for the active issue:
 
 - Cargo-deny 0.20.2 reports advisories, bans, licenses, and sources all OK with only the existing documented warnings.
 - 6C7-73 integration tests prove clean loopback supervision, authenticated version/hello/snapshot startup, real Bot/chat/message and attachment APIs, restart persistence, cursor resume without duplicate events, graceful WebSocket shutdown, and distinct authentication/version/unavailable failures. Existing server coverage proves stale-cursor snapshot fallback.
+- 6C7-53's full gate passes at commit `7405c8c`: headless schedule restart, durable event restart, plugin filtering, forged-event denial, webhook deduplication, DST transitions, overlap/concurrency, exponential retry, cancellation, interrupted-job recovery, redacted history, v10 migration, generated schema/Android drift and desktop projections. GitHub Actions run `32416289234` passed all nine jobs.
 
-6C7-73 and reopened M2 epic 6C7-41 completion evidence is recorded in Linear; both are Done. 6C7-53 is In Progress.
+6C7-73 and reopened M2 epic 6C7-41 completion evidence is recorded in Linear; both are Done. 6C7-53 is verified Done and 6C7-49 is In Progress.
 
 ## Known failures and incomplete implementation
 
-- Android app, skills, schedules/triggers, VCS/worktrees/checkpoints, device pairing/Tailscale, packaging, and release artifacts remain incomplete roadmap work.
-- 6C7-53 scheduler/trigger persistence and execution are not implemented yet.
+- Android app, skills, VCS/worktrees/checkpoints, device pairing/Tailscale, packaging, and release artifacts remain incomplete roadmap work.
+- 6C7-49 Skill persistence, assignment, import/export and deterministic historical prompt application are not implemented yet.
 - Real authenticated Codex/Claude round trips are unavailable in this environment. OpenAI-compatible and CDP behavior use protocol-faithful local fixtures.
 - No release artifact exists. Do not describe HomeBot as installable or v1-ready.
 

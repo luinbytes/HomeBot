@@ -7,10 +7,10 @@ This file is operational state for coding agents. It is not user-facing product 
 ## Current state
 
 - Current milestone: M4, T3 Code Developer Superpowers. M2 and M3 are verified complete.
-- Current Linear issue: 6C7-55, coding workspaces and isolated Git worktrees per chat (`In Progress`).
+- Current Linear issue: 6C7-56, turn checkpoints, exact diffs and safe revert (`In Progress`).
 - Current Git branch: `main`.
-- Latest verified implementation commit: `323660afb543b6869dc17a22fba7f7d65cf6d4f4`.
-- Latest verified GitHub Actions run: `32419854283`, all nine jobs passed.
+- Latest verified implementation commit: `5226162ebd69edb5f46bb256a0542332b84a410f` (exact tree for 6C7-55; implementation began in `01a241a`).
+- Latest verified GitHub Actions run: `32422748219`, all nine jobs passed.
 - Public repository: `https://github.com/luinbytes/HomeBot`.
 - Required commit identity: `luinbytes <42706009+luinbytes@users.noreply.github.com>`.
 
@@ -25,6 +25,7 @@ Architecture decisions currently frozen:
 - Codex uses structured App Server stdio JSONL. Claude uses its documented stream-JSON CLI surface. Community processes use a constrained direct-executable JSONL contract.
 - Local MCP plugins use a provider-neutral adapter boundary and constrained direct-executable stdio lifecycle. Plugin results are explicitly untrusted data; connection and Bot assignment never grant tool capability authority.
 - Filesystem authority uses `cap-std`; terminal authority uses bounded `portable-pty`; browser authority uses loopback-only CDP.
+- Repository registrations and per-chat primary/isolated workspace associations are SQLite authority. `homebot-vcs` invokes a fixed Git executable without a shell, never mutates the primary checkout, and removes only clean canonical children of the server-managed worktree root.
 
 Current blockers:
 
@@ -43,13 +44,14 @@ Current blockers:
 - 6C7-53, durable headless one-shot/interval/timezone schedules, missed-run recovery, outbox-backed event/plugin triggers, deduplicated webhooks, version-pinned jobs, concurrency/overlap policy, retries, cancellation, redacted run history and v10→v11 migration safety.
 - 6C7-49, provider-neutral versioned Skills, authenticated library/import/export/assignment, deterministic provider assembly, exact historical message versions, desktop projection and Android/schema contract.
 - M3 epic 6C7-48: plugins/MCP, OS-backed secrets, routine recording/replay, schedules/triggers/history, and reusable Skills.
-- Most recent completed issue: 6C7-49.
+- 6C7-55, owner-scoped repository registration, primary/isolated per-chat workspaces, deterministic branches, guarded cleanup, authenticated protocol/events, desktop transport/projection and Android/schema parity.
+- Most recent completed issue: 6C7-55.
 
 ## Immediate next work
 
-1. Inventory the existing minimal `homebot-vcs` crate and define owner-scoped repository/workspace/worktree records plus the authenticated protocol contract for 6C7-55.
-2. Implement safe repository discovery/validation and optional deterministic per-chat worktree creation without changing or cleaning the user's primary working tree.
-3. Add branch/conflict/lifecycle handling, server APIs/events, SQLite migration/restart tests, hostile dirty-repository fixtures, and desktop/Android projections.
+1. Implement hidden-ref pre/post turn checkpoints for 6C7-56 without modifying the user's index or primary working tree.
+2. Define exact per-turn and full-chat diff/changed-file summaries, including binary files, untracked files and renames against dirty baselines.
+3. Implement guarded restore to a completed checkpoint plus durable provider-conversation reconciliation/fork metadata, authenticated server APIs/events, SQLite migration, desktop/Android projections and hostile fixtures.
 
 ## Verification state
 
@@ -61,7 +63,7 @@ Verified at the latest remote baseline:
 
 Verified locally for the active issue:
 
-- `./scripts/check.sh` passes on Rust 1.98.0: formatting, clippy, the complete workspace suite with 123 tests, protocol/schema drift checks, generated Android binding drift checks, and all 15 exact desktop visual fixtures.
+- `./scripts/check.sh` passes on Rust 1.98.0: formatting, strict clippy, the complete workspace suite with 137 tests, protocol/schema drift checks, generated Android binding drift checks, and all 15 exact desktop visual fixtures.
 - Targeted routine/plugin/storage/server/desktop suites also pass independently.
 - The routine verification patch proves durable version 2 edits, recording conversion, dry-run side-effect freedom, real manual Bot dispatch, MCP `tools/call`, approval stops, safe durable failures, editable recovery after invalid finish, restart persistence and server-event-only desktop projection updates.
 - Secret-specific coverage passes: three vault tests, two policy-gated secret-tool tests, one authenticated API canary test, and two storage/migration tests.
@@ -73,13 +75,14 @@ Verified locally for the active issue:
 - 6C7-73 integration tests prove clean loopback supervision, authenticated version/hello/snapshot startup, real Bot/chat/message and attachment APIs, restart persistence, cursor resume without duplicate events, graceful WebSocket shutdown, and distinct authentication/version/unavailable failures. Existing server coverage proves stale-cursor snapshot fallback.
 - 6C7-53's full gate passes at commit `7405c8c`: headless schedule restart, durable event restart, plugin filtering, forged-event denial, webhook deduplication, DST transitions, overlap/concurrency, exponential retry, cancellation, interrupted-job recovery, redacted history, v10 migration, generated schema/Android drift and desktop projections. GitHub Actions run `32416289234` passed all nine jobs.
 - GitHub Actions run `32419854283` passed all nine jobs for 6C7-49 commit `323660a`: Rust quality, dependency audit/policy, Linux, macOS Intel/Apple Silicon builds, and all three visual-golden platforms.
+- 6C7-55 fixtures prove dirty/untracked primary preservation, primary and isolated associations, deterministic branches, detached HEAD, hostile-ref denial, clean removal, dirty/out-of-root cleanup denial, duplicate conflicts, unavailable-path projection, restart durability and v12→v13 migration. A real desktop-supervised server fixture registers, attaches and detaches a repository through authenticated APIs.
+- GitHub Actions run `32422748219` passed all nine jobs for exact remote tree `61f0efa`: Rust quality, dependency audit/policy, Linux and both macOS builds, and all three visual-golden platforms. Both remote commits resolve to GitHub account `luinbytes` as author and committer.
 
-6C7-73 and reopened M2 epic 6C7-41 completion evidence is recorded in Linear; both are Done. 6C7-49 and M3 epic 6C7-48 are verified Done. M4 epic 6C7-54 and 6C7-55 are In Progress.
+6C7-73 and reopened M2 epic 6C7-41 completion evidence is recorded in Linear; both are Done. M3 epic 6C7-48 and 6C7-55 are verified Done. M4 epic 6C7-54 and 6C7-56 are In Progress.
 
 ## Known failures and incomplete implementation
 
-- Android app, VCS/worktrees/checkpoints, device pairing/Tailscale, packaging, and release artifacts remain incomplete roadmap work.
-- 6C7-55 repository workspace association and isolated worktree lifecycle are not implemented yet; `homebot-vcs` currently contains only a working-tree condition enum.
+- Android app, checkpoints/diffs/revert and later source-control workflows, device pairing/Tailscale, packaging, and release artifacts remain incomplete roadmap work.
 - Real authenticated Codex/Claude round trips are unavailable in this environment. OpenAI-compatible and CDP behavior use protocol-faithful local fixtures.
 - No release artifact exists. Do not describe HomeBot as installable or v1-ready.
 

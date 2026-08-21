@@ -11,7 +11,7 @@
 
 HomeBot is an open-source home for persistent AI teammates. Create Bots, message them like people, put specialists in a group chat, and let them hand work to each other while your own Mac or Linux machine remains the computer they work on.
 
-Bring the providers you already use, including Codex CLI, Claude Code, and OpenAI-compatible APIs. Attach a repository when a Bot needs coding powers. Turn a good workflow into a routine. Check in from the native desktop app or, as M5 lands, the native Android client over your LAN or Tailscale. Your chats, files, credentials, and execution history stay under your control.
+Bring the providers you already use, including Codex CLI, Claude Code, and OpenAI-compatible APIs. Attach a repository when a Bot needs coding powers. Turn a good workflow into a routine. Check in from the native desktop app or the native Android client over your LAN or Tailscale. Your chats, files, credentials, and execution history stay under your control.
 
 > HomeBot is under active development and is not yet a v1 release. There are no supported release packages yet. Development builds bind conservatively and use authenticated server APIs, but they should still be treated as pre-release software.
 

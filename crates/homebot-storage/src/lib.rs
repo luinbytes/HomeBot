@@ -312,6 +312,17 @@ pub struct ProviderRoute {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProviderProfileRecord {
+    pub id: Uuid,
+    pub adapter_kind: String,
+    pub display_name: String,
+    pub configuration: Value,
+    pub secret_reference_id: Option<Uuid>,
+    pub created_at_ms: i64,
+    pub updated_at_ms: i64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WorkingContextRecord {
     pub owner_id: Uuid,
     pub chat_id: Uuid,
@@ -682,6 +693,68 @@ pub enum AttachmentClaim {
 }
 
 impl Storage {
+    /// Creates or updates a server-owned provider profile without persisting secret values.
+    ///
+    /// # Errors
+    /// Returns database or serialization errors.
+    pub async fn upsert_provider_profile(
+        &self,
+        profile: &ProviderProfileRecord,
+    ) -> Result<(), StorageError> {
+        sqlx::query(
+            "INSERT INTO provider_profiles
+             (id, adapter_kind, display_name, configuration_json, secret_reference_id,
+              created_at_ms, updated_at_ms)
+             VALUES (?, ?, ?, ?, ?, ?, ?)
+             ON CONFLICT(id) DO UPDATE SET
+               adapter_kind = excluded.adapter_kind,
+               display_name = excluded.display_name,
+               configuration_json = excluded.configuration_json,
+               secret_reference_id = excluded.secret_reference_id,
+               updated_at_ms = excluded.updated_at_ms",
+        )
+        .bind(profile.id.to_string())
+        .bind(&profile.adapter_kind)
+        .bind(&profile.display_name)
+        .bind(&profile.configuration)
+        .bind(profile.secret_reference_id.map(|id| id.to_string()))
+        .bind(profile.created_at_ms)
+        .bind(profile.updated_at_ms)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Lists safe provider profile configuration. Secret values are never stored here.
+    ///
+    /// # Errors
+    /// Returns database or integrity errors.
+    pub async fn provider_profiles(&self) -> Result<Vec<ProviderProfileRecord>, StorageError> {
+        let rows = sqlx::query(
+            "SELECT id, adapter_kind, display_name, configuration_json, secret_reference_id,
+                    created_at_ms, updated_at_ms
+             FROM provider_profiles ORDER BY display_name, id",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter()
+            .map(|row| {
+                Ok(ProviderProfileRecord {
+                    id: parse_uuid(&row.try_get::<String, _>("id")?)?,
+                    adapter_kind: row.try_get("adapter_kind")?,
+                    display_name: row.try_get("display_name")?,
+                    configuration: row.try_get("configuration_json")?,
+                    secret_reference_id: row
+                        .try_get::<Option<String>, _>("secret_reference_id")?
+                        .map(|id| parse_uuid(&id))
+                        .transpose()?,
+                    created_at_ms: row.try_get("created_at_ms")?,
+                    updated_at_ms: row.try_get("updated_at_ms")?,
+                })
+            })
+            .collect()
+    }
+
     /// Searches owner-authorised durable content in stable recency order.
     ///
     /// Links are derived from matching message text without changing the transcript. Results

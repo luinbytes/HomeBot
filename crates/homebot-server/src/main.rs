@@ -1,4 +1,4 @@
-use homebot_server::{AppState, serve};
+use homebot_server::{provider_bootstrap, serve};
 use homebot_storage::Storage;
 use std::net::SocketAddr;
 use tokio::net::TcpListener;
@@ -20,11 +20,18 @@ async fn main() -> anyhow::Result<()> {
         std::env::var_os("HOMEBOT_DEVICE_TOKEN_FILE").map(std::path::PathBuf::from),
     )?;
     let storage = Storage::open(&data_path).await?;
+    let provider_config = std::env::var_os("HOMEBOT_PROVIDER_CONFIG").map(std::path::PathBuf::from);
     let artifact_root = data_path
         .parent()
         .unwrap_or_else(|| std::path::Path::new("."))
         .join("artifacts");
-    let state = AppState::new(storage, &token).with_artifact_root(artifact_root);
+    let state = provider_bootstrap::compose_app_state(
+        storage,
+        &token,
+        artifact_root,
+        provider_bootstrap::load_config(provider_config.as_deref())?,
+    )
+    .await?;
     let bind = std::env::var("HOMEBOT_BIND").unwrap_or_else(|_| DEFAULT_BIND.to_owned());
     let allow_remote = std::env::var("HOMEBOT_ALLOW_REMOTE")
         .is_ok_and(|value| matches!(value.as_str(), "1" | "true" | "yes"));

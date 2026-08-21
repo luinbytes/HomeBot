@@ -1,5 +1,6 @@
 package dev.homebot.android.connection
 
+import dev.homebot.android.BuildConfig
 import dev.homebot.protocol.BotSummary
 import dev.homebot.protocol.BotMutationRequest
 import dev.homebot.protocol.BotResponse
@@ -1033,7 +1034,8 @@ class HomeBotClient(
     }
 
     private companion object {
-        const val CLIENT_VERSION = "homebot-android/0.1.0"
+        val CLIENT_VERSION: String
+            get() = "homebot-android/${BuildConfig.VERSION_NAME}"
         const val EVENT_BUFFER_CAPACITY = 128
         const val MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024
         const val MAX_EVENT_BYTES = 256 * 1024

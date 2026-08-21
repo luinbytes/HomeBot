@@ -20,7 +20,7 @@ homebot-plugins.workspace = true
 homebot-routines.workspace = true
 homebot-skills.workspace = true
 homebot-secrets.workspace = true
-homebot-storage = { version = "=0.0.1", path = "../homebot-storage" }
+homebot-storage = { version = "=1.0.0", path = "../homebot-storage" }
 homebot-tools.workspace = true
 homebot-vcs.workspace = true
 serde.workspace = true

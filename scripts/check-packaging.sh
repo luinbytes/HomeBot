@@ -11,11 +11,12 @@ sh -n scripts/render-arch-pkgbuild.sh
 sh -n scripts/verify-arch-package.sh
 
 source_sha=$(sha256sum Cargo.toml | cut -d' ' -f1)
-scripts/render-arch-pkgbuild.sh 0.0.1 "$source_sha" 1 "$temporary/PKGBUILD"
+version=$(cat VERSION)
+scripts/render-arch-pkgbuild.sh "$version" "$source_sha" 1 "$temporary/PKGBUILD"
 bash -n "$temporary/PKGBUILD"
 python3 scripts/release-manifest.py \
   --output "$temporary/manifest.json" --artifact Cargo.toml \
-  --platform linux --architecture x86_64 --version 0.0.1 --signing package
+  --platform linux --architecture x86_64 --version "$version" --signing package
 python3 - "$temporary/manifest.json" <<'PY'
 import json
 import sys
@@ -76,10 +77,15 @@ printf "%s\n" "package: name='dev.homebot.android' versionCode='1000000' version
 SH
 chmod 755 "$temporary/bin/apksigner" "$temporary/bin/aapt"
 printf 'signed-apk-fixture' > "$temporary/signed.apk"
-PATH="$temporary/bin:$PATH" HOMEBOT_VERSION=1.0.0 HOMEBOT_ANDROID_SIGNING=ci-ephemeral \
+PATH="$temporary/bin:$PATH" HOMEBOT_VERSION="$version" HOMEBOT_ANDROID_SIGNING=ci-ephemeral \
   scripts/package-android.sh "$temporary/signed.apk" "$temporary/android-dist"
-(cd "$temporary/android-dist" && sha256sum -c HomeBot-1.0.0-android.SHA256SUMS)
-python3 - "$temporary/android-dist/HomeBot-1.0.0-android.signature.json" <<'PY'
+if PATH="$temporary/bin:$PATH" HOMEBOT_VERSION=9.9.9 HOMEBOT_ANDROID_SIGNING=ci-ephemeral \
+  scripts/package-android.sh "$temporary/signed.apk" "$temporary/wrong-version"; then
+  echo "divergent Android release version unexpectedly succeeded" >&2
+  exit 1
+fi
+(cd "$temporary/android-dist" && sha256sum -c "HomeBot-$version-android.SHA256SUMS")
+python3 - "$temporary/android-dist/HomeBot-$version-android.signature.json" <<'PY'
 import json
 import sys
 with open(sys.argv[1], encoding="utf-8") as source:

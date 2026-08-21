@@ -12,7 +12,8 @@ case "$target" in
   *) echo "unsupported macOS target: $target" >&2; exit 2 ;;
 esac
 
-version=${HOMEBOT_VERSION:-0.0.1}
+release_version=$(cat VERSION)
+version=${HOMEBOT_VERSION:-$release_version}
 build_version=${HOMEBOT_BUILD_VERSION:-1}
 profile=${HOMEBOT_PROFILE:-release}
 output_dir=${HOMEBOT_OUTPUT_DIR:-dist}
@@ -23,6 +24,7 @@ require_release_signing=${HOMEBOT_REQUIRE_RELEASE_SIGNING:-0}
 notary_profile=${HOMEBOT_NOTARY_PROFILE:-}
 
 case "$version" in *[!0-9A-Za-z.+-]*) echo "invalid version" >&2; exit 2;; esac
+test "$version" = "$release_version" || { echo "HOMEBOT_VERSION must match VERSION ($release_version)" >&2; exit 2; }
 case "$build_version" in ''|*[!0-9]*) echo "build version must be numeric" >&2; exit 2;; esac
 if [ "$require_release_signing" = 1 ] && [ "$identity" = - ]; then
   echo "a Developer ID Application identity is required for release packaging" >&2

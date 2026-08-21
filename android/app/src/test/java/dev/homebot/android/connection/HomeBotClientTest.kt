@@ -333,7 +333,7 @@ class HomeBotClientTest {
         const val DEVICE_ID = "018f47b8-c9aa-7c6f-b9e1-111111111111"
         const val CHAT_ID = "00000000-0000-0000-0000-000000000030"
         const val ATTACHMENT_ID = "00000000-0000-0000-0000-000000000050"
-        const val VERSION_RESPONSE = """{"server_version":"0.1.0","protocol":{"minimum":1,"maximum":1}}"""
+        const val VERSION_RESPONSE = """{"server_version":"1.0.0","protocol":{"minimum":1,"maximum":1}}"""
         const val ERROR_RESPONSE = """{"code":"unauthenticated","message":"Device session is invalid","retryable":false,"request_id":null}"""
         const val PAIRING_RESPONSE = """{"device":{"id":"$DEVICE_ID","name":"Pixel 9","endpoint_kind":"loopback","created_at_unix_ms":1,"last_seen_at_unix_ms":null,"revoked_at_unix_ms":null},"device_session":"hbds_fixture_session"}"""
         const val BOT_RESPONSE = """{"bot":{"id":"00000000-0000-0000-0000-000000000010","name":"Nova","title":"Researcher","description":"","shape":"circle","color":"violet","archived":false,"unread_count":0,"attention":"none","provider":"not_configured","advanced":{"provider_profile_id":null,"permission_profile":"ask_before_changes"}}}"""
@@ -344,7 +344,7 @@ class HomeBotClientTest {
         const val SECRETS_RESPONSE = """[{"id":"00000000-0000-0000-0000-000000000070","label":"OpenAI work","status":"ready","created_at_unix_ms":1,"updated_at_unix_ms":1}]"""
         const val CURRENT_DEVICE_RESPONSE = """{"id":"$DEVICE_ID","name":"Pixel 9","endpoint_kind":"loopback","created_at_unix_ms":1,"last_seen_at_unix_ms":2,"revoked_at_unix_ms":null}"""
 
-        fun hello(resume: String) = """{"protocol_version":1,"sequence":0,"event_id":"00000000-0000-0000-0000-000000000001","kind":"hello","server_version":"0.1.0","supported_protocols":{"minimum":1,"maximum":1},"resume":"$resume","heartbeat_interval_ms":30000,"heartbeat_timeout_ms":60000}"""
+        fun hello(resume: String) = """{"protocol_version":1,"sequence":0,"event_id":"00000000-0000-0000-0000-000000000001","kind":"hello","server_version":"1.0.0","supported_protocols":{"minimum":1,"maximum":1},"resume":"$resume","heartbeat_interval_ms":30000,"heartbeat_timeout_ms":60000}"""
         fun snapshot(sequence: Int) = """{"protocol_version":1,"sequence":$sequence,"event_id":"00000000-0000-0000-0000-000000000002","kind":"snapshot","boundary_sequence":$sequence,"snapshot":{"bots":[],"chats":[]}}"""
         fun ping() = """{"protocol_version":1,"sequence":5,"event_id":"00000000-0000-0000-0000-000000000004","kind":"ping","nonce":"00000000-0000-0000-0000-000000000005"}"""
         fun botChanged(sequence: Int, name: String) = """{"protocol_version":1,"sequence":$sequence,"event_id":"00000000-0000-0000-0000-000000000003","kind":"bot_changed","bot":{"id":"00000000-0000-0000-0000-000000000010","name":"$name","title":"Helper","description":"","shape":"circle","color":"violet","archived":false,"unread_count":0,"attention":"none","provider":"not_configured","advanced":{"provider_profile_id":null,"permission_profile":"ask_before_changes"}}}"""

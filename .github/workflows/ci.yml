@@ -163,6 +163,7 @@ jobs:
         run: |
           rustup default stable
           useradd --create-home builder
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
           chown -R builder:builder "$GITHUB_WORKSPACE"
       - name: Create source archive and packages
         run: |

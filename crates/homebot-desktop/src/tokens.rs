@@ -212,6 +212,19 @@ impl HomeBotTheme {
         }
     }
 
+    #[must_use]
+    pub fn with_text_scale(mut self, scale: f32) -> Self {
+        let scale = scale.clamp(0.8, 2.0);
+        self.typography.display *= scale;
+        self.typography.title *= scale;
+        self.typography.heading *= scale;
+        self.typography.body *= scale;
+        self.typography.body_compact *= scale;
+        self.typography.caption *= scale;
+        self.typography.micro *= scale;
+        self
+    }
+
     pub fn install(self, context: &egui::Context) {
         let mut style = (*context.style()).clone();
         style.spacing.item_spacing = Vec2::splat(self.spacing.sm);
@@ -332,6 +345,16 @@ mod tests {
         assert!(dark.palette.text_primary.r() > dark.palette.canvas.r());
         assert!(light.layout.composer_max_width <= light.layout.content_max_width);
         assert!(light.motion.quick_ms < light.motion.deliberate_ms);
+    }
+
+    #[test]
+    fn text_scaling_is_clamped_and_preserves_geometry() {
+        let base = HomeBotTheme::light();
+        let large = base.with_text_scale(2.5);
+        let small = base.with_text_scale(0.1);
+        assert!((large.typography.body - base.typography.body * 2.0).abs() < f32::EPSILON);
+        assert!((small.typography.body - base.typography.body * 0.8).abs() < f32::EPSILON);
+        assert!((large.layout.sidebar_width - base.layout.sidebar_width).abs() < f32::EPSILON);
     }
 
     #[test]

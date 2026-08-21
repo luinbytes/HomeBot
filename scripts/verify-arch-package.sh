@@ -1,6 +1,7 @@
 #!/bin/sh
 set -eu
 
+script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 package=${1:?usage: verify-arch-package.sh PACKAGE UPDATE_PACKAGE}
 update_package=${2:?usage: verify-arch-package.sh PACKAGE UPDATE_PACKAGE}
 pacman -Qip "$package" >/dev/null
@@ -13,6 +14,7 @@ test -f /usr/share/icons/hicolor/scalable/apps/homebot.svg
 test -f /usr/lib/systemd/user/homebot.service
 desktop-file-validate /usr/share/applications/dev.homebot.desktop.desktop
 systemd-analyze verify /usr/lib/systemd/user/homebot.service
+runuser -u builder -- "$script_dir/process-resource-budget.sh" /usr/bin/homebot-server
 pacman -U --noconfirm "$update_package"
 pacman -Q homebot | grep -q -- '-2$'
 

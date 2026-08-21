@@ -1,5 +1,7 @@
 # Development
 
+Performance and accessibility budgets, automated gates and physical-machine measurement steps are defined in [performance-accessibility.md](performance-accessibility.md).
+
 ## Reproducible quality check
 
 From the repository root, run:

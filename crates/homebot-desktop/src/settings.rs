@@ -127,6 +127,7 @@ impl NotificationPreferences {
 pub struct DesktopSettings {
     pub section: SettingsSection,
     pub theme: ThemePreference,
+    pub text_scale_percent: u16,
     pub notifications: NotificationPreferences,
     pub launch_at_login: bool,
     pub server_endpoint: String,
@@ -143,6 +144,7 @@ impl Default for DesktopSettings {
         Self {
             section: SettingsSection::General,
             theme: ThemePreference::System,
+            text_scale_percent: 100,
             notifications: NotificationPreferences::default(),
             launch_at_login: false,
             server_endpoint: "http://127.0.0.1:7123".to_owned(),
@@ -281,6 +283,14 @@ fn appearance(ui: &mut Ui, settings: &mut DesktopSettings) {
         ui.selectable_value(&mut settings.theme, ThemePreference::Light, "Light");
         ui.selectable_value(&mut settings.theme, ThemePreference::Dark, "Dark");
     });
+    ui.add_space(8.0);
+    ui.strong("Text size");
+    ui.add(
+        egui::Slider::new(&mut settings.text_scale_percent, 80..=200)
+            .suffix("%")
+            .text("Text scale"),
+    );
+    ui.label("HomeBot supports 80% through 200% text scaling without changing server state.");
 }
 
 fn updates(ui: &mut Ui, theme: HomeBotTheme, settings: &DesktopSettings) -> Option<SettingsAction> {

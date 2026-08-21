@@ -5,6 +5,7 @@ use homebot_protocol::{
     PullRequestMetadata, ServerEvent, ServerEventBody, VcsStatus,
 };
 use std::sync::mpsc::{Receiver, channel};
+use std::time::Instant;
 use uuid::Uuid;
 
 use crate::{
@@ -14,6 +15,7 @@ use crate::{
         section_label,
     },
     notifications::{DeepLink, NotificationCenter, NotificationSink, SystemNotificationSink},
+    performance::LocalPerformanceTelemetry,
     settings::{DesktopSettings, SettingsAction, SettingsSection, UpdateState, settings_view},
     skills::SkillProjection,
     timeline::{ComposerError, TimelineModel},
@@ -80,6 +82,8 @@ pub struct HomeBotApp {
     transport: Option<DesktopTransport>,
     updater: Option<UpdateCoordinator>,
     update_candidate: Option<UpdateCandidate>,
+    performance: LocalPerformanceTelemetry,
+    focus_composer: bool,
 }
 
 impl Default for HomeBotApp {
@@ -115,6 +119,8 @@ impl Default for HomeBotApp {
             transport: None,
             updater: None,
             update_candidate: None,
+            performance: LocalPerformanceTelemetry::default(),
+            focus_composer: false,
         }
     }
 }
@@ -151,6 +157,8 @@ impl HomeBotApp {
     }
 
     pub fn render(&mut self, context: &egui::Context) {
+        let frame_started = Instant::now();
+        self.handle_keyboard_shortcuts(context);
         self.pump_transport(context);
         self.pump_updater();
         let activated: Vec<_> = self.deep_link_receiver.try_iter().collect();
@@ -161,7 +169,8 @@ impl HomeBotApp {
         self.theme = match self.settings.resolved_theme(system_dark) {
             crate::tokens::ThemeMode::Light => HomeBotTheme::light(),
             crate::tokens::ThemeMode::Dark => HomeBotTheme::dark(),
-        };
+        }
+        .with_text_scale(f32::from(self.settings.text_scale_percent) / 100.0);
         self.theme.install(context);
         self.sidebar(context);
         self.titlebar(context);
@@ -179,7 +188,36 @@ impl HomeBotApp {
         });
         self.editor(context);
         self.flush_transport();
+        self.performance
+            .record("desktop_frame", frame_started.elapsed());
         context.request_repaint_after(std::time::Duration::from_millis(100));
+    }
+
+    fn handle_keyboard_shortcuts(&mut self, context: &egui::Context) {
+        let (settings, create_bot, composer, escape) = context.input_mut(|input| {
+            (
+                input.consume_key(egui::Modifiers::COMMAND, egui::Key::Comma),
+                input.consume_key(egui::Modifiers::COMMAND, egui::Key::N),
+                input.consume_key(egui::Modifiers::COMMAND, egui::Key::K),
+                input.consume_key(egui::Modifiers::NONE, egui::Key::Escape),
+            )
+        });
+        if settings {
+            self.settings_open = !self.settings_open;
+        }
+        if create_bot {
+            self.settings_open = false;
+            self.roster.begin_create();
+        }
+        if composer {
+            self.settings_open = false;
+            self.focus_composer = true;
+        }
+        if escape {
+            self.settings_open = false;
+            self.roster.editor = None;
+            self.editor_error = None;
+        }
     }
 
     fn handle_settings_action(&mut self, action: SettingsAction) {
@@ -747,8 +785,16 @@ impl HomeBotApp {
                 }
             });
         self.working_context_controls(ui);
+        self.composer_controls(ui);
+    }
+
+    fn composer_controls(&mut self, ui: &mut egui::Ui) {
         ui.separator();
-        ui.text_edit_multiline(&mut self.timeline.composer.content);
+        let composer = ui.text_edit_multiline(&mut self.timeline.composer.content);
+        if self.focus_composer {
+            composer.request_focus();
+            self.focus_composer = false;
+        }
         if self.composer_error == Some(ComposerError::EmptyComposer) {
             ui.colored_label(
                 self.theme.palette.danger,

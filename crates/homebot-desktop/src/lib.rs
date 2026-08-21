@@ -4,6 +4,7 @@ pub mod bot_roster;
 pub mod components;
 pub mod group_timeline;
 pub mod notifications;
+pub mod performance;
 pub mod routines;
 pub mod settings;
 pub mod showcase;

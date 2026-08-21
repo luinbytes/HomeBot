@@ -44,7 +44,11 @@ use homebot_providers::{
 use homebot_secrets::{MemorySecretVault, SecretStatus, SecretVault, locator_for};
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
-use std::{collections::HashMap, sync::Arc, time::Duration};
+use std::{
+    collections::HashMap,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 use tokio::sync::{Mutex, mpsc, watch};
 use tokio::task::JoinHandle;
 use tokio_tungstenite::{connect_async, tungstenite::client::IntoClientRequest};
@@ -253,6 +257,35 @@ async fn test_app() -> Result<TestApp, homebot_storage::StorageError> {
         router: router(AppState::new(storage, "correct-token")),
         _directory: directory,
     })
+}
+
+#[tokio::test]
+async fn cold_start_and_authenticated_protocol_probe_meet_release_budgets()
+-> Result<(), Box<dyn std::error::Error>> {
+    let started = Instant::now();
+    let app = test_app().await?;
+    assert!(
+        started.elapsed() <= Duration::from_secs(5),
+        "cold start exceeded the five-second release budget"
+    );
+    let probes_started = Instant::now();
+    for _ in 0..100 {
+        let response = app
+            .router
+            .clone()
+            .oneshot(
+                Request::get("/api/v1/version")
+                    .header("authorization", "Bearer correct-token")
+                    .body(Body::empty())?,
+            )
+            .await?;
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+    assert!(
+        probes_started.elapsed() <= Duration::from_secs(2),
+        "100 authenticated protocol probes exceeded the two-second budget"
+    );
+    Ok(())
 }
 
 #[cfg(unix)]
@@ -3053,6 +3086,7 @@ async fn reconnect_replays_events_strictly_after_cursor() -> Result<(), Box<dyn 
         .append_event(Uuid::nil(), "ping", &serde_json::to_value(&replay)?, 1)
         .await?;
     let (address, task, _guard) = spawn_app(storage).await?;
+    let reconnect_started = Instant::now();
     let mut request = format!("ws://{address}/api/v1/events").into_client_request()?;
     request
         .headers_mut()
@@ -3081,6 +3115,10 @@ async fn reconnect_replays_events_strictly_after_cursor() -> Result<(), Box<dyn 
         }
     ));
     assert_eq!(replayed, replay);
+    assert!(
+        reconnect_started.elapsed() <= Duration::from_secs(2),
+        "cursor replay exceeded the reconnect budget"
+    );
     task.abort();
     Ok(())
 }
@@ -3103,6 +3141,7 @@ async fn reconnect_uses_snapshot_when_cursor_falls_outside_retention()
         .await?;
     storage.prune_events_through(Uuid::nil(), 1, 2).await?;
     let (address, task, _guard) = spawn_app(storage).await?;
+    let reconnect_started = Instant::now();
     let mut request = format!("ws://{address}/api/v1/events").into_client_request()?;
     request
         .headers_mut()
@@ -3131,6 +3170,10 @@ async fn reconnect_uses_snapshot_when_cursor_falls_outside_retention()
         }
     ));
     assert!(matches!(snapshot.body, ServerEventBody::Snapshot { .. }));
+    assert!(
+        reconnect_started.elapsed() <= Duration::from_secs(2),
+        "snapshot fallback exceeded the reconnect budget"
+    );
     task.abort();
     Ok(())
 }

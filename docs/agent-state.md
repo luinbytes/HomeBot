@@ -7,10 +7,10 @@ This file is operational state for coding agents. It is not user-facing product 
 ## Current state
 
 - Current milestone: M6, packaging, hardening and the v1 parity gate. M0 through M5 are verified complete.
-- Current Linear issue: 6C7-69, security hardening, fuzzing and hostile-repository acceptance (`In Progress`). 6C7-66 remains In Progress only for unavailable Developer ID/notarisation and physical clean-machine evidence.
-- Current Git branch: `feat/6c7-69-security-hardening`.
-- Latest public and verified implementation commit: `e52bdbc88a9a2d5ab86b962845886f65d0691b66` (6C7-68 safe updater and migration recovery on public `main`).
-- Latest verified GitHub Actions run: `32456932817`, all thirteen jobs passed, including Rust quality, Android, dependency gates, Linux, both macOS builds/goldens/packages, and the Arch clean package lifecycle.
+- Current Linear issue: 6C7-70, performance, resource and accessibility budgets (`In Progress`).
+- Current Git branch: `feat/6c7-70-performance-accessibility`.
+- Latest public and verified implementation commit: `4c65711ca271f341b05355178b7998977bcd59af` (6C7-69 security hardening on public `main`).
+- Latest verified GitHub Actions run: `32458792462`, all thirteen jobs passed, including Rust quality, Android, dependency gates, Linux, both macOS builds/goldens/packages, and the Arch clean package lifecycle.
 - Public repository: `https://github.com/luinbytes/HomeBot`.
 - Required commit identity: `luinbytes <42706009+luinbytes@users.noreply.github.com>`.
 
@@ -34,7 +34,7 @@ Architecture decisions currently frozen:
 
 Current blockers:
 
-- No external blocker. Neither Codex nor Claude is installed/authenticated in this execution environment, so real provider smoke tests explicitly skip while protocol-faithful fixtures pass.
+- Final release blockers remain external to this environment: neither Codex nor Claude is installed/authenticated for genuine provider smoke tests, and Apple Developer ID/notarisation credentials plus physical clean Intel/Apple Silicon verification machines are unavailable. Continue every other unblocked gate.
 - No active M2 blocker. Corrective issue 6C7-73 and epic 6C7-41 are verified Done.
 - `egui` 0.32.3 transitively uses unmaintained `ttf-parser` 0.25.1. RUSTSEC-2026-0192 reports no known vulnerability or safe upgrade; review remains mandatory in 6C7-69.
 
@@ -62,19 +62,21 @@ Current blockers:
 - M5 epic 6C7-59: native Android and secure remote parity verified complete.
 - 6C7-67, AUR-ready Arch/Omarchy desktop and headless packaging with a clean install/update/uninstall CI lifecycle.
 - 6C7-68, explicit manifest-driven desktop update staging, verified pre-migration backups, too-new-schema refusal and deterministic recovery coverage.
-- Most recent completed issue: 6C7-68.
+- 6C7-69, repository-wide security hardening, parser/resource bounds, hostile repository/MCP/provider fixtures, all-capability negative approvals and a clean exact-revision security scan.
+- Most recent completed issue: 6C7-69.
 - Focused repository presentation pass: README badges and real desktop previews added from checked-in visual goldens; tracked-file hygiene audited with no junk removals required and `.gitignore` expanded for common Rust, Android, editor, environment, Python, Node, log and temporary outputs.
 
 ## Immediate next work
 
-1. Finish the final Android/full-workspace verification and exact-revision Codex Security report for 6C7-69, then publish the hardening tree and require the full remote gate.
-2. Continue immediately into 6C7-70 measurable performance/resource budgets and desktop/Android accessibility acceptance.
-3. Execute 6C7-71's complete cross-platform parity gate; keep real Codex/Claude provider smoke tests and Apple release signing as explicit blockers until suitable credentials/machines are available.
+1. Finish 6C7-70's full workspace and three-platform performance/resource CI, Android semantics/lint and updated desktop golden verification; publish only after the complete remote gate.
+2. Execute 6C7-71's complete cross-platform parity gate.
+3. Keep real authenticated Codex/Claude smoke tests and final Apple signing/notarisation as explicit release blockers until suitable credentials and machines are available.
 
 ## Verification state
 
 Verified at the latest remote baseline:
 
+- GitHub Actions run `32458792462` passed all thirteen jobs for public 6C7-69 commit `4c65711`. The exact-revision canonical security scan reports complete repository coverage, zero surviving findings and no unresolved high/critical issue.
 - GitHub Actions run `32456932817` passed all thirteen jobs for public 6C7-68 commit `e52bdbc`. It verified updater/migration recovery, Android, dependency policy/audit, Linux, both macOS builds and packages/goldens, and the Arch clean package lifecycle.
 - GitHub Actions run `32455982765` passed all thirteen jobs for the final 6C7-67 tree, including source-archive creation, package build, clean install, update, uninstall, manifest/checksum generation and artifact upload in a fresh Arch container.
 - GitHub Actions run `32451067995` passed all twelve jobs for the corrected macOS packaging branch. It uploaded `HomeBot-macOS-Intel` and `HomeBot-macOS-Apple-Silicon` artifacts with reproducible bundles, notarisation ZIPs, manifests and checksums; public `main` is `8851233`.
@@ -96,6 +98,7 @@ Verified at the latest remote baseline:
 
 Verified locally at the current baseline:
 
+- 6C7-70 targeted budgets pass: real cold start/authenticated probes, replay and stale-cursor reconnect, 10,000-message chat hydration, eight-Bot/2,000-event streaming projection, bounded local-only telemetry and 80%-200% text scaling. Desktop/Android accessibility semantics and cross-platform process-resource CI are implemented; the Appearance visual golden was intentionally updated and reverified.
 - 6C7-69's Rust security gate passes: bounded protocol/WebSocket/MCP inputs, hostile Git configuration denial, provider URL credential rejection, all capability-class approval negatives, deterministic parser properties, secret-leak scanning, strict clippy, schema/Android drift and visual goldens. The authenticated invalid-token fixture passes five consecutive runs after keeping its temporary SQLite directory alive for the Router lifetime.
 - 6C7-68's complete `./scripts/check.sh` gate passes with 169 Rust tests, strict clippy, all visual goldens, schema/Android drift checks and deterministic packaging-contract checks. A follow-up symlink-negative test also passes, bringing the targeted current total to 170. Storage coverage upgrades and verifies backups for every prior schema v1–v16, reuses an interrupted-launch backup, refuses v18, fails closed on corruption/backup failure/symlink substitution and preserves transactional rollback. Desktop coverage proves compatible same-origin manifests, explicit staging, exact streamed size/SHA-256, traversal denial and partial-file cleanup.
 - 6C7-61 has a real Gradle application module, Compose shell, Coroutines/Flow state machine, OkHttp HTTP/WebSocket transport, Keystore-encrypted device session, DataStore endpoint preferences, generated Rust-owned snapshot/version/attachment models and Android CI artifact job.
@@ -127,7 +130,7 @@ Verified locally at the current baseline:
 ## Known failures and incomplete implementation
 
 - macOS Developer ID signing/notarisation credentials and clean Intel/Apple Silicon test machines are unavailable in this environment. CI can verify reproducible ad-hoc-signed bundles, but those checks do not satisfy final release signing acceptance.
-- 6C7-69 security hardening, performance/accessibility, and final parity/release artifacts remain incomplete roadmap work.
+- 6C7-70 remote platform/resource and Android verification plus the final parity/release artifacts remain incomplete roadmap work.
 - Real authenticated Codex/Claude round trips are unavailable in this environment. OpenAI-compatible and CDP behavior use protocol-faithful local fixtures.
 - No release artifact exists. Do not describe HomeBot as installable or v1-ready.
 

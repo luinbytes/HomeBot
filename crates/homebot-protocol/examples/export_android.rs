@@ -455,6 +455,9 @@ sealed interface SendMessageResponse {
 }
 
 @Serializable
+data class MessageMutationRequest(val request_id: String, val idempotency_key: String)
+
+@Serializable
 data class ChatTimelineResponse(val chat: ChatSummary, val messages: List<MessageSummary>, val activities: List<ActivitySummary>, val approvals: List<ApprovalSummary>, val queued_prompts: List<QueuedPromptSummary>, val working_context: WorkingContextSummary? = null, val checkpoints: List<TurnCheckpointSummary> = emptyList(), val boundary_sequence: Long)
 
 @Serializable

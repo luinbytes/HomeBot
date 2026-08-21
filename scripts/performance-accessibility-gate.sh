@@ -8,9 +8,9 @@ cargo test -p homebot-server cold_start_and_authenticated_protocol_probe_meet_re
 cargo test -p homebot-server reconnect_replays_events_strictly_after_cursor
 cargo test -p homebot-server reconnect_uses_snapshot_when_cursor_falls_outside_retention
 
-rg -q 'Role\.Tab' android/app/src/main/java/dev/homebot/android/MainActivity.kt
-rg -q 'LiveRegionMode\.Assertive' android/app/src/main/java/dev/homebot/android/MainActivity.kt
-rg -q 'heading\(\)' android/app/src/main/java/dev/homebot/android/MainActivity.kt
-rg -q 'text_scale_percent' crates/homebot-desktop/src/settings.rs
+grep -q 'Role\.Tab' android/app/src/main/java/dev/homebot/android/MainActivity.kt
+grep -q 'LiveRegionMode\.Assertive' android/app/src/main/java/dev/homebot/android/MainActivity.kt
+grep -q 'heading()' android/app/src/main/java/dev/homebot/android/MainActivity.kt
+grep -q 'text_scale_percent' crates/homebot-desktop/src/settings.rs
 
 echo "performance/accessibility gate: automated budgets and semantics passed"

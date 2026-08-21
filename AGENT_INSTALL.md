@@ -2,6 +2,8 @@
 
 Status: pre-release development bootstrap. An agent MUST NOT report HomeBot installed for end-user use until a signed release route and the complete verification section are available. Current success means only that the development workspace builds, tests, starts on loopback, and returns its health contract.
 
+An agent MUST NOT approve a desktop update on the user's behalf. Validate the release manifest, artifact checksum/signature, compatibility, and backup state, then leave the explicit download/install action to the user unless the user separately authorizes that exact release artifact. Use [docs/recovery.md](docs/recovery.md) for deterministic migration recovery.
+
 ## 1. Detect the machine
 
 Run without printing environment variables or secret files:

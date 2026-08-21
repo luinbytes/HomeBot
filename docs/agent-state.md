@@ -7,10 +7,10 @@ This file is operational state for coding agents. It is not user-facing product 
 ## Current state
 
 - Current milestone: M6, packaging, hardening and the v1 parity gate. M0 through M5 are verified complete.
-- Current Linear issue: 6C7-67, Arch/Omarchy desktop and headless-service packaging (`In Progress`). 6C7-66 remains In Progress pending external release-signing and clean-machine evidence.
-- Current Git branch: `feat/6c7-67-arch-packaging`.
-- Latest public and verified implementation commit: `5adeeab99abaa54b83717e79b2741b0a2d38803d` (6C7-64 on public `main`).
-- Latest verified GitHub Actions run: `32449482551`, all ten jobs passed, including Android lint/tests/APK, Rust quality, dependency gates, both macOS builds, Linux and visual goldens.
+- Current Linear issue: 6C7-68, safe updater and migration recovery (`In Progress`). 6C7-66 and 6C7-67 remain In Progress pending platform CI/external machine evidence.
+- Current Git branch: `feat/6c7-68-safe-updates`.
+- Latest public and verified implementation commit: `8851233e714ccfcee605a9b7b63beb570be577b6` (reproducible macOS packaging foundation on public `main`).
+- Latest verified GitHub Actions run: `32451067995`, all twelve jobs passed, including Intel/Apple Silicon package assembly and artifact upload, Android, Rust/dependency gates, Linux and visual goldens.
 - Public repository: `https://github.com/luinbytes/HomeBot`.
 - Required commit identity: `luinbytes <42706009+luinbytes@users.noreply.github.com>`.
 
@@ -65,14 +65,15 @@ Current blockers:
 
 ## Immediate next work
 
-1. Finish 6C7-67's AUR-ready PKGBUILD, current-Arch package CI, encrypted systemd credential route, and clean install/update/uninstall verification.
-2. Confirm the corrected 6C7-66 Intel/Apple Silicon artifact jobs pass; complete Developer ID signing, notarisation and physical clean-machine checks when Apple credentials/machines are available.
-3. Continue immediately through 6C7-68 and the remaining M6 gates without treating platform-signing credentials as a blocker for unrelated work.
+1. Finish 6C7-68's manifest-driven explicit updater, verified pre-migration backups, downgrade refusal and recovery tests; publish and verify the full remote gate.
+2. Reconcile PR #5/#6 platform artifact CI and keep only genuinely external signing/physical-machine evidence open on 6C7-66/67.
+3. Continue immediately through 6C7-69 security hardening and the remaining M6 gates.
 
 ## Verification state
 
 Verified at the latest remote baseline:
 
+- GitHub Actions run `32451067995` passed all twelve jobs for the corrected macOS packaging branch. It uploaded `HomeBot-macOS-Intel` and `HomeBot-macOS-Apple-Silicon` artifacts with reproducible bundles, notarisation ZIPs, manifests and checksums; public `main` is `8851233`.
 - GitHub Actions run `32449482551` passed all ten jobs for public 6C7-64 commit `5adeeab9`. Android tests prove authoritative event-to-notification mapping, exact deep links, duplicate-safe sequence handling and connectivity-triggered reconnect without permanent polling.
 - GitHub Actions run `32448835788` passed all ten jobs for public 6C7-63 commit `f834e37`. Android lint, seven deterministic tests, debug APK assembly/artifact upload, Rust quality, dependency audit/policy, Linux and both macOS builds, and all visual-golden platforms passed.
 - Paired-device self inspection/revocation is server enforced while paired credentials remain forbidden from owner-wide session administration. The attachment claim path reserves the SQLite writer before its idempotency snapshot; the exact integration test passes five consecutive runs.
@@ -91,6 +92,7 @@ Verified at the latest remote baseline:
 
 Verified locally at the current baseline:
 
+- 6C7-68's complete `./scripts/check.sh` gate passes with 169 Rust tests, strict clippy, all visual goldens, schema/Android drift checks and deterministic packaging-contract checks. A follow-up symlink-negative test also passes, bringing the targeted current total to 170. Storage coverage upgrades and verifies backups for every prior schema v1–v16, reuses an interrupted-launch backup, refuses v18, fails closed on corruption/backup failure/symlink substitution and preserves transactional rollback. Desktop coverage proves compatible same-origin manifests, explicit staging, exact streamed size/SHA-256, traversal denial and partial-file cleanup.
 - 6C7-61 has a real Gradle application module, Compose shell, Coroutines/Flow state machine, OkHttp HTTP/WebSocket transport, Keystore-encrypted device session, DataStore endpoint preferences, generated Rust-owned snapshot/version/attachment models and Android CI artifact job.
 - Deterministic Android tests cover one-time pairing, credential redaction, version skew, revocation, snapshot hydration, cursor resume, stale-cursor fallback, replay and duplicate-sequence suppression. Run `32446363611` compiled against Android SDK 36 and Kotlin 2.3, passed lint and all tests, assembled `app-debug.apk`, and uploaded `HomeBot-Android-debug`.
 
@@ -120,7 +122,7 @@ Verified locally at the current baseline:
 ## Known failures and incomplete implementation
 
 - macOS Developer ID signing/notarisation credentials and clean Intel/Apple Silicon test machines are unavailable in this environment. CI can verify reproducible ad-hoc-signed bundles, but those checks do not satisfy final release signing acceptance.
-- 6C7-66 PR #5 is published. Its first Apple Silicon artifact run exposed a BSD `sh` parsing incompatibility after successful bundle verification; fix commit `c979f8d82c971db7420e26e984986539d7bc0442` is published and awaiting the replacement CI run.
+- 6C7-67 clean PR #7 is published at `d849ec0c9e047c39a181baa5d86f39b564c4c5e3`. Its first superseded run proved the fresh Arch container lacked Git before checkout; checkout order is corrected and replacement package CI is running.
 - Arch/Omarchy packaging, updater/migration recovery, release hardening, performance/accessibility, and final parity/release artifacts remain incomplete roadmap work.
 - Real authenticated Codex/Claude round trips are unavailable in this environment. OpenAI-compatible and CDP behavior use protocol-faithful local fixtures.
 - No release artifact exists. Do not describe HomeBot as installable or v1-ready.

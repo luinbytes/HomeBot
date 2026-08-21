@@ -213,7 +213,7 @@ fn plugin_settings_state(ui: &mut egui::Ui, theme: HomeBotTheme) {
             ],
             ..DesktopSettings::default()
         };
-        settings_view(ui, theme, &mut settings);
+        let _ = settings_view(ui, theme, &mut settings);
     });
 }
 
@@ -228,7 +228,7 @@ fn settings_state(ui: &mut egui::Ui, theme: HomeBotTheme, appearance: bool) {
             settings.section = SettingsSection::Appearance;
             settings.theme = ThemePreference::Dark;
         }
-        settings_view(ui, theme, &mut settings);
+        let _ = settings_view(ui, theme, &mut settings);
     });
 }
 

@@ -2,6 +2,8 @@
 
 HomeBot is not released yet. The commands below build the current development server. CI now assembles structurally verified ad-hoc-signed Intel and Apple Silicon macOS bundles and an Android debug APK, but these are test artifacts rather than supported installations. Public installation instructions will be activated only after signed/notarised release artifacts and clean-machine checks pass.
 
+Updates are never automatic. The desktop checks a versioned HTTPS manifest only after a user action, requires a second action to stage an artifact, verifies exact size and SHA-256, and never silently executes it. Existing databases receive a verified pre-migration backup before schema changes. Follow [the recovery runbook](docs/recovery.md) rather than overwriting application data after an upgrade failure.
+
 ## Build from source
 
 Install Git and the current stable Rust toolchain, then:

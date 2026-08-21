@@ -15,8 +15,10 @@ def main() -> None:
     parser.add_argument("--architecture", required=True)
     parser.add_argument("--version", required=True)
     parser.add_argument(
-        "--signing", required=True, choices=("unsigned", "adhoc", "developer-id")
+        "--signing", required=True, choices=("unsigned", "adhoc", "developer-id", "package")
     )
+    parser.add_argument("--protocol-minimum", type=int, default=1)
+    parser.add_argument("--protocol-maximum", type=int, default=1)
     args = parser.parse_args()
 
     payload = args.artifact.read_bytes()
@@ -30,6 +32,8 @@ def main() -> None:
         "bytes": len(payload),
         "sha256": hashlib.sha256(payload).hexdigest(),
         "signing": args.signing,
+        "protocol_minimum": args.protocol_minimum,
+        "protocol_maximum": args.protocol_maximum,
     }
     args.output.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 

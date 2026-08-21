@@ -15,11 +15,13 @@ homebot-server = { version = "=0.0.1", path = "../homebot-server" }
 homebot-storage = { version = "=0.0.1", path = "../homebot-storage" }
 notify-rust.workspace = true
 reqwest.workspace = true
+semver.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 tokio.workspace = true
 tokio-tungstenite.workspace = true
+thiserror.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]

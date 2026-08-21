@@ -1,7 +1,12 @@
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
-val homebotVersionName = providers.gradleProperty("homebotVersionName").orElse("0.1.0-dev")
-val homebotVersionCode = providers.gradleProperty("homebotVersionCode").orElse("1")
+val releaseVersion = rootProject.projectDir.parentFile.resolve("VERSION").readText().trim()
+val releaseVersionParts = releaseVersion.split('.').map(String::toInt)
+require(releaseVersionParts.size == 3) { "VERSION must be semantic x.y.z" }
+val releaseVersionCode =
+    releaseVersionParts[0] * 1_000_000 + releaseVersionParts[1] * 1_000 + releaseVersionParts[2]
+val homebotVersionName = providers.gradleProperty("homebotVersionName").orElse(releaseVersion)
+val homebotVersionCode = providers.gradleProperty("homebotVersionCode").orElse(releaseVersionCode.toString())
 
 plugins {
     id("com.android.application")

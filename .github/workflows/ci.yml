@@ -127,12 +127,12 @@ jobs:
       - uses: android-actions/setup-android@v3
       - name: Lint, test, and assemble Android
         working-directory: android
-        run: >-
-          ./gradlew lintDebug testDebugUnitTest assembleDebug assembleRelease
-          -PhomebotVersionName=1.0.0 -PhomebotVersionCode=1000000 --stacktrace
+        run: |
+          version=$(cat ../VERSION)
+          ./gradlew lintDebug testDebugUnitTest assembleDebug assembleRelease \
+            -PhomebotVersionName="$version" --stacktrace
       - name: Exercise signed Android release packaging with CI-only key
         env:
-          HOMEBOT_VERSION: 1.0.0
           HOMEBOT_ANDROID_SIGNING: ci-ephemeral
         run: |
           export HOMEBOT_CI_KEY_PASSWORD="$(openssl rand -hex 24)"
@@ -183,7 +183,6 @@ jobs:
       - name: Assemble and verify application bundle
         env:
           HOMEBOT_TARGET: ${{ matrix.target }}
-          HOMEBOT_VERSION: 0.0.1-ci
           HOMEBOT_BUILD_VERSION: ${{ github.run_number }}
           SOURCE_DATE_EPOCH: 1704067200
         run: ./scripts/package-macos.sh
@@ -215,30 +214,32 @@ jobs:
           chown -R builder:builder "$GITHUB_WORKSPACE"
       - name: Create source archive and packages
         run: |
-          version=0.0.1
+          version=$(cat VERSION)
           mkdir -p packaging/arch/dist
           git archive --format=tar.gz --prefix="HomeBot-$version/" HEAD > "packaging/arch/HomeBot-$version.tar.gz"
           source_sha=$(sha256sum "packaging/arch/HomeBot-$version.tar.gz" | cut -d' ' -f1)
           runuser -u builder -- ./scripts/render-arch-pkgbuild.sh "$version" "$source_sha" 1 packaging/arch/PKGBUILD
           runuser -u builder -- sh -c 'cd packaging/arch && makepkg --cleanbuild --force --noconfirm'
-          mv packaging/arch/homebot-0.0.1-1-x86_64.pkg.tar.zst packaging/arch/dist/
+          mv "packaging/arch/homebot-$version-1-x86_64.pkg.tar.zst" packaging/arch/dist/
           runuser -u builder -- ./scripts/render-arch-pkgbuild.sh "$version" "$source_sha" 2 packaging/arch/PKGBUILD
           runuser -u builder -- sh -c 'cd packaging/arch && makepkg --force --noconfirm'
-          mv packaging/arch/homebot-0.0.1-2-x86_64.pkg.tar.zst packaging/arch/dist/
+          mv "packaging/arch/homebot-$version-2-x86_64.pkg.tar.zst" packaging/arch/dist/
       - name: Verify clean install, update, and uninstall
-        run: >-
-          ./scripts/verify-arch-package.sh
-          packaging/arch/dist/homebot-0.0.1-1-x86_64.pkg.tar.zst
-          packaging/arch/dist/homebot-0.0.1-2-x86_64.pkg.tar.zst
+        run: |
+          version=$(cat VERSION)
+          ./scripts/verify-arch-package.sh \
+            "packaging/arch/dist/homebot-$version-1-x86_64.pkg.tar.zst" \
+            "packaging/arch/dist/homebot-$version-2-x86_64.pkg.tar.zst"
       - name: Create checksums and manifest
         run: |
           cd packaging/arch/dist
-          sha256sum *.pkg.tar.zst > HomeBot-0.0.1-arch-x86_64.SHA256SUMS
+          version=$(cat ../../../VERSION)
+          sha256sum *.pkg.tar.zst > "HomeBot-$version-arch-x86_64.SHA256SUMS"
           cd ../../..
           python3 scripts/release-manifest.py \
-            --output packaging/arch/dist/HomeBot-0.0.1-arch-x86_64.manifest.json \
-            --artifact packaging/arch/dist/homebot-0.0.1-2-x86_64.pkg.tar.zst \
-            --platform linux --architecture x86_64 --version 0.0.1 --signing unsigned
+            --output "packaging/arch/dist/HomeBot-$version-arch-x86_64.manifest.json" \
+            --artifact "packaging/arch/dist/homebot-$version-2-x86_64.pkg.tar.zst" \
+            --platform linux --architecture x86_64 --version "$version" --signing unsigned
       - uses: actions/upload-artifact@v4
         with:
           name: HomeBot-Arch-x86_64

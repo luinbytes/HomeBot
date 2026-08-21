@@ -3,9 +3,11 @@ set -eu
 
 input=${1:?usage: package-android.sh SIGNED_APK OUTPUT_DIR}
 output_dir=${2:?usage: package-android.sh SIGNED_APK OUTPUT_DIR}
-version=${HOMEBOT_VERSION:?set HOMEBOT_VERSION}
+release_version=$(cat VERSION)
+version=${HOMEBOT_VERSION:-$release_version}
 signing=${HOMEBOT_ANDROID_SIGNING:?set HOMEBOT_ANDROID_SIGNING to android-release or ci-ephemeral}
 case "$version" in ''|*[!0-9A-Za-z.+-]*) echo "invalid version" >&2; exit 2;; esac
+test "$version" = "$release_version" || { echo "HOMEBOT_VERSION must match VERSION ($release_version)" >&2; exit 2; }
 case "$signing" in android-release|ci-ephemeral) ;; *) echo "invalid Android signing classification" >&2; exit 2;; esac
 test -f "$input" || { echo "missing signed APK: $input" >&2; exit 2; }
 

@@ -69,7 +69,7 @@ Build the Android candidate with the production keystore supplied only through l
 
 ```sh
 (cd android && ./gradlew clean assembleRelease \
-  -PhomebotVersionName="$HOMEBOT_VERSION" -PhomebotVersionCode=1000000)
+  -PhomebotVersionName="$HOMEBOT_VERSION")
 export HOMEBOT_ANDROID_KEYSTORE=/absolute/path/to/release.keystore
 export HOMEBOT_ANDROID_KEY_ALIAS=homebot
 export HOMEBOT_ANDROID_STORE_PASSWORD_NAME=HOMEBOT_ANDROID_STORE_PASSWORD

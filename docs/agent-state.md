@@ -9,7 +9,8 @@ This file is operational state for coding agents. It is not user-facing product 
 - Current milestone: M5, Android and secure remote parity. M0 through M4 are verified complete.
 - Current Linear issue: 6C7-61, native Android architecture and generated protocol client (`In Progress`).
 - Current Git branch: `main`.
-- Latest verified implementation commit: `a684abb4ecc6310a7537ef559e9315e5ae31adf8` (6C7-60; exact tree `1d1eb73101e04c286b9447c92faa70d43e1becd0`).
+- Latest public implementation commit: `1671c4432ae0da41ef31fe6dc52b8400931e75d7` (6C7-61 Android protocol-client foundation; exact tree `e7ddfa554bbd9e6b817df44915ed2f7daa5213c5`).
+- Latest verified implementation baseline: `a684abb4ecc6310a7537ef559e9315e5ae31adf8` (6C7-60; exact tree `1d1eb73101e04c286b9447c92faa70d43e1becd0`).
 - Latest verified GitHub Actions run: `32442039471`, all nine jobs passed.
 - Public repository: `https://github.com/luinbytes/HomeBot`.
 - Required commit identity: `luinbytes <42706009+luinbytes@users.noreply.github.com>`.
@@ -56,6 +57,7 @@ Current blockers:
 - M4 epic 6C7-54: all coding workspace, checkpoint/diff/restore, source-control and context workflow children verified complete.
 - 6C7-60, short-lived owner pairing, restart-durable named/revocable device sessions, server-enforced device administration, LAN/Tailscale/custom-HTTPS classification, explicit remote bind controls and desktop projection.
 - Most recent completed issue: 6C7-60.
+- Focused repository presentation pass: README badges and real desktop previews added from checked-in visual goldens; tracked-file hygiene audited with no junk removals required and `.gitignore` expanded for common Rust, Android, editor, environment, Python, Node, log and temporary outputs.
 
 ## Immediate next work
 

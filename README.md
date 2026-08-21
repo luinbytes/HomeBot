@@ -1,5 +1,12 @@
 # HomeBot
 
+[![License](https://img.shields.io/github/license/luinbytes/HomeBot)](LICENSE)
+[![CI](https://github.com/luinbytes/HomeBot/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/luinbytes/HomeBot/actions/workflows/ci.yml)
+[![Last Commit](https://img.shields.io/github/last-commit/luinbytes/HomeBot/main)](https://github.com/luinbytes/HomeBot/commits/main)
+[![Repo Size](https://img.shields.io/github/repo-size/luinbytes/HomeBot)](https://github.com/luinbytes/HomeBot)
+[![Open Issues](https://img.shields.io/github/issues/luinbytes/HomeBot)](https://github.com/luinbytes/HomeBot/issues)
+[![Stars](https://img.shields.io/github/stars/luinbytes/HomeBot?style=social)](https://github.com/luinbytes/HomeBot/stargazers)
+
 ## Your AI team. On your computer.
 
 HomeBot is an open-source home for persistent AI teammates. Create Bots, message them like people, put specialists in a group chat, and let them hand work to each other while your own Mac or Linux machine remains the computer they work on.
@@ -7,6 +14,14 @@ HomeBot is an open-source home for persistent AI teammates. Create Bots, message
 Bring the providers you already use, including Codex CLI, Claude Code, and OpenAI-compatible APIs. Attach a repository when a Bot needs coding powers. Turn a good workflow into a routine. Check in from the native desktop app or, as M5 lands, the native Android client over your LAN or Tailscale. Your chats, files, credentials, and execution history stay under your control.
 
 > HomeBot is under active development and is not yet a v1 release. There are no supported release packages yet. Development builds bind conservatively and use authenticated server APIs, but they should still be treated as pre-release software.
+
+## Desktop preview
+
+Real renders from HomeBot's cross-platform desktop visual-regression suite.
+
+| Bot roster | Chat and activity | Coding workflow |
+| --- | --- | --- |
+| ![HomeBot desktop Bot roster and home view](docs/screenshots/desktop-bot-roster.png) | ![HomeBot direct chat with repository activity cards](docs/screenshots/desktop-chat-activity.png) | ![HomeBot coding activity with file and terminal results](docs/screenshots/desktop-coding-workflow.png) |
 
 ### What already works in development
 

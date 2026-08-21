@@ -169,6 +169,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         loadServices()
     }
 
+    fun testSkill(skillId: String) = perform {
+        val result = homeBot.client.testSkill(skillId).getOrThrow()
+        require(result.capability_policy_enforced) { "Skill test did not preserve capability policy" }
+        mutableProduct.value = mutableProduct.value.copy(skillTestPreview = result.prompt_preview)
+    }
+
     fun revokeThisDevice() = perform {
         homeBot.client.revokeCurrentDevice().getOrThrow()
     }

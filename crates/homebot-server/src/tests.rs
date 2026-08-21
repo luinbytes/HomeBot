@@ -30,11 +30,11 @@ use homebot_protocol::{
     RoutineTriggerDefinition, RoutineTriggerSource, RunRoutineRequest, SecretSummary,
     SendGroupMessageRequest, SendMessageRequest, SendMessageResponse, SetInteractionModeRequest,
     SkillAssignmentRequest, SkillBundle, SkillContext, SkillDefinition, SkillImportConflictPolicy,
-    SkillSummary, SkillToolReference, StartRoutineRecordingRequest, TurnCheckpointSummary,
-    UpdateBotRequest, UpdateGroupParticipantRequest, UpdateRoutineRequest, UpdateSkillRequest,
-    VcsCommitRequest, VcsCommitResult, VcsCreateBranchRequest, VcsMutationStatus, VcsPushRequest,
-    VcsRemoteMutationResponse, VcsStatus, WorkingContextSummary, WorkingTreeCondition,
-    WorkingTreeDiffResponse, WorkspaceBranchesResponse, WorkspaceMode,
+    SkillSummary, SkillTestSummary, SkillToolReference, StartRoutineRecordingRequest,
+    TurnCheckpointSummary, UpdateBotRequest, UpdateGroupParticipantRequest, UpdateRoutineRequest,
+    UpdateSkillRequest, VcsCommitRequest, VcsCommitResult, VcsCreateBranchRequest,
+    VcsMutationStatus, VcsPushRequest, VcsRemoteMutationResponse, VcsStatus, WorkingContextSummary,
+    WorkingTreeCondition, WorkingTreeDiffResponse, WorkspaceBranchesResponse, WorkspaceMode,
 };
 use homebot_providers::{
     ActivityKind, ActivityStatus as ProviderActivityStatus, ApprovalDecision, CompactRequest,
@@ -383,6 +383,161 @@ async fn global_search_is_owner_scoped_and_returns_exact_targets()
             .results
             .iter()
             .all(|result| result.chat_id != Some(foreign_chat.id))
+    );
+    Ok(())
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn demonstrated_recording_creates_editable_restart_durable_and_safely_testable_skill()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let database = directory.path().join("homebot.db");
+    let storage = Storage::open(&database).await?;
+    let app = router(AppState::new(storage, "correct-token"));
+    let bot_id = Uuid::now_v7();
+    let response = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/bots",
+            &CreateBotRequest {
+                request_id: Uuid::now_v7(),
+                idempotency_key: bot_id,
+                name: "Nova".to_owned(),
+                title: "Research".to_owned(),
+                description: String::new(),
+                shape: BotShape::RoundedSquare,
+                color: BotColor::Violet,
+                provider_profile_id: None,
+                permission_profile: BotPermissionProfile::AskBeforeChanges,
+            },
+        ))
+        .await?;
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let recording_id = Uuid::now_v7();
+    let response = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/routine-recordings",
+            &StartRoutineRecordingRequest {
+                request_id: Uuid::now_v7(),
+                idempotency_key: recording_id,
+                bot_id,
+                name: "Review launch".to_owned(),
+                description: "A demonstrated review workflow".to_owned(),
+            },
+        ))
+        .await?;
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let response = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            &format!("/api/v1/routine-recordings/{recording_id}/actions"),
+            &AppendRoutineRecordingRequest {
+                request_id: Uuid::now_v7(),
+                idempotency_key: Uuid::now_v7(),
+                action: RecordedAction {
+                    actor: RecordedActor::User,
+                    step: RoutineStep::BotPrompt {
+                        bot_id,
+                        prompt_template: "Review the launch brief".to_owned(),
+                        requires_approval: true,
+                    },
+                },
+            },
+        ))
+        .await?;
+    assert_eq!(response.status(), StatusCode::OK);
+    let skill_id = Uuid::now_v7();
+    let finish = BotMutationRequest {
+        request_id: Uuid::now_v7(),
+        idempotency_key: skill_id,
+    };
+    let response = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            &format!("/api/v1/routine-recordings/{recording_id}/finish-skill"),
+            &finish,
+        ))
+        .await?;
+    let skill = response_json::<SkillSummary>(response).await?;
+    assert_eq!(skill.id, skill_id);
+    assert_eq!(skill.version, 1);
+    assert!(
+        skill
+            .definition
+            .instructions
+            .contains("approval is required")
+    );
+    assert_eq!(skill.definition.context[0].label, "Recorded demonstration");
+    let replay = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            &format!("/api/v1/routine-recordings/{recording_id}/finish-skill"),
+            &finish,
+        ))
+        .await?;
+    assert_eq!(response_json::<SkillSummary>(replay).await?.id, skill_id);
+
+    let response = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            &format!("/api/v1/skills/{skill_id}/test"),
+            &BotMutationRequest {
+                request_id: Uuid::now_v7(),
+                idempotency_key: Uuid::now_v7(),
+            },
+        ))
+        .await?;
+    let preview = response_json::<SkillTestSummary>(response).await?;
+    assert!(preview.capability_policy_enforced);
+    assert_eq!(preview.skill_version_id, skill.active_version_id);
+    assert!(preview.prompt_preview.contains("Review the launch brief"));
+
+    let mut edited = skill.definition;
+    edited.instructions.push_str("\nReturn concise findings.");
+    let response = app
+        .clone()
+        .oneshot(json_request(
+            "PUT",
+            &format!("/api/v1/skills/{skill_id}"),
+            &UpdateSkillRequest {
+                request_id: Uuid::now_v7(),
+                idempotency_key: Uuid::now_v7(),
+                name: "Review launch".to_owned(),
+                description: "Edited after demonstration".to_owned(),
+                definition: edited,
+            },
+        ))
+        .await?;
+    assert_eq!(response_json::<SkillSummary>(response).await?.version, 2);
+
+    drop(app);
+    let reopened = router(AppState::new(
+        Storage::open(&database).await?,
+        "correct-token",
+    ));
+    let response = reopened
+        .oneshot(
+            Request::get("/api/v1/skills")
+                .header("authorization", "Bearer correct-token")
+                .body(Body::empty())?,
+        )
+        .await?;
+    let skills = response_json::<Vec<SkillSummary>>(response).await?;
+    assert_eq!(skills.len(), 1);
+    assert_eq!(skills[0].version, 2);
+    assert!(
+        skills[0]
+            .definition
+            .instructions
+            .contains("concise findings")
     );
     Ok(())
 }

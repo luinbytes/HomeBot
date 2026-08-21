@@ -1158,6 +1158,16 @@ pub struct SkillAssignmentRequest {
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
+pub struct SkillTestSummary {
+    pub skill_id: Uuid,
+    pub skill_version_id: Uuid,
+    pub version: u32,
+    pub prompt_preview: String,
+    pub capability_policy_enforced: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct SkillBundle {
     pub format_version: u16,
     pub name: String,
@@ -1585,6 +1595,7 @@ pub struct ProtocolV1Schema {
     pub import_skill_request: ImportSkillRequest,
     pub skill_bundle: SkillBundle,
     pub skill: SkillSummary,
+    pub skill_test: SkillTestSummary,
     pub applied_skill: AppliedSkillSummary,
     pub create_repository_workspace_request: CreateRepositoryWorkspaceRequest,
     pub attach_chat_workspace_request: AttachChatWorkspaceRequest,

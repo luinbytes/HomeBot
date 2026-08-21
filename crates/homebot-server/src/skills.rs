@@ -6,11 +6,14 @@ use axum::{
     http::StatusCode,
 };
 use homebot_protocol::{
-    CreateSkillRequest, DuplicateSkillRequest, ImportSkillRequest, ServerEventBody,
-    SkillAssignmentRequest, SkillBundle, SkillImportConflictPolicy, SkillSummary,
-    UpdateSkillRequest,
+    BotMutationRequest, CreateSkillRequest, DuplicateSkillRequest, ImportSkillRequest,
+    ServerEventBody, SkillAssignmentRequest, SkillBundle, SkillImportConflictPolicy, SkillSummary,
+    SkillTestSummary, UpdateSkillRequest,
 };
+use homebot_routines::{RecordedAction, RecordedActor, RoutineStep};
+use homebot_skills::{AppliedSkill, SkillContext, SkillDefinition};
 use homebot_storage::{IdempotencyClaim, SkillRecord};
+use std::fmt::Write;
 use uuid::Uuid;
 
 use crate::{
@@ -78,6 +81,148 @@ pub(super) async fn create(
     let skill = summary(&record);
     publish(&state, skill.clone()).await?;
     Ok((StatusCode::CREATED, Json(skill)))
+}
+
+pub(super) async fn finish_recording(
+    State(state): State<AppState>,
+    Path(recording_id): Path<Uuid>,
+    Json(request): Json<BotMutationRequest>,
+) -> Result<(StatusCode, Json<SkillSummary>), ApiError> {
+    let replayed = matches!(
+        claim(
+            &state,
+            request.idempotency_key,
+            &format!("finish_skill_recording:{recording_id}"),
+            &request,
+        )
+        .await?,
+        IdempotencyClaim::Replayed { .. }
+    );
+    if replayed {
+        return Ok((
+            StatusCode::OK,
+            Json(summary(
+                &state
+                    .storage
+                    .skill(state.owner_id, request.idempotency_key)
+                    .await?,
+            )),
+        ));
+    }
+    let recording = state
+        .storage
+        .routine_recording(state.owner_id, recording_id)
+        .await?;
+    let definition = definition_from_demonstration(&recording.actions)?;
+    let now = unix_time_ms();
+    let record = SkillRecord {
+        id: request.idempotency_key,
+        owner_id: state.owner_id,
+        name: visible(&recording.name, 80, "Skill name")?,
+        description: optional_visible(&recording.description, 500, "Skill description")?,
+        active_version_id: Uuid::now_v7(),
+        version: 1,
+        definition,
+        bot_ids: Vec::new(),
+        created_at_ms: now,
+        updated_at_ms: now,
+    };
+    homebot_skills::validate(&record.definition)
+        .map_err(|error| ApiError::validation(&error.to_string()))?;
+    state.storage.create_skill(&record).await?;
+    let _ = state
+        .storage
+        .close_routine_recording(state.owner_id, recording_id, true, now)
+        .await?;
+    let skill = summary(&record);
+    publish(&state, skill.clone()).await?;
+    Ok((StatusCode::CREATED, Json(skill)))
+}
+
+pub(super) async fn test(
+    State(state): State<AppState>,
+    Path(skill_id): Path<Uuid>,
+    Json(request): Json<BotMutationRequest>,
+) -> Result<Json<SkillTestSummary>, ApiError> {
+    let _ = claim(
+        &state,
+        request.idempotency_key,
+        &format!("test_skill:{skill_id}"),
+        &request,
+    )
+    .await?;
+    let record = state.storage.skill(state.owner_id, skill_id).await?;
+    let prompt_preview = homebot_skills::assemble(&[AppliedSkill {
+        skill_id: record.id,
+        version_id: record.active_version_id,
+        name: record.name,
+        version: record.version,
+        definition: record.definition,
+    }])
+    .map_err(|error| ApiError::validation(&error.to_string()))?;
+    Ok(Json(SkillTestSummary {
+        skill_id: record.id,
+        skill_version_id: record.active_version_id,
+        version: record.version,
+        prompt_preview,
+        capability_policy_enforced: true,
+    }))
+}
+
+fn definition_from_demonstration(actions: &[RecordedAction]) -> Result<SkillDefinition, ApiError> {
+    if actions.is_empty() {
+        return Err(ApiError::validation(
+            "A demonstrated Skill requires at least one recorded action",
+        ));
+    }
+    let mut instructions = String::from("Follow this demonstrated workflow in order:\n");
+    for (index, action) in actions.iter().enumerate() {
+        let actor = match action.actor {
+            RecordedActor::User => "User",
+            RecordedActor::Bot => "Bot",
+        };
+        let step = match &action.step {
+            RoutineStep::BotPrompt {
+                bot_id,
+                prompt_template,
+                requires_approval,
+            } => format!(
+                "ask Bot {bot_id}: {prompt_template}{}",
+                if *requires_approval {
+                    " (approval is required)"
+                } else {
+                    ""
+                }
+            ),
+            RoutineStep::PluginTool {
+                plugin_id,
+                tool_name,
+                arguments,
+                requires_approval,
+            } => format!(
+                "request plugin {plugin_id} tool {tool_name} with arguments {arguments}{}",
+                if *requires_approval {
+                    " (approval is required)"
+                } else {
+                    ""
+                }
+            ),
+            RoutineStep::RecordOutput {
+                output_key,
+                value_template,
+            } => format!("record {output_key} as {value_template}"),
+        };
+        let _ = writeln!(instructions, "{}. [{actor}] {step}", index + 1);
+    }
+    let recorded = serde_json::to_string_pretty(actions).map_err(|_| ApiError::internal())?;
+    Ok(SkillDefinition {
+        instructions,
+        context: vec![SkillContext {
+            label: "Recorded demonstration".to_owned(),
+            content: recorded,
+        }],
+        tools: Vec::new(),
+    })
 }
 
 pub(super) async fn update(

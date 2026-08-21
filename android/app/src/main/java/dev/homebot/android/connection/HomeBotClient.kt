@@ -52,6 +52,7 @@ import dev.homebot.protocol.RunRoutineRequest
 import dev.homebot.protocol.SecretSummary
 import dev.homebot.protocol.SkillAssignmentRequest
 import dev.homebot.protocol.SkillSummary
+import dev.homebot.protocol.SkillTestSummary
 import dev.homebot.protocol.CreateRoutineTriggerRequest
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -377,6 +378,26 @@ class HomeBotClient(
             request,
             SkillAssignmentRequest.serializer(),
             SkillSummary.serializer(),
+        )
+    }
+
+    suspend fun finishRecordingAsSkill(recordingId: String): Result<SkillSummary> = authenticated {
+        val request = mutation()
+        post(
+            "api/v1/routine-recordings/$recordingId/finish-skill",
+            request,
+            BotMutationRequest.serializer(),
+            SkillSummary.serializer(),
+        )
+    }
+
+    suspend fun testSkill(skillId: String): Result<SkillTestSummary> = authenticated {
+        val request = mutation()
+        post(
+            "api/v1/skills/$skillId/test",
+            request,
+            BotMutationRequest.serializer(),
+            SkillTestSummary.serializer(),
         )
     }
 

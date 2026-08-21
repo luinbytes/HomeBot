@@ -14,6 +14,24 @@ CI uses GitHub's current `macos-15-intel` label for x86_64 compilation and `maco
 
 Use Rust stable from `rust-toolchain.toml`. Run `cargo fmt --all --check`, `cargo clippy --workspace --all-targets --all-features -- -D warnings`, and `cargo test --workspace --all-features` before committing.
 
+## Android
+
+Install JDK 17 and Android SDK 36, then run the Android gate from the repository root:
+
+```sh
+cd android
+./gradlew lintDebug testDebugUnitTest assembleDebug
+```
+
+The build uses the checked-in Gradle wrapper. Do not hand-edit `android/protocol`; update the Rust protocol exporter and regenerate it with:
+
+```sh
+cargo run -p homebot-protocol --example export_android
+cargo run -p homebot-protocol --example export_android -- --check
+```
+
+CI repeats lint, unit tests, schema drift verification, and debug APK assembly. Android tests use a deterministic MockWebServer rather than a developer's HomeBot instance.
+
 Git/worktree fixtures use a real installed Git binary and temporary repositories. They must prove preservation of dirty and untracked primary-tree data as well as successful cleanup; never replace these postcondition checks with mocked command strings.
 
 Fixtures belong under `tests/fixtures` or the owning crate. Persistent changes require migration-upgrade fixtures. Protocol changes require schema and golden fixture updates. Visible client changes require deterministic screenshots. Security boundaries require a negative test that proves denial at the server.

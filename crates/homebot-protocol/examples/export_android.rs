@@ -10,6 +10,12 @@ import kotlinx.serialization.json.JsonElement
 const val PROTOCOL_VERSION: Int = 1
 
 @Serializable
+data class ProtocolRange(val minimum: Int, val maximum: Int)
+
+@Serializable
+enum class ResumeDisposition { @SerialName("replayed") REPLAYED, @SerialName("snapshot_required") SNAPSHOT_REQUIRED }
+
+@Serializable
 sealed interface ClientMessage {
     @Serializable @SerialName("hello")
     data class Hello(val protocol_version: Int, val client_version: String, val device_session: String, val resume_after: Long? = null) : ClientMessage
@@ -48,6 +54,16 @@ data class ErrorEnvelope(
     val request_id: String? = null,
     val retry_after_ms: Long? = null,
     val details: JsonElement? = null,
+)
+
+@Serializable
+data class Snapshot(
+    val bots: List<BotSummary> = emptyList(),
+    val chats: List<ChatSummary> = emptyList(),
+    val group_chats: List<GroupChatSummary> = emptyList(),
+    val skills: List<SkillSummary> = emptyList(),
+    val repository_workspaces: List<RepositoryWorkspaceSummary> = emptyList(),
+    val chat_workspaces: List<ChatWorkspaceSummary> = emptyList(),
 )
 
 @Serializable

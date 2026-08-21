@@ -1,0 +1,3 @@
+-keepattributes *Annotation*
+-keep,includedescriptorclasses class dev.homebot.protocol.**$$serializer { *; }
+-keepclassmembers class dev.homebot.protocol.** { *** Companion; }

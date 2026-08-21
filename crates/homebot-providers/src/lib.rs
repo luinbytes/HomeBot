@@ -3,6 +3,7 @@
 mod claude;
 mod codex;
 mod contracts;
+mod discovery;
 mod generic_process;
 mod openai_compatible;
 mod runtime;

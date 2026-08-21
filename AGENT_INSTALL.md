@@ -104,7 +104,7 @@ Expected JSON shape:
 
 Also verify the process remains alive after the request and the listener is loopback-only using `lsof -nP -iTCP:7123 -sTCP:LISTEN` on macOS or `ss -ltnp '( sport = :7123 )'` on Linux. A command exit code without these postconditions is not success.
 
-SQLite migrations and the authenticated Bot/chat transport are implemented and covered by tests. The standalone server still lacks a supported bootstrap command for creating its first device token/Bot, and real provider health/message verification depends on installed authenticated provider CLIs or a configured BYOK profile. Pairing is not implemented. Therefore an agent MUST report those end-to-end installation checks as unavailable and MUST NOT claim a functional v1 installation.
+SQLite migrations, authenticated Bot/chat transport, secure pairing, and the native Android client are implemented and covered by tests. The standalone server still lacks a supported release bootstrap command for creating its first owner credential, and real provider health/message verification depends on installed authenticated provider CLIs or a configured BYOK profile. Therefore an agent MUST report unavailable end-to-end installation checks accurately and MUST NOT claim a functional v1 installation.
 
 ## 6. Provider checks
 

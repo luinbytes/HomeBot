@@ -6,11 +6,11 @@ This file is operational state for coding agents. It is not user-facing product 
 
 ## Current state
 
-- Current milestone: M5, Android and secure remote parity. M0 through M4 are verified complete.
-- Current Linear issue: 6C7-64, Android notifications, background reconnect and deep links (`In Progress`).
-- Current Git branch: `main`.
-- Latest public and verified implementation commit: `f834e377df408081e829c2d521091bc8bd590b22` (6C7-63 on public `main`).
-- Latest verified GitHub Actions run: `32448835788`, all ten jobs passed, including Android lint, seven deterministic tests, debug APK assembly and artifact upload.
+- Current milestone: M6, packaging, hardening and the v1 parity gate. M0 through M5 are verified complete.
+- Current Linear issue: 6C7-66, macOS Intel and Apple Silicon packaging (`In Progress`).
+- Current Git branch: `feat/6c7-66-macos-packaging`.
+- Latest public and verified implementation commit: `5adeeab99abaa54b83717e79b2741b0a2d38803d` (6C7-64 on public `main`).
+- Latest verified GitHub Actions run: `32449482551`, all ten jobs passed, including Android lint/tests/APK, Rust quality, dependency gates, both macOS builds, Linux and visual goldens.
 - Public repository: `https://github.com/luinbytes/HomeBot`.
 - Required commit identity: `luinbytes <42706009+luinbytes@users.noreply.github.com>`.
 
@@ -58,19 +58,22 @@ Current blockers:
 - 6C7-61, real Gradle/Compose Android application, authenticated HTTP/WebSocket client, Keystore session storage, DataStore preferences, snapshot/replay recovery, deterministic fake-server tests and green Android CI/APK artifact.
 - 6C7-62, native server-backed Bot roster/lifecycle, direct and group chat timelines, streamed refresh, attachments, approvals, activity, queue/steering/stop/retry, unread state, mentions/handoff and coding checkpoint/VCS surfaces.
 - 6C7-63, Android routine/run/trigger controls, Skills assignment, plugin/MCP controls, provider/endpoint settings, opaque secret references and paired-device self management with owner administration still denied.
-- Most recent completed issue: 6C7-63.
+- 6C7-64, event-driven Android Bot/approval/routine/error notifications, exact deep links and connectivity-driven reconnect without permanent polling.
+- M5 epic 6C7-59: native Android and secure remote parity verified complete.
+- Most recent completed issue: 6C7-64.
 - Focused repository presentation pass: README badges and real desktop previews added from checked-in visual goldens; tracked-file hygiene audited with no junk removals required and `.gitignore` expanded for common Rust, Android, editor, environment, Python, Node, log and temporary outputs.
 
 ## Immediate next work
 
-1. Implement 6C7-64: event-driven notifications for Bot completion, approvals, routine results and errors with exact Bot/chat/activity deep links.
-2. Integrate network-change reconnect within Android lifecycle/background limits without permanent polling or an unjustified foreground service.
-3. Verify Android lint/tests/APK and the full remote gate, close M5 only after its end-to-end postconditions pass, then continue immediately to M6.
+1. Finish 6C7-66's reproducible Intel/Apple Silicon bundle pipeline and verify its remote CI artifacts.
+2. Complete Developer ID signing, notarisation and clean-machine first-run checks when the required Apple credentials/machines are available; keep those facts explicit if unavailable.
+3. Continue immediately through 6C7-67 packaging and the remaining M6 release gates without treating a signing blocker as a blocker for unrelated work.
 
 ## Verification state
 
 Verified at the latest remote baseline:
 
+- GitHub Actions run `32449482551` passed all ten jobs for public 6C7-64 commit `5adeeab9`. Android tests prove authoritative event-to-notification mapping, exact deep links, duplicate-safe sequence handling and connectivity-triggered reconnect without permanent polling.
 - GitHub Actions run `32448835788` passed all ten jobs for public 6C7-63 commit `f834e37`. Android lint, seven deterministic tests, debug APK assembly/artifact upload, Rust quality, dependency audit/policy, Linux and both macOS builds, and all visual-golden platforms passed.
 - Paired-device self inspection/revocation is server enforced while paired credentials remain forbidden from owner-wide session administration. The attachment claim path reserves the SQLite writer before its idempotency snapshot; the exact integration test passes five consecutive runs.
 
@@ -112,11 +115,12 @@ Verified locally at the current baseline:
 - 6C7-58's complete local gate passes: strict all-target clippy, every workspace test suite, all 15 visual fixtures, schema drift, generated Android binding drift and cargo-deny advisories/bans/licenses/sources.
 - Its server fixtures prove typed steering priority/FIFO follow-ups, duplicate replay, cancel-order stability, restart durability, three automatic queued turns, default/plan/default capability routing, unsupported-mode denial, compaction/reset concurrency exclusion, transcript preservation, fresh provider-context isolation and restart recovery. The 32-test server suite passed three consecutive 16-thread stress runs after the SQLite write-reservation fix.
 
-6C7-73 and reopened M2 epic 6C7-41 completion evidence is recorded in Linear; both are Done. M3 epic 6C7-48, M4 issues 6C7-55 through 6C7-58, M4 epic 6C7-54 and M5 children 6C7-60 and 6C7-61 are verified Done. M5 epic 6C7-59 and 6C7-62 are In Progress.
+6C7-73 and reopened M2 epic 6C7-41 completion evidence is recorded in Linear; both are Done. M3 epic 6C7-48, M4 issues 6C7-55 through 6C7-58, M4 epic 6C7-54, M5 children 6C7-60 through 6C7-64, and M5 epic 6C7-59 are verified Done. M6 epic 6C7-65 and macOS packaging issue 6C7-66 are In Progress.
 
 ## Known failures and incomplete implementation
 
-- 6C7-64 Android background/notification parity, packaging, and release artifacts remain incomplete roadmap work.
+- macOS Developer ID signing/notarisation credentials and clean Intel/Apple Silicon test machines are unavailable in this environment. CI can verify reproducible ad-hoc-signed bundles, but those checks do not satisfy final release signing acceptance.
+- Arch/Omarchy packaging, updater/migration recovery, release hardening, performance/accessibility, and final parity/release artifacts remain incomplete roadmap work.
 - Real authenticated Codex/Claude round trips are unavailable in this environment. OpenAI-compatible and CDP behavior use protocol-faithful local fixtures.
 - No release artifact exists. Do not describe HomeBot as installable or v1-ready.
 

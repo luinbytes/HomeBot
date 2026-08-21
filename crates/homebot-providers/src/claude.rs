@@ -469,9 +469,16 @@ fn safe_claude_environment() -> BTreeMap<OsString, OsString> {
         "SSL_CERT_FILE",
         "SSL_CERT_DIR",
     ];
-    KEYS.iter()
+    let mut environment = KEYS
+        .iter()
         .filter_map(|key| std::env::var_os(key).map(|value| (OsString::from(key), value)))
-        .collect()
+        .collect::<BTreeMap<_, _>>();
+    if let Some(path) =
+        crate::discovery::executable_search_path(environment.get(&OsString::from("PATH")))
+    {
+        environment.insert(OsString::from("PATH"), path);
+    }
+    environment
 }
 
 fn reject_attachments(attachments: &[crate::ProviderAttachment]) -> Result<(), ProviderError> {

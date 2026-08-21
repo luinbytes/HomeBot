@@ -243,6 +243,10 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/chats/{chat_id}/stop", post(chats::stop))
         .route("/api/v1/chats/{chat_id}/read", post(chats::mark_read))
         .route(
+            "/api/v1/messages/{message_id}/reactions",
+            post(chats::add_reaction).delete(chats::remove_reaction),
+        )
+        .route(
             "/api/v1/chats/{chat_id}/working-context",
             get(working_context::get).post(working_context::compact),
         )

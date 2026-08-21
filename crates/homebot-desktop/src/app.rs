@@ -751,7 +751,8 @@ impl HomeBotApp {
         egui::ScrollArea::vertical()
             .stick_to_bottom(self.timeline.scroll.at_bottom)
             .show(ui, |ui| {
-                for item in &self.timeline.messages {
+                let messages = self.timeline.messages.clone();
+                for item in &messages {
                     let text = item
                         .parts
                         .iter()
@@ -767,6 +768,25 @@ impl HomeBotApp {
                     let identity = (item.author == homebot_protocol::MessageAuthor::Bot)
                         .then(|| identity(self.theme, bot));
                     message(ui, self.theme, identity, &text);
+                    ui.horizontal(|ui| {
+                        for reaction in &item.reactions {
+                            if ui
+                                .button(format!("{} {}", reaction.emoji, reaction.count))
+                                .clicked()
+                            {
+                                self.timeline.set_reaction(
+                                    item.id,
+                                    reaction.emoji.clone(),
+                                    !reaction.reacted_by_user,
+                                );
+                            }
+                        }
+                        if !item.reactions.iter().any(|reaction| reaction.emoji == "👍")
+                            && ui.small_button("React 👍").clicked()
+                        {
+                            self.timeline.set_reaction(item.id, "👍", true);
+                        }
+                    });
                     ui.add_space(self.theme.spacing.md);
                 }
                 for item in &self.timeline.activities {

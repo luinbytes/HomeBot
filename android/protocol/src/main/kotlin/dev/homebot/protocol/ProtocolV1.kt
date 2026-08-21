@@ -209,10 +209,17 @@ data class MessageSummary(
     val mentioned_bot_ids: List<String>,
     val shared_context_message_ids: List<String>,
     val applied_skills: List<AppliedSkillSummary> = emptyList(),
+    val reactions: List<ReactionSummary> = emptyList(),
     val created_at_ms: Long,
     val completed_at_ms: Long? = null,
     val error: ErrorEnvelope? = null,
 )
+
+@Serializable
+data class ReactionSummary(val emoji: String, val count: Int, val reacted_by_user: Boolean)
+
+@Serializable
+data class ReactionMutationRequest(val request_id: String, val idempotency_key: String, val emoji: String)
 
 @Serializable
 data class ActivityPresentation(val risk: String, val detail: JsonElement, val copy_text: String? = null, val open_artifact_id: String? = null)

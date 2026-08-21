@@ -15,7 +15,8 @@ use homebot_protocol::{
     ApprovalDecisionRequest, ApprovalStatus, ApprovalSummary, Attachment, BotMutationRequest,
     ChatSummary, ChatTimelineResponse, CreateDirectChatRequest, CreateDirectChatResponse,
     MessageAuthor, MessagePart, MessageStatus, MessageSummary, QueuedPromptSummary,
-    SendMessageRequest, SendMessageResponse, ServerEventBody,
+    ReactionMutationRequest, ReactionSummary, SendMessageRequest, SendMessageResponse,
+    ServerEventBody,
 };
 use homebot_skills::AppliedSkill;
 use homebot_storage::{IdempotencyClaim, QueuedPromptInput};
@@ -442,6 +443,72 @@ pub(super) async fn retry(
     )))
 }
 
+async fn set_reaction(
+    state: &AppState,
+    message_id: Uuid,
+    request: &ReactionMutationRequest,
+    active: bool,
+) -> Result<Json<MessageSummary>, ApiError> {
+    let replayed = matches!(
+        claim(
+            state,
+            request.idempotency_key,
+            &format!(
+                "{}_message_reaction:{message_id}:{}",
+                if active { "add" } else { "remove" },
+                request.emoji
+            ),
+            request,
+        )
+        .await?,
+        IdempotencyClaim::Replayed { .. }
+    );
+    if !replayed {
+        state
+            .storage
+            .set_message_reaction(
+                state.owner_id,
+                message_id,
+                &request.emoji,
+                active,
+                unix_time_ms(),
+            )
+            .await?;
+    }
+    let message = message_summary(
+        state,
+        state.storage.message(state.owner_id, message_id).await?,
+    )
+    .await?;
+    if !replayed {
+        publish(
+            state,
+            "message_changed",
+            ServerEventBody::MessageChanged {
+                message: message.clone(),
+            },
+        )
+        .await?;
+    }
+    Ok(Json(message))
+}
+
+pub(super) async fn add_reaction(
+    State(state): State<AppState>,
+    Path(message_id): Path<Uuid>,
+    Json(request): Json<ReactionMutationRequest>,
+) -> Result<Json<MessageSummary>, ApiError> {
+    set_reaction(&state, message_id, &request, true).await
+}
+
+pub(super) async fn remove_reaction(
+    State(state): State<AppState>,
+    Path(message_id): Path<Uuid>,
+    Json(request): Json<ReactionMutationRequest>,
+) -> Result<Json<MessageSummary>, ApiError> {
+    set_reaction(&state, message_id, &request, false).await
+}
+
 pub(super) fn prompt_with_skills(
     content: &str,
     skills: &[AppliedSkill],
@@ -538,6 +605,17 @@ pub(super) async fn message_summary(
             version: skill.version,
         })
         .collect();
+    let reactions = state
+        .storage
+        .message_reactions(state.owner_id, message.id)
+        .await?
+        .into_iter()
+        .map(|reaction| ReactionSummary {
+            emoji: reaction.emoji,
+            count: reaction.count,
+            reacted_by_user: reaction.reacted_by_user,
+        })
+        .collect();
     let mut parts = Vec::with_capacity(message.parts.len());
     for part in message.parts {
         parts.push(match part {
@@ -588,6 +666,7 @@ pub(super) async fn message_summary(
         mentioned_bot_ids: message.mentioned_bot_ids,
         shared_context_message_ids: message.shared_context_message_ids,
         applied_skills,
+        reactions,
         created_at_ms: message.created_at_ms,
         completed_at_ms: message.completed_at_ms,
         error: message

@@ -18,11 +18,12 @@ use homebot_protocol::{
     CreatePullRequestRequest, CreateRepositoryWorkspaceRequest, DeleteBotRequest,
     DetachChatWorkspaceRequest, DeviceSessionSummary, ErrorEnvelope, FinalizeAttachmentRequest,
     MIN_COMPATIBLE_PROTOCOL_VERSION, MessageMutationRequest, PROTOCOL_VERSION, PairingOffer,
-    ProtocolRange, PullRequestMetadata, PullRequestMutationResponse, RepositoryWorkspaceSummary,
-    RestoreCheckpointRequest, RevokeDeviceSessionRequest, SendMessageRequest, ServerEvent,
-    ServerEventBody, SetInteractionModeRequest, Snapshot, UpdateBotRequest, VcsCommitRequest,
-    VcsCommitResult, VcsCreateBranchRequest, VcsPushRequest, VcsRemoteMutationResponse, VcsStatus,
-    WorkingContextSummary, WorkingTreeDiffResponse, WorkspaceBranchesResponse,
+    ProtocolRange, PullRequestMetadata, PullRequestMutationResponse, ReactionMutationRequest,
+    RepositoryWorkspaceSummary, RestoreCheckpointRequest, RevokeDeviceSessionRequest,
+    SendMessageRequest, ServerEvent, ServerEventBody, SetInteractionModeRequest, Snapshot,
+    UpdateBotRequest, VcsCommitRequest, VcsCommitResult, VcsCreateBranchRequest, VcsPushRequest,
+    VcsRemoteMutationResponse, VcsStatus, WorkingContextSummary, WorkingTreeDiffResponse,
+    WorkspaceBranchesResponse,
 };
 use reqwest::{Client, Method, StatusCode};
 use serde::Deserialize;

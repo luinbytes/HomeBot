@@ -28,7 +28,7 @@ use std::{
 };
 use uuid::Uuid;
 
-pub const SCHEMA_VERSION: u32 = 18;
+pub const SCHEMA_VERSION: u32 = 19;
 static MIGRATOR: std::sync::LazyLock<sqlx::migrate::Migrator> = std::sync::LazyLock::new(|| {
     use sqlx::migrate::{Migration, MigrationType, Migrator};
     use std::borrow::Cow;
@@ -111,6 +111,11 @@ static MIGRATOR: std::sync::LazyLock<sqlx::migrate::Migrator> = std::sync::LazyL
             18,
             "bot parity",
             include_str!("../migrations/0018_bot_parity.sql"),
+        ),
+        (
+            19,
+            "message reactions",
+            include_str!("../migrations/0019_message_reactions.sql"),
         ),
     ]
     .into_iter()
@@ -541,6 +546,13 @@ pub struct PromotedQueuedPrompt {
     pub prompt: QueuedPrompt,
     pub message: ChatMessage,
     pub applied_skills: Vec<AppliedSkill>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MessageReactionRecord {
+    pub emoji: String,
+    pub count: u32,
+    pub reacted_by_user: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -3251,6 +3263,71 @@ impl Storage {
                         .map_err(|_| StorageError::Integrity("invalid Skill version".to_owned()))?,
                     definition: serde_json::from_str(&definition)
                         .map_err(|error| StorageError::Serialization(error.to_string()))?,
+                })
+            })
+            .collect()
+    }
+
+    /// Adds or removes the owner's reaction and returns the reconciled message totals.
+    ///
+    /// # Errors
+    /// Returns validation, ownership, integrity, or database errors.
+    pub async fn set_message_reaction(
+        &self,
+        owner_id: Uuid,
+        message_id: Uuid,
+        emoji: &str,
+        active: bool,
+        now_ms: i64,
+    ) -> Result<Vec<MessageReactionRecord>, StorageError> {
+        let emoji = emoji.trim();
+        if emoji.is_empty() || emoji.chars().count() > 16 || emoji.chars().any(char::is_control) {
+            return Err(StorageError::Integrity(
+                "reaction must contain 1 to 16 visible characters".to_owned(),
+            ));
+        }
+        let owned: i64 = sqlx::query_scalar("SELECT count(*) FROM messages m JOIN chats c ON c.id = m.chat_id WHERE c.owner_id = ? AND m.id = ?")
+            .bind(owner_id.to_string()).bind(message_id.to_string()).fetch_one(&self.pool).await?;
+        if owned == 0 {
+            return Err(StorageError::MessageNotFound);
+        }
+        if active {
+            sqlx::query("INSERT INTO message_reactions (owner_id, message_id, emoji, created_at_ms) VALUES (?, ?, ?, ?) ON CONFLICT(owner_id, message_id, emoji) DO NOTHING")
+                .bind(owner_id.to_string()).bind(message_id.to_string()).bind(emoji).bind(now_ms)
+                .execute(&self.pool).await?;
+        } else {
+            sqlx::query(
+                "DELETE FROM message_reactions WHERE owner_id = ? AND message_id = ? AND emoji = ?",
+            )
+            .bind(owner_id.to_string())
+            .bind(message_id.to_string())
+            .bind(emoji)
+            .execute(&self.pool)
+            .await?;
+        }
+        self.message_reactions(owner_id, message_id).await
+    }
+
+    /// Returns deterministic reaction totals for an owner-scoped message.
+    ///
+    /// # Errors
+    /// Returns ownership, integrity, or database errors.
+    pub async fn message_reactions(
+        &self,
+        owner_id: Uuid,
+        message_id: Uuid,
+    ) -> Result<Vec<MessageReactionRecord>, StorageError> {
+        let rows = sqlx::query("SELECT r.emoji, count(*) AS reaction_count, max(r.owner_id = ?) AS reacted_by_user FROM message_reactions r JOIN messages m ON m.id = r.message_id JOIN chats c ON c.id = m.chat_id WHERE c.owner_id = ? AND r.message_id = ? GROUP BY r.emoji ORDER BY min(r.created_at_ms), r.emoji")
+            .bind(owner_id.to_string()).bind(owner_id.to_string()).bind(message_id.to_string())
+            .fetch_all(&self.pool).await?;
+        rows.iter()
+            .map(|row| {
+                Ok(MessageReactionRecord {
+                    emoji: row.try_get("emoji")?,
+                    count: u32::try_from(row.try_get::<i64, _>("reaction_count")?).map_err(
+                        |_| StorageError::Integrity("invalid reaction count".to_owned()),
+                    )?,
+                    reacted_by_user: row.try_get("reacted_by_user")?,
                 })
             })
             .collect()
@@ -7342,6 +7419,16 @@ mod tests {
             )
             .await?;
         assert_eq!(second.reply_to_message_id, Some(first_id));
+        assert_eq!(
+            storage
+                .set_message_reaction(owner, first_id, "👍", true, 6)
+                .await?,
+            vec![MessageReactionRecord {
+                emoji: "👍".to_owned(),
+                count: 1,
+                reacted_by_user: true
+            }]
+        );
         storage.set_chat_running(owner, chat_id, true, 6).await?;
         let queued = storage
             .enqueue_prompt(
@@ -7418,6 +7505,13 @@ mod tests {
         assert_eq!(reopened.queued_prompts(owner, chat_id).await?.len(), 1);
         assert_eq!(reopened.chat_activities(owner, chat_id).await?.len(), 1);
         assert_eq!(reopened.chat_approvals(owner, chat_id).await?.len(), 1);
+        assert_eq!(reopened.message_reactions(owner, first_id).await?.len(), 1);
+        assert!(
+            reopened
+                .set_message_reaction(owner, first_id, "👍", false, 12)
+                .await?
+                .is_empty()
+        );
         assert!(matches!(
             &messages[0].parts[0],
             MessagePart::Text { text, .. } if text == "Hello"

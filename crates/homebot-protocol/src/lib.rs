@@ -597,9 +597,19 @@ pub struct MessageSummary {
     pub shared_context_message_ids: Vec<Uuid>,
     #[serde(default)]
     pub applied_skills: Vec<AppliedSkillSummary>,
+    #[serde(default)]
+    pub reactions: Vec<ReactionSummary>,
     pub created_at_ms: i64,
     pub completed_at_ms: Option<i64>,
     pub error: Option<ErrorEnvelope>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReactionSummary {
+    pub emoji: String,
+    pub count: u32,
+    pub reacted_by_user: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
@@ -897,6 +907,14 @@ pub enum SendMessageResponse {
 pub struct MessageMutationRequest {
     pub request_id: Uuid,
     pub idempotency_key: Uuid,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReactionMutationRequest {
+    pub request_id: Uuid,
+    pub idempotency_key: Uuid,
+    pub emoji: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]

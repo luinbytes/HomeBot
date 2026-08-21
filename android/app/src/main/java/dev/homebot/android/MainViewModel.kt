@@ -217,10 +217,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         refreshSelection()
     }
 
-    fun send(content: String, steering: Boolean = false, mentions: List<String> = emptyList()) = perform {
+    fun send(content: String, steering: Boolean = false, mentions: List<String> = emptyList(), replyToMessageId: String? = null) = perform {
         when (val destination = mutableProduct.value.destination) {
-            is ProductDestination.DirectChat -> homeBot.client.sendMessage(destination.chatId, content, steering).getOrThrow()
-            is ProductDestination.GroupChat -> homeBot.client.sendGroupMessage(destination.chatId, content, mentions).getOrThrow()
+            is ProductDestination.DirectChat -> homeBot.client.sendMessage(destination.chatId, content, steering, replyToMessageId = replyToMessageId).getOrThrow()
+            is ProductDestination.GroupChat -> homeBot.client.sendGroupMessage(destination.chatId, content, mentions, replyToMessageId).getOrThrow()
             else -> error("Open a chat before sending a message")
         }
         refreshSelection(showLoading = false)

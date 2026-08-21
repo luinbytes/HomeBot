@@ -164,6 +164,7 @@ pub(super) async fn send_message(
                 &request.content,
                 &request.mentioned_bot_ids,
                 &request.shared_context_message_ids,
+                request.reply_to_message_id,
                 unix_time_ms(),
             )
             .await?

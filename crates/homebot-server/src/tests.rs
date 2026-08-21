@@ -2571,6 +2571,7 @@ async fn group_chat_contract_coordinates_three_bots_with_bounded_handoff()
                 content: "Nova and Patch, investigate together".to_owned(),
                 mentioned_bot_ids: vec![bot_ids[0], bot_ids[1]],
                 shared_context_message_ids: Vec::new(),
+                reply_to_message_id: None,
             },
         ))
         .await?;
@@ -2587,6 +2588,28 @@ async fn group_chat_contract_coordinates_three_bots_with_bounded_handoff()
             unix_time_ms() + 1,
         )
         .await?;
+    let reply_message = Uuid::now_v7();
+    let response = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            &format!("/api/v1/groups/{chat_id}/messages"),
+            &SendGroupMessageRequest {
+                request_id: Uuid::now_v7(),
+                idempotency_key: reply_message,
+                content: "Following up in this thread".to_owned(),
+                mentioned_bot_ids: Vec::new(),
+                shared_context_message_ids: Vec::new(),
+                reply_to_message_id: Some(first_message),
+            },
+        ))
+        .await?;
+    assert_eq!(
+        response_json::<homebot_protocol::MessageSummary>(response)
+            .await?
+            .reply_to_message_id,
+        Some(first_message)
+    );
 
     for bot_id in &bot_ids[..2] {
         let response = app
@@ -2680,10 +2703,20 @@ async fn group_chat_contract_coordinates_three_bots_with_bounded_handoff()
         .await?;
     let timeline = response_json::<GroupTimelineResponse>(timeline).await?;
     assert_eq!(timeline.group.ownership_bot_id, bot_ids[2]);
-    assert_eq!(timeline.messages.len(), 2);
+    assert_eq!(timeline.messages.len(), 3);
+    assert!(
+        timeline
+            .messages
+            .iter()
+            .any(|message| message.shared_context_message_ids == vec![first_message])
+    );
     assert_eq!(
-        timeline.messages[1].shared_context_message_ids,
-        vec![first_message]
+        timeline
+            .messages
+            .iter()
+            .find(|message| message.id == reply_message)
+            .and_then(|message| message.reply_to_message_id),
+        Some(first_message)
     );
     assert_eq!(timeline.handoffs.len(), 1);
 

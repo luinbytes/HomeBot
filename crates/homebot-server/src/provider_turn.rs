@@ -3,9 +3,11 @@
 use homebot_domain::chat::{
     ActivityStatus, ApprovalStatus, ChatApproval, DirectChat, ExecutionActivity, MessageStatus,
 };
-use homebot_protocol::{CheckpointPhase, ErrorCode, ErrorEnvelope, ServerEventBody};
+use homebot_protocol::{
+    CheckpointPhase, ErrorCode, ErrorEnvelope, InteractionMode, ServerEventBody,
+};
 use homebot_providers::{
-    ActivityStatus as ProviderActivityStatus, ApprovalDecision, ExecutionMode, ProviderAdapterId,
+    ActivityStatus as ProviderActivityStatus, ApprovalDecision, ProviderAdapterId,
     ProviderAttachment, ProviderError, ProviderErrorCode, ProviderEvent, ProviderRun,
     ResumeRequest, StartRequest,
 };
@@ -19,143 +21,148 @@ use crate::{
 };
 
 #[allow(clippy::too_many_lines)]
-pub(super) async fn start_if_configured(
-    state: &AppState,
-    chat: &DirectChat,
-    prompt: &str,
-    attachment_ids: &[Uuid],
-) -> Result<bool, ApiError> {
-    let Some(route) = state
-        .storage
-        .provider_route_for_bot(state.owner_id, chat.bot_id)
-        .await?
-    else {
-        return Ok(false);
-    };
-    let adapter_id =
-        ProviderAdapterId::new(route.adapter_kind).map_err(|_| ApiError::internal())?;
-    let operation_id = Uuid::now_v7();
-    let message_id = Uuid::now_v7();
-    let attachments = provider_attachments(state, attachment_ids).await?;
-    let conversation = state
-        .storage
-        .provider_conversation(chat.bot_id, chat.id, route.profile_id)
-        .await?;
-    let assistant = state
-        .storage
-        .create_bot_message(
-            state.owner_id,
-            chat.id,
-            chat.bot_id,
-            message_id,
-            unix_time_ms(),
+pub(super) fn start_if_configured<'a>(
+    state: &'a AppState,
+    chat: &'a DirectChat,
+    prompt: &'a str,
+    attachment_ids: &'a [Uuid],
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<bool, ApiError>> + Send + 'a>> {
+    Box::pin(async move {
+        let Some(route) = state
+            .storage
+            .provider_route_for_bot(state.owner_id, chat.bot_id)
+            .await?
+        else {
+            return Ok(false);
+        };
+        let adapter_id =
+            ProviderAdapterId::new(route.adapter_kind).map_err(|_| ApiError::internal())?;
+        let operation_id = Uuid::now_v7();
+        let message_id = Uuid::now_v7();
+        let attachments = provider_attachments(state, attachment_ids).await?;
+        let conversation = state
+            .storage
+            .provider_conversation(chat.bot_id, chat.id, route.profile_id)
+            .await?;
+        let assistant = state
+            .storage
+            .create_bot_message(
+                state.owner_id,
+                chat.id,
+                chat.bot_id,
+                message_id,
+                unix_time_ms(),
+            )
+            .await?;
+        publish(
+            state,
+            "message_changed",
+            ServerEventBody::MessageChanged {
+                message: message_summary(state, assistant).await?,
+            },
         )
         .await?;
-    publish(
-        state,
-        "message_changed",
-        ServerEventBody::MessageChanged {
-            message: message_summary(state, assistant).await?,
-        },
-    )
-    .await?;
-    let operation = ChatOperation {
-        operation: operation_id,
-        adapter: adapter_id.clone(),
-        profile: route.profile_id,
-        bot: chat.bot_id,
-        message: message_id,
-    };
-    if crate::checkpoints::capture_for_turn(
-        state,
-        chat.id,
-        message_id,
-        route.profile_id,
-        conversation.clone(),
-        CheckpointPhase::BeforeTurn,
-    )
-    .await
-    .is_err()
-    {
-        finish_failed_start(
+        let operation = ChatOperation {
+            operation: operation_id,
+            adapter: adapter_id.clone(),
+            profile: route.profile_id,
+            bot: chat.bot_id,
+            message: message_id,
+        };
+        if crate::checkpoints::capture_for_turn(
             state,
             chat.id,
-            operation,
-            checkpoint_error("The coding workspace could not be checkpointed before this turn"),
+            message_id,
+            route.profile_id,
+            conversation.clone(),
+            CheckpointPhase::BeforeTurn,
         )
-        .await?;
-        return Ok(true);
-    }
-    let result = if let Some(conversation_id) = conversation {
-        state
-            .provider_runtime
-            .resume(
-                &adapter_id,
-                ResumeRequest {
-                    operation_id,
-                    conversation_id,
-                    prompt: prompt.to_owned(),
-                    model: route.model.clone(),
-                    mode: ExecutionMode::Normal,
-                    attachments,
-                },
+        .await
+        .is_err()
+        {
+            finish_failed_start(
+                state,
+                chat.id,
+                operation,
+                checkpoint_error("The coding workspace could not be checkpointed before this turn"),
             )
-            .await
-    } else {
-        state
-            .provider_runtime
-            .start(
-                &adapter_id,
-                StartRequest {
-                    operation_id,
-                    bot_id: chat.bot_id,
-                    chat_id: chat.id,
-                    prompt: prompt.to_owned(),
-                    model: route.model.clone(),
-                    mode: ExecutionMode::Normal,
-                    attachments,
-                },
-            )
-            .await
-    };
-    let run = match result {
-        Ok(run) => run,
-        Err(error) => {
-            finish_failed_start(state, chat.id, operation, provider_error(&error)).await?;
+            .await?;
             return Ok(true);
         }
-    };
-    state
-        .chat_operations
-        .lock()
-        .await
-        .insert(chat.id, operation);
-    let state = state.clone();
-    let chat_id = chat.id;
-    tokio::spawn(async move {
-        if consume(state.clone(), chat_id, run).await.is_err() {
-            let error = ErrorEnvelope {
-                code: ErrorCode::Internal,
-                message: "The Bot turn ended unexpectedly".to_owned(),
-                retryable: true,
-                request_id: None,
-                retry_after_ms: None,
-                details: None,
-            };
-            let operation = state.chat_operations.lock().await.get(&chat_id).cloned();
-            if let Some(operation) = operation {
-                let _ = finish(
-                    &state,
-                    chat_id,
-                    operation,
-                    MessageStatus::Failed,
-                    Some(error),
+        let mode = crate::working_context::summary(state, chat.id)
+            .await?
+            .map_or(InteractionMode::Default, |context| context.interaction_mode);
+        let result = if let Some(conversation_id) = conversation {
+            state
+                .provider_runtime
+                .resume(
+                    &adapter_id,
+                    ResumeRequest {
+                        operation_id,
+                        conversation_id,
+                        prompt: prompt.to_owned(),
+                        model: route.model.clone(),
+                        mode: crate::working_context::execution_mode(mode),
+                        attachments,
+                    },
                 )
-                .await;
+                .await
+        } else {
+            state
+                .provider_runtime
+                .start(
+                    &adapter_id,
+                    StartRequest {
+                        operation_id,
+                        bot_id: chat.bot_id,
+                        chat_id: chat.id,
+                        prompt: prompt.to_owned(),
+                        model: route.model.clone(),
+                        mode: crate::working_context::execution_mode(mode),
+                        attachments,
+                    },
+                )
+                .await
+        };
+        let run = match result {
+            Ok(run) => run,
+            Err(error) => {
+                finish_failed_start(state, chat.id, operation, provider_error(&error)).await?;
+                return Ok(true);
             }
-        }
-    });
-    Ok(true)
+        };
+        state
+            .chat_operations
+            .lock()
+            .await
+            .insert(chat.id, operation);
+        let state = state.clone();
+        let chat_id = chat.id;
+        tokio::spawn(async move {
+            if consume(state.clone(), chat_id, run).await.is_err() {
+                let error = ErrorEnvelope {
+                    code: ErrorCode::Internal,
+                    message: "The Bot turn ended unexpectedly".to_owned(),
+                    retryable: true,
+                    request_id: None,
+                    retry_after_ms: None,
+                    details: None,
+                };
+                let operation = state.chat_operations.lock().await.get(&chat_id).cloned();
+                if let Some(operation) = operation {
+                    let _ = finish(
+                        &state,
+                        chat_id,
+                        operation,
+                        MessageStatus::Failed,
+                        Some(error),
+                    )
+                    .await;
+                }
+            }
+        });
+        Ok(true)
+    })
 }
 
 pub(super) async fn cancel(state: &AppState, chat_id: Uuid) -> Result<(), ApiError> {
@@ -325,7 +332,26 @@ async fn consume(state: AppState, chat_id: Uuid, mut run: ProviderRun) -> Result
                 )
                 .await?;
             }
-            ProviderEvent::Usage { .. } => {}
+            ProviderEvent::Usage { usage } => {
+                state
+                    .storage
+                    .update_working_context_usage(
+                        state.owner_id,
+                        chat_id,
+                        usage.input_tokens.saturating_add(usage.output_tokens),
+                        None,
+                        unix_time_ms(),
+                    )
+                    .await?;
+                if let Some(context) = crate::working_context::summary(&state, chat_id).await? {
+                    publish(
+                        &state,
+                        "working_context_changed",
+                        ServerEventBody::WorkingContextChanged { context },
+                    )
+                    .await?;
+                }
+            }
             ProviderEvent::Completed => {
                 finish(&state, chat_id, operation, MessageStatus::Completed, None).await?;
                 return Ok(());
@@ -432,7 +458,81 @@ async fn finish(
     }
     state.provider_runtime.finish(operation.operation).await;
     state.chat_operations.lock().await.remove(&chat_id);
+    if status == MessageStatus::Completed {
+        start_next_queued(state, chat_id).await?;
+    }
     Ok(())
+}
+
+async fn start_next_queued(state: &AppState, chat_id: Uuid) -> Result<(), ApiError> {
+    let Some(promoted) = state
+        .storage
+        .promote_next_queued_prompt(state.owner_id, chat_id, unix_time_ms())
+        .await?
+    else {
+        return Ok(());
+    };
+    publish(
+        state,
+        "queued_prompt_removed",
+        ServerEventBody::QueuedPromptRemoved {
+            chat_id,
+            prompt_id: promoted.prompt.id,
+        },
+    )
+    .await?;
+    for prompt in state
+        .storage
+        .queued_prompts(state.owner_id, chat_id)
+        .await?
+    {
+        publish(
+            state,
+            "queued_prompt_changed",
+            ServerEventBody::QueuedPromptChanged {
+                prompt: crate::chats::prompt_summary(prompt),
+            },
+        )
+        .await?;
+    }
+    publish(
+        state,
+        "message_changed",
+        ServerEventBody::MessageChanged {
+            message: message_summary(state, promoted.message).await?,
+        },
+    )
+    .await?;
+    let chat = state
+        .storage
+        .get_direct_chat(state.owner_id, chat_id)
+        .await?;
+    publish(
+        state,
+        "chat_changed",
+        ServerEventBody::ChatChanged {
+            chat: crate::chats::chat_summary(chat.clone()),
+        },
+    )
+    .await?;
+    let prompt =
+        crate::chats::prompt_with_skills(&promoted.prompt.content, &promoted.applied_skills)?;
+    let started = start_if_configured(state, &chat, &prompt, &promoted.prompt.attachment_ids).await;
+    if !matches!(started, Ok(true)) {
+        let chat = state
+            .storage
+            .set_chat_running(state.owner_id, chat_id, false, unix_time_ms())
+            .await?;
+        publish(
+            state,
+            "chat_changed",
+            ServerEventBody::ChatChanged {
+                chat: crate::chats::chat_summary(chat),
+            },
+        )
+        .await?;
+    }
+    started.map(|_| ())
 }
 
 fn checkpoint_error(message: &str) -> ErrorEnvelope {

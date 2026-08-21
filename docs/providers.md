@@ -6,6 +6,8 @@
 
 Every adapter has a stable lowercase ID and returns provider-neutral descriptors, availability/authentication state, models, and a capability set. Starting or resuming work uses a HomeBot-owned operation ID and returns a bounded receiver of normalized events: conversation identity, content deltas, activities, approval requests, usage, compaction, and exactly one terminal completed/cancelled/failed state.
 
+The server persists each chat's `default`/`plan` choice independently from the provider conversation and sends it on later turns only when supported. Native compaction keeps the mapping; reset removes only that mapping. In both cases the HomeBot transcript remains app-owned, visible and excluded from a fresh provider start unless the user explicitly supplies context again. See [working-context.md](working-context.md).
+
 `ProviderRuntime` rejects duplicate adapter and active-operation IDs, verifies that adapters preserve the requested operation ID, and remembers which adapter owns cancellation. Approval decisions are routed back through the adapter as `allow_once`, `allow_for_session`, `deny`, or `cancel`; provider-native decision payloads never enter the server API. The server calls `finish` only after the terminal provider event is durable. Recovery asks every adapter for interrupted operation IDs; provider-native recovery tokens remain inside the adapter and provider-conversation mapping layers.
 
 ## Process supervision

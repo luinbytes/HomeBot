@@ -5,7 +5,7 @@ use homebot_domain::{
     chat::{
         ChatApproval, ChatDomainError, ChatMessage, DirectChat, ExecutionActivity, GroupBotStatus,
         GroupChat, GroupParticipant, GroupParticipantRole, MessageAuthor, MessagePart,
-        MessageStatus, OwnershipHandoff, QueuedPrompt,
+        MessageStatus, OwnershipHandoff, QueuedPrompt, QueuedPromptKind,
     },
 };
 use homebot_routines::{
@@ -23,7 +23,7 @@ use sqlx::{
 use std::{collections::HashSet, path::Path, str::FromStr, time::Duration};
 use uuid::Uuid;
 
-pub const SCHEMA_VERSION: u32 = 15;
+pub const SCHEMA_VERSION: u32 = 16;
 static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
 
 #[derive(Debug, thiserror::Error)]
@@ -90,6 +90,8 @@ pub enum StorageError {
     DuplicateChatWorkspace,
     #[error("Turn checkpoint was not found")]
     CheckpointNotFound,
+    #[error("A working-context operation is already running")]
+    WorkingContextBusy,
     #[error("database JSON is invalid: {0}")]
     Serialization(String),
 }
@@ -169,6 +171,21 @@ pub struct ProviderRoute {
     pub profile_id: Uuid,
     pub adapter_kind: String,
     pub model: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WorkingContextRecord {
+    pub owner_id: Uuid,
+    pub chat_id: Uuid,
+    pub provider_profile_id: Uuid,
+    pub interaction_mode: String,
+    pub used_tokens: Option<u64>,
+    pub context_window_tokens: Option<u64>,
+    pub compaction_status: String,
+    pub generation: u32,
+    pub compacted_at_ms: Option<i64>,
+    pub last_error: Option<String>,
+    pub updated_at_ms: i64,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -375,6 +392,14 @@ pub struct QueuedPromptInput<'a> {
     pub content: &'a str,
     pub attachment_ids: &'a [Uuid],
     pub applied_skills: &'a [AppliedSkill],
+    pub kind: QueuedPromptKind,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct PromotedQueuedPrompt {
+    pub prompt: QueuedPrompt,
+    pub message: ChatMessage,
+    pub applied_skills: Vec<AppliedSkill>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1705,6 +1730,13 @@ impl Storage {
             .await?;
         MIGRATOR.run(&pool).await?;
         let storage = Self { pool };
+        sqlx::query(
+            "UPDATE chat_working_contexts SET compaction_status = 'failed',
+                last_error = 'HomeBot restarted before the context operation completed'
+             WHERE compaction_status = 'running'",
+        )
+        .execute(&storage.pool)
+        .await?;
         storage.verify_integrity().await?;
         Ok(storage)
     }
@@ -3083,6 +3115,221 @@ impl Storage {
         .transpose()
     }
 
+    /// Loads or creates the durable provider working-context projection for a direct chat.
+    ///
+    /// # Errors
+    /// Returns ownership, validation, or database errors.
+    pub async fn working_context(
+        &self,
+        owner_id: Uuid,
+        chat_id: Uuid,
+        profile_id: Uuid,
+        now_ms: i64,
+    ) -> Result<WorkingContextRecord, StorageError> {
+        let _ = self.get_direct_chat(owner_id, chat_id).await?;
+        sqlx::query(
+            "INSERT INTO chat_working_contexts (
+                owner_id, chat_id, provider_profile_id, interaction_mode,
+                compaction_status, generation, updated_at_ms
+             ) VALUES (?, ?, ?, 'default', 'idle', 0, ?)
+             ON CONFLICT(chat_id) DO UPDATE SET
+                owner_id = excluded.owner_id,
+                provider_profile_id = excluded.provider_profile_id,
+                interaction_mode = CASE
+                    WHEN chat_working_contexts.provider_profile_id = excluded.provider_profile_id
+                    THEN chat_working_contexts.interaction_mode ELSE 'default' END,
+                used_tokens = CASE
+                    WHEN chat_working_contexts.provider_profile_id = excluded.provider_profile_id
+                    THEN chat_working_contexts.used_tokens ELSE NULL END,
+                context_window_tokens = CASE
+                    WHEN chat_working_contexts.provider_profile_id = excluded.provider_profile_id
+                    THEN chat_working_contexts.context_window_tokens ELSE NULL END,
+                compaction_status = CASE
+                    WHEN chat_working_contexts.provider_profile_id = excluded.provider_profile_id
+                    THEN chat_working_contexts.compaction_status ELSE 'idle' END,
+                generation = CASE
+                    WHEN chat_working_contexts.provider_profile_id = excluded.provider_profile_id
+                    THEN chat_working_contexts.generation ELSE 0 END,
+                compacted_at_ms = CASE
+                    WHEN chat_working_contexts.provider_profile_id = excluded.provider_profile_id
+                    THEN chat_working_contexts.compacted_at_ms ELSE NULL END,
+                last_error = CASE
+                    WHEN chat_working_contexts.provider_profile_id = excluded.provider_profile_id
+                    THEN chat_working_contexts.last_error ELSE NULL END,
+                updated_at_ms = CASE
+                    WHEN chat_working_contexts.provider_profile_id = excluded.provider_profile_id
+                    THEN chat_working_contexts.updated_at_ms ELSE excluded.updated_at_ms END",
+        )
+        .bind(owner_id.to_string())
+        .bind(chat_id.to_string())
+        .bind(profile_id.to_string())
+        .bind(now_ms)
+        .execute(&self.pool)
+        .await?;
+        self.load_working_context(owner_id, chat_id).await
+    }
+
+    /// Loads an existing working-context projection.
+    ///
+    /// # Errors
+    /// Returns not-found, integrity, or database errors.
+    pub async fn load_working_context(
+        &self,
+        owner_id: Uuid,
+        chat_id: Uuid,
+    ) -> Result<WorkingContextRecord, StorageError> {
+        let row =
+            sqlx::query("SELECT * FROM chat_working_contexts WHERE owner_id = ? AND chat_id = ?")
+                .bind(owner_id.to_string())
+                .bind(chat_id.to_string())
+                .fetch_optional(&self.pool)
+                .await?
+                .ok_or(StorageError::ChatNotFound)?;
+        working_context_from_row(&row)
+    }
+
+    /// Changes the interaction mode without touching Bot identity or transcript history.
+    ///
+    /// # Errors
+    /// Returns not-found or database errors.
+    pub async fn set_working_context_mode(
+        &self,
+        owner_id: Uuid,
+        chat_id: Uuid,
+        mode: &str,
+        now_ms: i64,
+    ) -> Result<WorkingContextRecord, StorageError> {
+        if !matches!(mode, "default" | "plan") {
+            return Err(StorageError::Integrity(
+                "invalid interaction mode".to_owned(),
+            ));
+        }
+        let result = sqlx::query(
+            "UPDATE chat_working_contexts SET interaction_mode = ?, updated_at_ms = ?
+             WHERE owner_id = ? AND chat_id = ?",
+        )
+        .bind(mode)
+        .bind(now_ms)
+        .bind(owner_id.to_string())
+        .bind(chat_id.to_string())
+        .execute(&self.pool)
+        .await?;
+        if result.rows_affected() != 1 {
+            return Err(StorageError::ChatNotFound);
+        }
+        self.load_working_context(owner_id, chat_id).await
+    }
+
+    /// Records provider-neutral working-context usage.
+    ///
+    /// # Errors
+    /// Returns database errors.
+    pub async fn update_working_context_usage(
+        &self,
+        owner_id: Uuid,
+        chat_id: Uuid,
+        used_tokens: u64,
+        context_window_tokens: Option<u64>,
+        now_ms: i64,
+    ) -> Result<(), StorageError> {
+        sqlx::query(
+            "UPDATE chat_working_contexts SET used_tokens = ?,
+                context_window_tokens = COALESCE(?, context_window_tokens), updated_at_ms = ?
+             WHERE owner_id = ? AND chat_id = ?",
+        )
+        .bind(i64::try_from(used_tokens).unwrap_or(i64::MAX))
+        .bind(context_window_tokens.map(|value| i64::try_from(value).unwrap_or(i64::MAX)))
+        .bind(now_ms)
+        .bind(owner_id.to_string())
+        .bind(chat_id.to_string())
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Marks a compaction/reset lifecycle transition and optionally advances its generation.
+    ///
+    /// # Errors
+    /// Returns validation, not-found, or database errors.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn set_working_context_compaction(
+        &self,
+        owner_id: Uuid,
+        chat_id: Uuid,
+        status: &str,
+        advance_generation: bool,
+        clear_usage: bool,
+        error: Option<&str>,
+        now_ms: i64,
+    ) -> Result<WorkingContextRecord, StorageError> {
+        if !matches!(status, "idle" | "running" | "completed" | "failed") {
+            return Err(StorageError::Integrity(
+                "invalid compaction status".to_owned(),
+            ));
+        }
+        let result = sqlx::query(
+            "UPDATE chat_working_contexts SET compaction_status = ?,
+                generation = generation + ?,
+                used_tokens = CASE WHEN ? THEN NULL ELSE used_tokens END,
+                compacted_at_ms = CASE WHEN ? THEN ? ELSE compacted_at_ms END,
+                last_error = ?, updated_at_ms = ?
+             WHERE owner_id = ? AND chat_id = ?",
+        )
+        .bind(status)
+        .bind(i64::from(advance_generation))
+        .bind(clear_usage)
+        .bind(status == "completed")
+        .bind(now_ms)
+        .bind(error)
+        .bind(now_ms)
+        .bind(owner_id.to_string())
+        .bind(chat_id.to_string())
+        .execute(&self.pool)
+        .await?;
+        if result.rows_affected() != 1 {
+            return Err(StorageError::ChatNotFound);
+        }
+        self.load_working_context(owner_id, chat_id).await
+    }
+
+    /// Atomically starts a working-context operation unless another one is already running.
+    ///
+    /// # Errors
+    /// Returns busy, not-found, or database errors.
+    pub async fn begin_working_context_compaction(
+        &self,
+        owner_id: Uuid,
+        chat_id: Uuid,
+        now_ms: i64,
+    ) -> Result<WorkingContextRecord, StorageError> {
+        let result = sqlx::query(
+            "UPDATE chat_working_contexts SET compaction_status = 'running',
+                last_error = NULL, updated_at_ms = ?
+             WHERE owner_id = ? AND chat_id = ? AND compaction_status != 'running'",
+        )
+        .bind(now_ms)
+        .bind(owner_id.to_string())
+        .bind(chat_id.to_string())
+        .execute(&self.pool)
+        .await?;
+        if result.rows_affected() == 1 {
+            return self.load_working_context(owner_id, chat_id).await;
+        }
+        if sqlx::query_scalar::<_, i64>(
+            "SELECT 1 FROM chat_working_contexts WHERE owner_id = ? AND chat_id = ?",
+        )
+        .bind(owner_id.to_string())
+        .bind(chat_id.to_string())
+        .fetch_optional(&self.pool)
+        .await?
+        .is_some()
+        {
+            Err(StorageError::WorkingContextBusy)
+        } else {
+            Err(StorageError::ChatNotFound)
+        }
+    }
+
     /// Stores the provider conversation mapping independently of Bot identity.
     ///
     /// # Errors
@@ -3106,6 +3353,28 @@ impl Storage {
         .bind(chat_id.to_string())
         .bind(profile_id.to_string())
         .bind(conversation_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Removes only the provider conversation mapping, preserving the `HomeBot` chat and transcript.
+    ///
+    /// # Errors
+    /// Returns database errors.
+    pub async fn reset_provider_conversation(
+        &self,
+        bot_id: Uuid,
+        chat_id: Uuid,
+        profile_id: Uuid,
+    ) -> Result<(), StorageError> {
+        sqlx::query(
+            "DELETE FROM provider_conversations
+             WHERE bot_id = ? AND chat_id = ? AND provider_profile_id = ?",
+        )
+        .bind(bot_id.to_string())
+        .bind(chat_id.to_string())
+        .bind(profile_id.to_string())
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -3204,25 +3473,54 @@ impl Storage {
             now_ms,
         )?;
         let mut transaction = self.pool.begin().await?;
-        validate_message_references(&mut transaction, owner_id, &validation).await?;
-        let next_position: i64 = sqlx::query_scalar(
-            "SELECT COALESCE(max(position) + 1, 0) FROM queued_prompts WHERE chat_id = ?",
+        let reserved = sqlx::query(
+            "UPDATE chats SET updated_at_ms = updated_at_ms
+             WHERE id = ? AND owner_id = ? AND running = 1",
         )
         .bind(chat_id.to_string())
-        .fetch_one(&mut *transaction)
+        .bind(owner_id.to_string())
+        .execute(&mut *transaction)
         .await?;
+        if reserved.rows_affected() != 1 {
+            return Err(StorageError::Integrity(
+                "cannot queue a prompt while the chat is idle".to_owned(),
+            ));
+        }
+        validate_message_references(&mut transaction, owner_id, &validation).await?;
+        let next_position =
+            queue_position_for_insert(&mut transaction, chat_id, input.kind).await?;
         sqlx::query(
             "INSERT INTO queued_prompts (
-                id, owner_id, chat_id, content, attachment_ids_json, skill_ids_json, skill_version_ids_json, position, created_at_ms
-             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                id, owner_id, chat_id, content, attachment_ids_json, skill_ids_json,
+                skill_version_ids_json, prompt_kind, position, created_at_ms
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(prompt_id.to_string())
         .bind(owner_id.to_string())
         .bind(chat_id.to_string())
         .bind(input.content.trim())
         .bind(serde_json::to_value(input.attachment_ids).map_err(|error| json_error(&error))?)
-        .bind(serde_json::to_value(input.applied_skills.iter().map(|skill| skill.skill_id).collect::<Vec<_>>()).map_err(|error| json_error(&error))?)
-        .bind(serde_json::to_value(input.applied_skills.iter().map(|skill| skill.version_id).collect::<Vec<_>>()).map_err(|error| json_error(&error))?)
+        .bind(
+            serde_json::to_value(
+                input
+                    .applied_skills
+                    .iter()
+                    .map(|skill| skill.skill_id)
+                    .collect::<Vec<_>>(),
+            )
+            .map_err(|error| json_error(&error))?,
+        )
+        .bind(
+            serde_json::to_value(
+                input
+                    .applied_skills
+                    .iter()
+                    .map(|skill| skill.version_id)
+                    .collect::<Vec<_>>(),
+            )
+            .map_err(|error| json_error(&error))?,
+        )
+        .bind(input.kind.as_str())
         .bind(next_position)
         .bind(now_ms)
         .execute(&mut *transaction)
@@ -3253,6 +3551,7 @@ impl Storage {
                 .iter()
                 .map(|skill| skill.version_id)
                 .collect(),
+            kind: input.kind,
             position: u32::try_from(next_position)
                 .map_err(|_| StorageError::Integrity("invalid queue position".to_owned()))?,
             created_at_ms: now_ms,
@@ -3279,6 +3578,62 @@ impl Storage {
         .fetch_all(&self.pool)
         .await?;
         rows.iter().map(queued_prompt_from_row).collect()
+    }
+
+    /// Atomically promotes the oldest queued prompt into durable transcript history.
+    ///
+    /// The chat is reserved as running in the same transaction, so a concurrent send queues
+    /// behind this prompt instead of starting a second provider turn.
+    ///
+    /// # Errors
+    /// Returns validation, ownership, attachment, Skill-version, or database errors.
+    pub async fn promote_next_queued_prompt(
+        &self,
+        owner_id: Uuid,
+        chat_id: Uuid,
+        now_ms: i64,
+    ) -> Result<Option<PromotedQueuedPrompt>, StorageError> {
+        let mut transaction = self.pool.begin().await?;
+        let reserved = sqlx::query(
+            "UPDATE chats SET updated_at_ms = updated_at_ms
+             WHERE id = ? AND owner_id = ? AND running = 0 AND queued_count > 0",
+        )
+        .bind(chat_id.to_string())
+        .bind(owner_id.to_string())
+        .execute(&mut *transaction)
+        .await?;
+        if reserved.rows_affected() == 0 {
+            transaction.rollback().await?;
+            return Ok(None);
+        }
+        let row = sqlx::query(
+            "SELECT q.* FROM queued_prompts q JOIN chats c ON c.id = q.chat_id
+             WHERE q.owner_id = ? AND q.chat_id = ? AND c.running = 0
+             ORDER BY q.position, q.created_at_ms, q.id LIMIT 1",
+        )
+        .bind(owner_id.to_string())
+        .bind(chat_id.to_string())
+        .fetch_optional(&mut *transaction)
+        .await?;
+        let Some(row) = row else {
+            transaction.rollback().await?;
+            return Ok(None);
+        };
+        let prompt = queued_prompt_from_row(&row)?;
+        if prompt.skill_ids.len() != prompt.skill_version_ids.len() {
+            return Err(StorageError::Integrity(
+                "queued prompt Skill versions are inconsistent".to_owned(),
+            ));
+        }
+        let message = insert_promoted_message(&mut transaction, owner_id, &prompt, now_ms).await?;
+        reserve_promoted_chat(&mut transaction, owner_id, &prompt, now_ms).await?;
+        transaction.commit().await?;
+        let applied_skills = self.message_applied_skills(owner_id, message.id).await?;
+        Ok(Some(PromotedQueuedPrompt {
+            prompt,
+            message,
+            applied_skills,
+        }))
     }
 
     /// Updates the authoritative running state of a direct chat.
@@ -4105,6 +4460,53 @@ fn chat_message_from_row(row: &sqlx::sqlite::SqliteRow) -> Result<ChatMessage, S
     })
 }
 
+async fn queue_position_for_insert(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    chat_id: Uuid,
+    kind: QueuedPromptKind,
+) -> Result<i64, StorageError> {
+    if kind == QueuedPromptKind::FollowUp {
+        return sqlx::query_scalar(
+            "SELECT COALESCE(max(position) + 1, 0) FROM queued_prompts WHERE chat_id = ?",
+        )
+        .bind(chat_id.to_string())
+        .fetch_one(&mut **transaction)
+        .await
+        .map_err(StorageError::from);
+    }
+    let insertion: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM queued_prompts WHERE chat_id = ? AND prompt_kind = 'steering'",
+    )
+    .bind(chat_id.to_string())
+    .fetch_one(&mut **transaction)
+    .await?;
+    let queued_count: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM queued_prompts WHERE chat_id = ?")
+            .bind(chat_id.to_string())
+            .fetch_one(&mut **transaction)
+            .await?;
+    let offset = queued_count + 1;
+    sqlx::query(
+        "UPDATE queued_prompts SET position = position + ?
+         WHERE chat_id = ? AND position >= ?",
+    )
+    .bind(offset)
+    .bind(chat_id.to_string())
+    .bind(insertion)
+    .execute(&mut **transaction)
+    .await?;
+    sqlx::query(
+        "UPDATE queued_prompts SET position = position - ?
+         WHERE chat_id = ? AND position >= ?",
+    )
+    .bind(offset - 1)
+    .bind(chat_id.to_string())
+    .bind(insertion + offset)
+    .execute(&mut **transaction)
+    .await?;
+    Ok(insertion)
+}
+
 fn queued_prompt_from_row(row: &sqlx::sqlite::SqliteRow) -> Result<QueuedPrompt, StorageError> {
     let id: String = row.try_get("id")?;
     let owner_id: String = row.try_get("owner_id")?;
@@ -4113,6 +4515,15 @@ fn queued_prompt_from_row(row: &sqlx::sqlite::SqliteRow) -> Result<QueuedPrompt,
     let skill_ids: Value = row.try_get("skill_ids_json")?;
     let skill_version_ids: Value = row.try_get("skill_version_ids_json")?;
     let position: i64 = row.try_get("position")?;
+    let kind = match row.try_get::<String, _>("prompt_kind")?.as_str() {
+        "follow_up" => QueuedPromptKind::FollowUp,
+        "steering" => QueuedPromptKind::Steering,
+        _ => {
+            return Err(StorageError::Integrity(
+                "invalid queued prompt kind".to_owned(),
+            ));
+        }
+    };
     Ok(QueuedPrompt {
         id: parse_uuid(&id)?,
         owner_id: parse_uuid(&owner_id)?,
@@ -4123,9 +4534,107 @@ fn queued_prompt_from_row(row: &sqlx::sqlite::SqliteRow) -> Result<QueuedPrompt,
         skill_ids: serde_json::from_value(skill_ids).map_err(|error| json_error(&error))?,
         skill_version_ids: serde_json::from_value(skill_version_ids)
             .map_err(|error| json_error(&error))?,
+        kind,
         position: u32::try_from(position)
             .map_err(|_| StorageError::Integrity("invalid queue position".to_owned()))?,
         created_at_ms: row.try_get("created_at_ms")?,
+    })
+}
+
+async fn insert_promoted_message(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    owner_id: Uuid,
+    prompt: &QueuedPrompt,
+    now_ms: i64,
+) -> Result<ChatMessage, StorageError> {
+    let mut message = ChatMessage::user(
+        prompt.chat_id,
+        &prompt.content,
+        &prompt.attachment_ids,
+        None,
+        Vec::new(),
+        now_ms,
+    )?;
+    message.id = prompt.id;
+    validate_message_references(transaction, owner_id, &message).await?;
+    sqlx::query("INSERT INTO messages (id, chat_id, author_kind, status, mentioned_bot_ids_json, created_at_ms, completed_at_ms) VALUES (?, ?, 'user', 'completed', '[]', ?, ?)")
+        .bind(message.id.to_string()).bind(prompt.chat_id.to_string()).bind(now_ms).bind(now_ms)
+        .execute(&mut **transaction).await?;
+    for part in &message.parts {
+        let (part_id, ordinal) = message_part_identity(part);
+        sqlx::query("INSERT INTO message_parts (id, message_id, ordinal, kind, content_json) VALUES (?, ?, ?, ?, ?)")
+            .bind(part_id.to_string()).bind(message.id.to_string()).bind(i64::from(ordinal))
+            .bind(message_part_kind(part)).bind(serde_json::to_value(part).map_err(|error| json_error(&error))?)
+            .execute(&mut **transaction).await?;
+    }
+    for (ordinal, (skill_id, version_id)) in prompt
+        .skill_ids
+        .iter()
+        .zip(&prompt.skill_version_ids)
+        .enumerate()
+    {
+        let inserted = sqlx::query("INSERT INTO message_skill_versions (message_id, skill_id, skill_version_id, ordinal) SELECT ?, s.id, v.id, ? FROM skills s JOIN skill_versions v ON v.skill_id = s.id WHERE s.owner_id = ? AND s.id = ? AND v.id = ?")
+            .bind(message.id.to_string()).bind(i64::try_from(ordinal).unwrap_or(i64::MAX))
+            .bind(owner_id.to_string()).bind(skill_id.to_string()).bind(version_id.to_string())
+            .execute(&mut **transaction).await?;
+        if inserted.rows_affected() != 1 {
+            return Err(StorageError::SkillNotFound);
+        }
+    }
+    Ok(message)
+}
+
+async fn reserve_promoted_chat(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    owner_id: Uuid,
+    prompt: &QueuedPrompt,
+    now_ms: i64,
+) -> Result<(), StorageError> {
+    sqlx::query("DELETE FROM queued_prompts WHERE id = ? AND owner_id = ?")
+        .bind(prompt.id.to_string())
+        .bind(owner_id.to_string())
+        .execute(&mut **transaction)
+        .await?;
+    sqlx::query("UPDATE queued_prompts SET position = position - 1 WHERE owner_id = ? AND chat_id = ? AND position > ?")
+        .bind(owner_id.to_string()).bind(prompt.chat_id.to_string()).bind(i64::from(prompt.position))
+        .execute(&mut **transaction).await?;
+    let reserved = sqlx::query("UPDATE chats SET queued_count = queued_count - 1, running = 1, updated_at_ms = ? WHERE id = ? AND owner_id = ? AND running = 0 AND queued_count > 0")
+        .bind(now_ms).bind(prompt.chat_id.to_string()).bind(owner_id.to_string())
+        .execute(&mut **transaction).await?;
+    if reserved.rows_affected() != 1 {
+        return Err(StorageError::Integrity(
+            "queued prompt could not reserve the idle chat".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn working_context_from_row(
+    row: &sqlx::sqlite::SqliteRow,
+) -> Result<WorkingContextRecord, StorageError> {
+    let used_tokens = row
+        .try_get::<Option<i64>, _>("used_tokens")?
+        .map(u64::try_from)
+        .transpose()
+        .map_err(|_| StorageError::Integrity("invalid working-context usage".to_owned()))?;
+    let context_window_tokens = row
+        .try_get::<Option<i64>, _>("context_window_tokens")?
+        .map(u64::try_from)
+        .transpose()
+        .map_err(|_| StorageError::Integrity("invalid context window".to_owned()))?;
+    Ok(WorkingContextRecord {
+        owner_id: parse_uuid(row.try_get("owner_id")?)?,
+        chat_id: parse_uuid(row.try_get("chat_id")?)?,
+        provider_profile_id: parse_uuid(row.try_get("provider_profile_id")?)?,
+        interaction_mode: row.try_get("interaction_mode")?,
+        used_tokens,
+        context_window_tokens,
+        compaction_status: row.try_get("compaction_status")?,
+        generation: u32::try_from(row.try_get::<i64, _>("generation")?)
+            .map_err(|_| StorageError::Integrity("invalid context generation".to_owned()))?,
+        compacted_at_ms: row.try_get("compacted_at_ms")?,
+        last_error: row.try_get("last_error")?,
+        updated_at_ms: row.try_get("updated_at_ms")?,
     })
 }
 
@@ -5585,7 +6094,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn version_fourteen_vcs_upgrade_preserves_chats_and_replays_exact_results()
+    async fn version_fourteen_vcs_and_context_upgrades_preserve_chats_and_exact_results()
     -> Result<(), StorageError> {
         let directory = tempfile::tempdir()?;
         let database = directory.path().join("homebot-v14.db");
@@ -5626,6 +6135,9 @@ mod tests {
         sqlx::raw_sql(include_str!("../migrations/0015_vcs_operations.sql"))
             .execute(&pool)
             .await?;
+        sqlx::raw_sql(include_str!("../migrations/0016_working_context.sql"))
+            .execute(&pool)
+            .await?;
         let result = VcsOperationResultRecord {
             idempotency_key: Uuid::now_v7(),
             owner_id: owner,
@@ -5641,6 +6153,34 @@ mod tests {
                 .await?,
             Some(result)
         );
+        assert_eq!(storage.list_direct_chats(owner).await?.len(), 1);
+        let profile_id = Uuid::now_v7();
+        sqlx::query("INSERT INTO provider_profiles (id, adapter_kind, display_name, configuration_json, created_at_ms, updated_at_ms) VALUES (?, 'fixture', 'Fixture', '{}', 4, 4)")
+            .bind(profile_id.to_string()).execute(&pool).await?;
+        let context = storage
+            .working_context(owner, chat.id, profile_id, 5)
+            .await?;
+        assert_eq!(context.interaction_mode, "default");
+        let context = storage
+            .set_working_context_mode(owner, chat.id, "plan", 6)
+            .await?;
+        assert_eq!(context.interaction_mode, "plan");
+        assert_eq!(
+            storage
+                .begin_working_context_compaction(owner, chat.id, 7)
+                .await?
+                .compaction_status,
+            "running"
+        );
+        assert!(matches!(
+            storage
+                .begin_working_context_compaction(owner, chat.id, 8)
+                .await,
+            Err(StorageError::WorkingContextBusy)
+        ));
+        storage
+            .set_working_context_compaction(owner, chat.id, "completed", true, true, None, 9)
+            .await?;
         assert_eq!(storage.list_direct_chats(owner).await?.len(), 1);
         Ok(())
     }
@@ -5851,6 +6391,7 @@ mod tests {
                     content: "Next",
                     attachment_ids: &[],
                     applied_skills: &[],
+                    kind: QueuedPromptKind::FollowUp,
                 },
                 7,
             )
@@ -6171,6 +6712,7 @@ mod tests {
             "attachments",
             "bots",
             "chats",
+            "chat_working_contexts",
             "chat_workspaces",
             "checkpoint_restores",
             "event_outbox",

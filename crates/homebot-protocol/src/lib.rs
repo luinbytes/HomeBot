@@ -115,6 +115,13 @@ pub enum ServerEventBody {
     QueuedPromptChanged {
         prompt: QueuedPromptSummary,
     },
+    QueuedPromptRemoved {
+        chat_id: Uuid,
+        prompt_id: Uuid,
+    },
+    WorkingContextChanged {
+        context: WorkingContextSummary,
+    },
     SecretChanged {
         secret: SecretSummary,
     },
@@ -686,8 +693,76 @@ pub struct QueuedPromptSummary {
     pub attachment_ids: Vec<Uuid>,
     #[serde(default)]
     pub skill_ids: Vec<Uuid>,
+    #[serde(default)]
+    pub kind: QueuedPromptKind,
     pub position: u32,
     pub created_at_ms: i64,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum QueuedPromptKind {
+    #[default]
+    FollowUp,
+    Steering,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InteractionMode {
+    Default,
+    Plan,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ContextCompactionStatus {
+    Idle,
+    Running,
+    Completed,
+    Failed,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ContextCompactionStrategy {
+    Compact,
+    Reset,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkingContextSummary {
+    pub chat_id: Uuid,
+    pub provider_profile_id: Uuid,
+    pub interaction_mode: InteractionMode,
+    pub plan_mode_available: bool,
+    pub compaction_available: bool,
+    pub reset_available: bool,
+    pub used_tokens: Option<u64>,
+    pub context_window_tokens: Option<u64>,
+    pub compaction_status: ContextCompactionStatus,
+    pub generation: u32,
+    pub compacted_at_ms: Option<i64>,
+    pub error_message: Option<String>,
+    pub updated_at_ms: i64,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SetInteractionModeRequest {
+    pub request_id: Uuid,
+    pub idempotency_key: Uuid,
+    pub mode: InteractionMode,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CompactWorkingContextRequest {
+    pub request_id: Uuid,
+    pub idempotency_key: Uuid,
+    pub strategy: ContextCompactionStrategy,
+    pub target_tokens: Option<u64>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
@@ -698,6 +773,8 @@ pub struct ChatTimelineResponse {
     pub activities: Vec<ActivitySummary>,
     pub approvals: Vec<ApprovalSummary>,
     pub queued_prompts: Vec<QueuedPromptSummary>,
+    #[serde(default)]
+    pub working_context: Option<WorkingContextSummary>,
     #[serde(default)]
     pub checkpoints: Vec<TurnCheckpointSummary>,
     pub boundary_sequence: u64,
@@ -1423,6 +1500,9 @@ pub struct ProtocolV1Schema {
     pub send_message_response: SendMessageResponse,
     pub message_mutation_request: MessageMutationRequest,
     pub chat_timeline_response: ChatTimelineResponse,
+    pub working_context: WorkingContextSummary,
+    pub set_interaction_mode_request: SetInteractionModeRequest,
+    pub compact_working_context_request: CompactWorkingContextRequest,
     pub approval_decision_request: ApprovalDecisionRequest,
 }
 

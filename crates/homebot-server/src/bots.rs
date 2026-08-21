@@ -443,6 +443,7 @@ impl From<StorageError> for ApiError {
                 ErrorCode::NotFound,
                 "Checkpoint was not found",
             ),
+            StorageError::WorkingContextBusy => working_context_busy(),
             StorageError::RoutineNotFound => Self::new(
                 StatusCode::NOT_FOUND,
                 ErrorCode::NotFound,
@@ -465,6 +466,10 @@ impl From<StorageError> for ApiError {
             _ => Self::internal(),
         }
     }
+}
+
+fn working_context_busy() -> ApiError {
+    ApiError::conflict("A working-context operation is already running")
 }
 
 impl From<homebot_secrets::SecretStoreError> for ApiError {

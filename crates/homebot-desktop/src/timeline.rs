@@ -2,8 +2,9 @@ use std::collections::HashSet;
 
 use homebot_protocol::{
     ActivitySummary, ApprovalStatus, ApprovalSummary, ChatSummary, ChatTimelineResponse,
-    CheckpointRestoreSummary, MessagePart, MessageStatus, MessageSummary, QueuedPromptSummary,
-    SequenceDisposition, ServerEvent, ServerEventBody, TurnCheckpointSummary, classify_sequence,
+    CheckpointRestoreSummary, ContextCompactionStrategy, InteractionMode, MessagePart,
+    MessageStatus, MessageSummary, QueuedPromptSummary, SequenceDisposition, ServerEvent,
+    ServerEventBody, TurnCheckpointSummary, WorkingContextSummary, classify_sequence,
 };
 use uuid::Uuid;
 
@@ -32,6 +33,11 @@ pub enum TimelineCommand {
         to_checkpoint_id: Uuid,
     },
     RestoreCheckpoint(Uuid),
+    SetInteractionMode(InteractionMode),
+    CompactContext {
+        strategy: ContextCompactionStrategy,
+        target_tokens: Option<u64>,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -55,6 +61,7 @@ pub struct TimelineModel {
     pub activities: Vec<ActivitySummary>,
     pub approvals: Vec<ApprovalSummary>,
     pub queued_prompts: Vec<QueuedPromptSummary>,
+    pub working_context: Option<WorkingContextSummary>,
     pub checkpoints: Vec<TurnCheckpointSummary>,
     pub last_restore: Option<CheckpointRestoreSummary>,
     pub composer: ComposerDraft,
@@ -73,6 +80,7 @@ impl Default for TimelineModel {
             activities: Vec::new(),
             approvals: Vec::new(),
             queued_prompts: Vec::new(),
+            working_context: None,
             checkpoints: Vec::new(),
             last_restore: None,
             composer: ComposerDraft::default(),
@@ -95,6 +103,7 @@ impl TimelineModel {
         self.activities = timeline.activities;
         self.approvals = timeline.approvals;
         self.queued_prompts = timeline.queued_prompts;
+        self.working_context = timeline.working_context;
         self.checkpoints = timeline.checkpoints;
         self.last_restore = None;
         self.cursor = timeline.boundary_sequence;
@@ -172,6 +181,19 @@ impl TimelineModel {
                 self.queued_prompts.sort_by_key(|prompt| prompt.position);
                 true
             }
+            ServerEventBody::QueuedPromptRemoved {
+                chat_id: event_chat,
+                prompt_id,
+            } if Some(event_chat) == chat_id => {
+                self.queued_prompts.retain(|prompt| prompt.id != prompt_id);
+                true
+            }
+            ServerEventBody::WorkingContextChanged { context }
+                if Some(context.chat_id) == chat_id =>
+            {
+                self.working_context = Some(context);
+                true
+            }
             ServerEventBody::TurnCheckpointChanged { checkpoint }
                 if Some(checkpoint.chat_id) == chat_id =>
             {
@@ -215,6 +237,26 @@ impl TimelineModel {
     pub fn stop(&mut self) {
         if self.chat.as_ref().is_some_and(|chat| chat.running) {
             self.commands.push(TimelineCommand::Stop);
+        }
+    }
+
+    pub fn set_interaction_mode(&mut self, mode: InteractionMode) {
+        if self
+            .working_context
+            .as_ref()
+            .is_some_and(|context| context.interaction_mode != mode)
+        {
+            self.commands
+                .push(TimelineCommand::SetInteractionMode(mode));
+        }
+    }
+
+    pub fn compact_context(&mut self, strategy: ContextCompactionStrategy) {
+        if self.chat.as_ref().is_some_and(|chat| !chat.running) {
+            self.commands.push(TimelineCommand::CompactContext {
+                strategy,
+                target_tokens: None,
+            });
         }
     }
 
@@ -322,7 +364,7 @@ pub enum ComposerError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use homebot_protocol::{MessageAuthor, PROTOCOL_VERSION};
+    use homebot_protocol::{MessageAuthor, PROTOCOL_VERSION, QueuedPromptKind};
 
     fn chat(id: Uuid, running: bool) -> ChatSummary {
         ChatSummary {
@@ -378,6 +420,7 @@ mod tests {
             activities: Vec::new(),
             approvals: Vec::new(),
             queued_prompts: Vec::new(),
+            working_context: None,
             checkpoints: Vec::new(),
             boundary_sequence: 10,
         });
@@ -418,6 +461,7 @@ mod tests {
             activities: Vec::new(),
             approvals: Vec::new(),
             queued_prompts: Vec::new(),
+            working_context: None,
             checkpoints: Vec::new(),
             boundary_sequence: 0,
         });
@@ -449,6 +493,106 @@ mod tests {
     }
 
     #[test]
+    fn queued_prompt_projection_preserves_server_kind_order_and_removal() {
+        let chat_id = Uuid::now_v7();
+        let steering_id = Uuid::now_v7();
+        let follow_id = Uuid::now_v7();
+        let prompt =
+            |id: Uuid, kind: QueuedPromptKind, content: &str, position: u32| QueuedPromptSummary {
+                id,
+                chat_id,
+                content: content.to_owned(),
+                attachment_ids: Vec::new(),
+                skill_ids: Vec::new(),
+                kind,
+                position,
+                created_at_ms: i64::from(position),
+            };
+        let mut model = TimelineModel::default();
+        model.hydrate(ChatTimelineResponse {
+            chat: chat(chat_id, true),
+            messages: Vec::new(),
+            activities: Vec::new(),
+            approvals: Vec::new(),
+            queued_prompts: vec![
+                prompt(steering_id, QueuedPromptKind::Steering, "Redirect", 0),
+                prompt(follow_id, QueuedPromptKind::FollowUp, "Then test", 1),
+            ],
+            working_context: None,
+            checkpoints: Vec::new(),
+            boundary_sequence: 10,
+        });
+        assert_eq!(model.queued_prompts[0].kind, QueuedPromptKind::Steering);
+        assert_eq!(
+            model.apply_event(event(
+                11,
+                ServerEventBody::QueuedPromptRemoved {
+                    chat_id,
+                    prompt_id: steering_id,
+                }
+            )),
+            ReconcileOutcome::Applied
+        );
+        assert_eq!(
+            model.apply_event(event(
+                12,
+                ServerEventBody::QueuedPromptChanged {
+                    prompt: prompt(follow_id, QueuedPromptKind::FollowUp, "Then test", 0)
+                }
+            )),
+            ReconcileOutcome::Applied
+        );
+        assert_eq!(model.queued_prompts.len(), 1);
+        assert_eq!(model.queued_prompts[0].position, 0);
+    }
+
+    #[test]
+    fn working_context_projection_and_commands_remain_server_authoritative() {
+        let chat_id = Uuid::now_v7();
+        let mut model = TimelineModel {
+            chat: Some(chat(chat_id, false)),
+            ..TimelineModel::default()
+        };
+        let context = WorkingContextSummary {
+            chat_id,
+            provider_profile_id: Uuid::now_v7(),
+            interaction_mode: InteractionMode::Default,
+            plan_mode_available: true,
+            compaction_available: true,
+            reset_available: true,
+            used_tokens: Some(800),
+            context_window_tokens: Some(4_000),
+            compaction_status: homebot_protocol::ContextCompactionStatus::Idle,
+            generation: 0,
+            compacted_at_ms: None,
+            error_message: None,
+            updated_at_ms: 1,
+        };
+        assert_eq!(
+            model.apply_event(event(
+                1,
+                ServerEventBody::WorkingContextChanged {
+                    context: context.clone()
+                }
+            )),
+            ReconcileOutcome::Applied
+        );
+        assert_eq!(model.working_context, Some(context));
+        model.set_interaction_mode(InteractionMode::Plan);
+        model.compact_context(ContextCompactionStrategy::Compact);
+        assert!(matches!(
+            model.take_commands().as_slice(),
+            [
+                TimelineCommand::SetInteractionMode(InteractionMode::Plan),
+                TimelineCommand::CompactContext {
+                    strategy: ContextCompactionStrategy::Compact,
+                    target_tokens: None,
+                }
+            ]
+        ));
+    }
+
+    #[test]
     fn checkpoint_projection_and_commands_remain_server_authoritative() {
         let chat_id = Uuid::now_v7();
         let workspace_id = Uuid::now_v7();
@@ -461,6 +605,7 @@ mod tests {
             activities: Vec::new(),
             approvals: Vec::new(),
             queued_prompts: Vec::new(),
+            working_context: None,
             checkpoints: vec![homebot_protocol::TurnCheckpointSummary {
                 id: before_id,
                 chat_id,

@@ -130,8 +130,26 @@ pub struct QueuedPrompt {
     pub attachment_ids: Vec<Uuid>,
     pub skill_ids: Vec<Uuid>,
     pub skill_version_ids: Vec<Uuid>,
+    pub kind: QueuedPromptKind,
     pub position: u32,
     pub created_at_ms: i64,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum QueuedPromptKind {
+    FollowUp,
+    Steering,
+}
+
+impl QueuedPromptKind {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::FollowUp => "follow_up",
+            Self::Steering => "steering",
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]

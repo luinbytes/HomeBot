@@ -11,24 +11,26 @@ use homebot_protocol::{
     ArtifactSummary, AttachChatWorkspaceRequest, Attachment, BotColor, BotMutationRequest,
     BotPermissionProfile, BotProviderStatus, BotResponse, BotShape, ChatTimelineResponse,
     ChatWorkspaceSummary, CheckpointDiffResponse, CheckpointPhase, CheckpointRestoreSummary,
+    CompactWorkingContextRequest, ContextCompactionStatus, ContextCompactionStrategy,
     ConversationReconciliation, CreateAttachmentRequest, CreateAttachmentResponse,
     CreateBotRequest, CreateDirectChatRequest, CreateDirectChatResponse, CreateGroupChatRequest,
     CreateGroupChatResponse, CreateLocalMcpPluginRequest, CreatePullRequestRequest,
     CreateRepositoryWorkspaceRequest, CreateRoutineRequest, CreateRoutineTriggerRequest,
     CreateSkillRequest, DeliverRoutineTriggerRequest, DetachChatWorkspaceRequest,
     DuplicateRoutineRequest, DuplicateSkillRequest, FinalizeAttachmentRequest, GroupBotStatus,
-    GroupTimelineResponse, HandoffGroupRequest, ImportSkillRequest, MissedRunPolicy, OverlapPolicy,
-    PluginConnectionState, PluginMutationRequest, PluginSummary, PullRequestMetadata,
-    PullRequestMutationResponse, RecordedAction, RecordedActor, RepositoryWorkspaceSummary,
-    RestoreCheckpointRequest, RetryPolicy, RoutineDefinition, RoutineInput, RoutineInputKind,
-    RoutineJobSummary, RoutineRecordingSummary, RoutineRunSummary, RoutineSchedule, RoutineStep,
-    RoutineStepStatus, RoutineSummary, RoutineTriggerDefinition, RoutineTriggerSource,
-    RunRoutineRequest, SecretSummary, SendGroupMessageRequest, SendMessageRequest,
-    SendMessageResponse, SkillAssignmentRequest, SkillBundle, SkillContext, SkillDefinition,
-    SkillImportConflictPolicy, SkillSummary, SkillToolReference, StartRoutineRecordingRequest,
-    TurnCheckpointSummary, UpdateBotRequest, UpdateGroupParticipantRequest, UpdateRoutineRequest,
-    UpdateSkillRequest, VcsCommitRequest, VcsCommitResult, VcsCreateBranchRequest,
-    VcsMutationStatus, VcsPushRequest, VcsRemoteMutationResponse, VcsStatus, WorkingTreeCondition,
+    GroupTimelineResponse, HandoffGroupRequest, ImportSkillRequest, InteractionMode,
+    MissedRunPolicy, OverlapPolicy, PluginConnectionState, PluginMutationRequest, PluginSummary,
+    PullRequestMetadata, PullRequestMutationResponse, QueuedPromptKind, RecordedAction,
+    RecordedActor, RepositoryWorkspaceSummary, RestoreCheckpointRequest, RetryPolicy,
+    RoutineDefinition, RoutineInput, RoutineInputKind, RoutineJobSummary, RoutineRecordingSummary,
+    RoutineRunSummary, RoutineSchedule, RoutineStep, RoutineStepStatus, RoutineSummary,
+    RoutineTriggerDefinition, RoutineTriggerSource, RunRoutineRequest, SecretSummary,
+    SendGroupMessageRequest, SendMessageRequest, SendMessageResponse, SetInteractionModeRequest,
+    SkillAssignmentRequest, SkillBundle, SkillContext, SkillDefinition, SkillImportConflictPolicy,
+    SkillSummary, SkillToolReference, StartRoutineRecordingRequest, TurnCheckpointSummary,
+    UpdateBotRequest, UpdateGroupParticipantRequest, UpdateRoutineRequest, UpdateSkillRequest,
+    VcsCommitRequest, VcsCommitResult, VcsCreateBranchRequest, VcsMutationStatus, VcsPushRequest,
+    VcsRemoteMutationResponse, VcsStatus, WorkingContextSummary, WorkingTreeCondition,
     WorkingTreeDiffResponse, WorkspaceBranchesResponse, WorkspaceMode,
 };
 use homebot_providers::{
@@ -52,6 +54,9 @@ struct ChatFakeAdapter {
     operations: Arc<Mutex<HashMap<Uuid, watch::Sender<bool>>>>,
     approvals: Arc<Mutex<HashMap<Uuid, watch::Sender<bool>>>>,
     prompts: Arc<Mutex<Vec<String>>>,
+    modes: Arc<Mutex<Vec<homebot_providers::ExecutionMode>>>,
+    compactions: Arc<Mutex<Vec<CompactRequest>>>,
+    context_features: bool,
 }
 
 impl ChatFakeAdapter {
@@ -61,7 +66,17 @@ impl ChatFakeAdapter {
             operations: Arc::new(Mutex::new(HashMap::new())),
             approvals: Arc::new(Mutex::new(HashMap::new())),
             prompts: Arc::new(Mutex::new(Vec::new())),
+            modes: Arc::new(Mutex::new(Vec::new())),
+            compactions: Arc::new(Mutex::new(Vec::new())),
+            context_features: true,
         })
+    }
+
+    fn without_context_features() -> Result<Self, homebot_providers::ProviderContractError> {
+        let mut adapter = Self::new()?;
+        adapter.id = ProviderAdapterId::new("chat-basic")?;
+        adapter.context_features = false;
+        Ok(adapter)
     }
 
     async fn run(&self, operation_id: Uuid, conversation_id: String) -> ProviderRun {
@@ -85,6 +100,13 @@ impl ChatFakeAdapter {
                         kind: ActivityKind::Search,
                         title: "Searching sources".to_owned(),
                         status: ProviderActivityStatus::Started,
+                    },
+                },
+                ProviderEvent::Usage {
+                    usage: homebot_providers::ProviderUsage {
+                        input_tokens: 120,
+                        output_tokens: 5,
+                        cached_input_tokens: 40,
                     },
                 },
                 ProviderEvent::ApprovalRequired {
@@ -128,21 +150,24 @@ impl ProviderAdapter for ChatFakeAdapter {
     }
 
     async fn discover(&self) -> Result<ProviderDescriptor, ProviderError> {
+        let mut supported = [
+            ProviderCapability::ConversationResume,
+            ProviderCapability::Streaming,
+            ProviderCapability::Activities,
+            ProviderCapability::Approvals,
+            ProviderCapability::Cancellation,
+            ProviderCapability::Usage,
+        ]
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+        if self.context_features {
+            supported.extend([ProviderCapability::Compaction, ProviderCapability::PlanMode]);
+        }
         Ok(ProviderDescriptor {
             adapter_id: self.id.clone(),
             display_name: "Chat fixture".to_owned(),
             executable: None,
-            capabilities: ProviderCapabilities {
-                supported: [
-                    ProviderCapability::ConversationResume,
-                    ProviderCapability::Streaming,
-                    ProviderCapability::Activities,
-                    ProviderCapability::Approvals,
-                    ProviderCapability::Cancellation,
-                ]
-                .into_iter()
-                .collect(),
-            },
+            capabilities: ProviderCapabilities { supported },
         })
     }
 
@@ -155,11 +180,17 @@ impl ProviderAdapter for ChatFakeAdapter {
     }
 
     async fn models(&self) -> Result<Vec<ProviderModel>, ProviderError> {
-        Ok(Vec::new())
+        Ok(vec![ProviderModel {
+            id: "fixture".to_owned(),
+            display_name: "Fixture".to_owned(),
+            context_window_tokens: Some(4_096),
+            supports_reasoning: true,
+        }])
     }
 
     async fn start(&self, request: StartRequest) -> Result<ProviderRun, ProviderError> {
         self.prompts.lock().await.push(request.prompt.clone());
+        self.modes.lock().await.push(request.mode);
         Ok(self
             .run(request.operation_id, format!("chat-{}", request.chat_id))
             .await)
@@ -167,6 +198,7 @@ impl ProviderAdapter for ChatFakeAdapter {
 
     async fn resume(&self, request: ResumeRequest) -> Result<ProviderRun, ProviderError> {
         self.prompts.lock().await.push(request.prompt.clone());
+        self.modes.lock().await.push(request.mode);
         Ok(self
             .run(request.operation_id, request.conversation_id)
             .await)
@@ -196,7 +228,8 @@ impl ProviderAdapter for ChatFakeAdapter {
             .map_err(|_| ProviderError::internal("approval finished"))
     }
 
-    async fn compact(&self, _request: CompactRequest) -> Result<(), ProviderError> {
+    async fn compact(&self, request: CompactRequest) -> Result<(), ProviderError> {
+        self.compactions.lock().await.push(request);
         Ok(())
     }
 
@@ -1256,7 +1289,8 @@ async fn direct_chat_send_queue_replay_and_timeline_are_server_authoritative()
         .await?;
     assert!(matches!(
         response_json::<SendMessageResponse>(response).await?,
-        SendMessageResponse::Sent { .. }
+        SendMessageResponse::Queued { prompt }
+            if prompt.kind == QueuedPromptKind::Steering
     ));
     let queued_key = Uuid::now_v7();
     let queued = SendMessageRequest {
@@ -1305,9 +1339,11 @@ async fn direct_chat_send_queue_replay_and_timeline_are_server_authoritative()
         )
         .await?;
     let timeline = response_json::<ChatTimelineResponse>(timeline).await?;
-    assert_eq!(timeline.messages.len(), 2);
+    assert_eq!(timeline.messages.len(), 1);
     assert_eq!(timeline.approvals.len(), 1);
-    assert_eq!(timeline.queued_prompts.len(), 1);
+    assert_eq!(timeline.queued_prompts.len(), 2);
+    assert_eq!(timeline.queued_prompts[0].kind, QueuedPromptKind::Steering);
+    assert_eq!(timeline.queued_prompts[1].kind, QueuedPromptKind::FollowUp);
     assert!(timeline.chat.running);
     assert!(timeline.boundary_sequence >= 4);
     let stopped = app
@@ -1525,6 +1561,657 @@ async fn provider_turn_streams_persists_approves_resumes_and_cancels()
     })
     .await?;
     assert!(!timeline.chat.running);
+    Ok(())
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn queued_followups_and_steering_are_idempotent_restart_durable_and_cancel_stable()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let database = directory.path().join("homebot.db");
+    let storage = Storage::open(&database).await?;
+    let profile_id = Uuid::now_v7();
+    sqlx::query("INSERT INTO provider_profiles (id, adapter_kind, display_name, configuration_json, created_at_ms, updated_at_ms) VALUES (?, 'chat-fake', 'Fixture', '{}', 1, 1)")
+        .bind(profile_id.to_string()).execute(storage.pool()).await?;
+    let runtime = Arc::new(ProviderRuntime::new());
+    runtime.register(Arc::new(ChatFakeAdapter::new()?)).await?;
+    let mut bot = homebot_domain::Bot::create("Queue Bot", "Priorities")?;
+    bot.provider_profile_id = Some(profile_id);
+    let bot = storage.create_bot(Uuid::nil(), bot, 1).await?;
+    let chat = storage
+        .create_direct_chat(Uuid::nil(), bot.id.0, Uuid::now_v7(), 2)
+        .await?;
+    let app =
+        router(AppState::new(storage.clone(), "correct-token").with_provider_runtime(runtime));
+    let request = |key: Uuid, content: &str| SendMessageRequest {
+        request_id: Uuid::now_v7(),
+        idempotency_key: key,
+        content: content.to_owned(),
+        attachment_ids: Vec::new(),
+        reply_to_message_id: None,
+        mentioned_bot_ids: Vec::new(),
+        skill_ids: Vec::new(),
+    };
+    let first = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            &format!("/api/v1/chats/{}/messages", chat.id),
+            &request(Uuid::now_v7(), "Current work"),
+        ))
+        .await?;
+    assert_eq!(first.status(), StatusCode::OK, "initial send failed");
+    assert!(matches!(
+        response_json::<SendMessageResponse>(first).await?,
+        SendMessageResponse::Sent { .. }
+    ));
+    let _ = wait_for_timeline(&app, chat.id, |timeline| timeline.chat.running).await?;
+
+    let follow_key = Uuid::now_v7();
+    let follow = request(follow_key, "Ordinary follow-up");
+    let mut original_follow = None;
+    for _ in 0..2 {
+        let response = app
+            .clone()
+            .oneshot(json_request(
+                "POST",
+                &format!("/api/v1/chats/{}/messages", chat.id),
+                &follow,
+            ))
+            .await?;
+        assert_eq!(response.status(), StatusCode::OK, "follow-up queue failed");
+        let SendMessageResponse::Queued { prompt } =
+            response_json::<SendMessageResponse>(response).await?
+        else {
+            return Err("follow-up was not queued".into());
+        };
+        assert_eq!(prompt.kind, QueuedPromptKind::FollowUp);
+        if let Some(original) = &original_follow {
+            assert_eq!(original, &prompt);
+        } else {
+            original_follow = Some(prompt);
+        }
+    }
+
+    let steering_key = Uuid::now_v7();
+    let steering = request(steering_key, "Priority steering");
+    let mut original_steering = None;
+    for _ in 0..2 {
+        let response = app
+            .clone()
+            .oneshot(json_request(
+                "POST",
+                &format!("/api/v1/chats/{}/steer", chat.id),
+                &steering,
+            ))
+            .await?;
+        assert_eq!(response.status(), StatusCode::OK, "steering queue failed");
+        let SendMessageResponse::Queued { prompt } =
+            response_json::<SendMessageResponse>(response).await?
+        else {
+            return Err("steering was not queued".into());
+        };
+        assert_eq!(prompt.kind, QueuedPromptKind::Steering);
+        if let Some(original) = &original_steering {
+            assert_eq!(original, &prompt);
+        } else {
+            original_steering = Some(prompt);
+        }
+    }
+    let timeline = wait_for_timeline(&app, chat.id, |_| true).await?;
+    assert_eq!(timeline.chat.queued_count, 2);
+    assert_eq!(
+        timeline
+            .queued_prompts
+            .iter()
+            .map(|prompt| (prompt.kind, prompt.content.as_str(), prompt.position))
+            .collect::<Vec<_>>(),
+        vec![
+            (QueuedPromptKind::Steering, "Priority steering", 0),
+            (QueuedPromptKind::FollowUp, "Ordinary follow-up", 1),
+        ]
+    );
+
+    let stopped = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            &format!("/api/v1/chats/{}/stop", chat.id),
+            &BotMutationRequest {
+                request_id: Uuid::now_v7(),
+                idempotency_key: Uuid::now_v7(),
+            },
+        ))
+        .await?;
+    assert_eq!(stopped.status(), StatusCode::OK);
+    let stopped = wait_for_timeline(&app, chat.id, |timeline| {
+        !timeline.chat.running
+            && timeline
+                .messages
+                .last()
+                .is_some_and(|message| message.status == homebot_protocol::MessageStatus::Cancelled)
+    })
+    .await?;
+    assert_eq!(
+        stopped
+            .queued_prompts
+            .iter()
+            .map(|prompt| prompt.id)
+            .collect::<Vec<_>>(),
+        vec![steering_key, follow_key]
+    );
+    drop(app);
+    drop(storage);
+
+    let reopened = Storage::open(&database).await?;
+    let restarted_app = router(AppState::new(reopened.clone(), "correct-token"));
+    let restarted_timeline = wait_for_timeline(&restarted_app, chat.id, |_| true).await?;
+    assert_eq!(
+        restarted_timeline
+            .queued_prompts
+            .iter()
+            .map(|prompt| prompt.id)
+            .collect::<Vec<_>>(),
+        vec![steering_key, follow_key]
+    );
+    drop(restarted_app);
+    let durable = reopened.queued_prompts(Uuid::nil(), chat.id).await?;
+    assert_eq!(
+        durable
+            .iter()
+            .map(|prompt| (prompt.kind, prompt.id, prompt.position))
+            .collect::<Vec<_>>(),
+        vec![
+            (
+                homebot_domain::chat::QueuedPromptKind::Steering,
+                steering_key,
+                0
+            ),
+            (
+                homebot_domain::chat::QueuedPromptKind::FollowUp,
+                follow_key,
+                1
+            ),
+        ]
+    );
+    let first_promoted = reopened
+        .promote_next_queued_prompt(Uuid::nil(), chat.id, 20)
+        .await?
+        .ok_or("missing steering after restart")?;
+    assert_eq!(
+        first_promoted.prompt.kind,
+        homebot_domain::chat::QueuedPromptKind::Steering
+    );
+    reopened
+        .set_chat_running(Uuid::nil(), chat.id, false, 21)
+        .await?;
+    let second_promoted = reopened
+        .promote_next_queued_prompt(Uuid::nil(), chat.id, 22)
+        .await?
+        .ok_or("missing follow-up after restart")?;
+    assert_eq!(
+        second_promoted.prompt.kind,
+        homebot_domain::chat::QueuedPromptKind::FollowUp
+    );
+    Ok(())
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn queued_turns_plan_mode_compaction_and_reset_preserve_homebot_history()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let database = directory.path().join("homebot.db");
+    let storage = Storage::open(&database).await?;
+    let profile_id = Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO provider_profiles (
+            id, adapter_kind, display_name, configuration_json, created_at_ms, updated_at_ms
+         ) VALUES (?, 'chat-fake', 'Fixture', '{\"model\":\"fixture\"}', 1, 1)",
+    )
+    .bind(profile_id.to_string())
+    .execute(storage.pool())
+    .await?;
+    let adapter = Arc::new(ChatFakeAdapter::new()?);
+    let runtime = Arc::new(ProviderRuntime::new());
+    runtime.register(adapter.clone()).await?;
+    let mut bot = homebot_domain::Bot::create("Context Bot", "Planning")?;
+    bot.provider_profile_id = Some(profile_id);
+    let bot = storage.create_bot(Uuid::nil(), bot, 1).await?;
+    let chat = storage
+        .create_direct_chat(Uuid::nil(), bot.id.0, Uuid::now_v7(), 2)
+        .await?;
+    let app =
+        router(AppState::new(storage.clone(), "correct-token").with_provider_runtime(runtime));
+
+    let context = app
+        .clone()
+        .oneshot(
+            Request::get(format!("/api/v1/chats/{}/working-context", chat.id))
+                .header("authorization", "Bearer correct-token")
+                .body(Body::empty())?,
+        )
+        .await?;
+    let context = response_json::<WorkingContextSummary>(context).await?;
+    assert_eq!(context.interaction_mode, InteractionMode::Default);
+    assert!(context.plan_mode_available && context.compaction_available);
+    assert_eq!(context.context_window_tokens, Some(4_096));
+
+    let mode_request = SetInteractionModeRequest {
+        request_id: Uuid::now_v7(),
+        idempotency_key: Uuid::now_v7(),
+        mode: InteractionMode::Plan,
+    };
+    for _ in 0..2 {
+        let response = app
+            .clone()
+            .oneshot(json_request(
+                "PUT",
+                &format!("/api/v1/chats/{}/interaction-mode", chat.id),
+                &mode_request,
+            ))
+            .await?;
+        assert_eq!(
+            response_json::<WorkingContextSummary>(response)
+                .await?
+                .interaction_mode,
+            InteractionMode::Plan
+        );
+    }
+    let default_mode = app
+        .clone()
+        .oneshot(json_request(
+            "PUT",
+            &format!("/api/v1/chats/{}/interaction-mode", chat.id),
+            &SetInteractionModeRequest {
+                request_id: Uuid::now_v7(),
+                idempotency_key: Uuid::now_v7(),
+                mode: InteractionMode::Default,
+            },
+        ))
+        .await?;
+    assert_eq!(
+        response_json::<WorkingContextSummary>(default_mode)
+            .await?
+            .interaction_mode,
+        InteractionMode::Default
+    );
+    let plan_mode = app
+        .clone()
+        .oneshot(json_request(
+            "PUT",
+            &format!("/api/v1/chats/{}/interaction-mode", chat.id),
+            &SetInteractionModeRequest {
+                request_id: Uuid::now_v7(),
+                idempotency_key: Uuid::now_v7(),
+                mode: InteractionMode::Plan,
+            },
+        ))
+        .await?;
+    assert_eq!(
+        response_json::<WorkingContextSummary>(plan_mode)
+            .await?
+            .interaction_mode,
+        InteractionMode::Plan
+    );
+
+    let send_prompt = |content: &str| SendMessageRequest {
+        request_id: Uuid::now_v7(),
+        idempotency_key: Uuid::now_v7(),
+        content: content.to_owned(),
+        attachment_ids: Vec::new(),
+        reply_to_message_id: None,
+        mentioned_bot_ids: Vec::new(),
+        skill_ids: Vec::new(),
+    };
+    let first = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            &format!("/api/v1/chats/{}/messages", chat.id),
+            &send_prompt("First turn"),
+        ))
+        .await?;
+    assert!(matches!(
+        response_json::<SendMessageResponse>(first).await?,
+        SendMessageResponse::Sent { .. }
+    ));
+    let compact_while_running = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            &format!("/api/v1/chats/{}/working-context", chat.id),
+            &CompactWorkingContextRequest {
+                request_id: Uuid::now_v7(),
+                idempotency_key: Uuid::now_v7(),
+                strategy: ContextCompactionStrategy::Compact,
+                target_tokens: Some(64),
+            },
+        ))
+        .await?;
+    assert_eq!(compact_while_running.status(), StatusCode::CONFLICT);
+    let _ = wait_for_timeline(&app, chat.id, |timeline| {
+        timeline
+            .approvals
+            .iter()
+            .any(|approval| approval.status == homebot_protocol::ApprovalStatus::Pending)
+    })
+    .await
+    .map_err(|error| format!("initial approval: {error}"))?;
+    for content in ["Second turn", "Third turn"] {
+        let response = app
+            .clone()
+            .oneshot(json_request(
+                "POST",
+                &format!("/api/v1/chats/{}/messages", chat.id),
+                &send_prompt(content),
+            ))
+            .await?;
+        assert!(matches!(
+            response_json::<SendMessageResponse>(response).await?,
+            SendMessageResponse::Queued { .. }
+        ));
+    }
+
+    for turn in 0..3 {
+        let queued_after_promotion = 2 - turn;
+        let timeline = wait_for_timeline(&app, chat.id, |timeline| {
+            timeline
+                .approvals
+                .iter()
+                .filter(|approval| approval.status == homebot_protocol::ApprovalStatus::Pending)
+                .count()
+                == 1
+                && timeline.queued_prompts.len() == queued_after_promotion
+                && timeline
+                    .queued_prompts
+                    .iter()
+                    .enumerate()
+                    .all(|(position, prompt)| u32::try_from(position) == Ok(prompt.position))
+        })
+        .await
+        .map_err(|error| format!("turn {turn} approval: {error}"))?;
+        let approval_id = timeline
+            .approvals
+            .iter()
+            .find(|approval| approval.status == homebot_protocol::ApprovalStatus::Pending)
+            .ok_or("pending approval missing")?
+            .id;
+        let response = app
+            .clone()
+            .oneshot(json_request(
+                "POST",
+                &format!("/api/v1/approvals/{approval_id}/decision"),
+                &ApprovalDecisionRequest {
+                    request_id: Uuid::now_v7(),
+                    idempotency_key: Uuid::now_v7(),
+                    allow: true,
+                },
+            ))
+            .await?;
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+    let timeline = wait_for_timeline(&app, chat.id, |timeline| {
+        !timeline.chat.running && timeline.messages.len() == 6 && timeline.queued_prompts.is_empty()
+    })
+    .await
+    .map_err(|error| format!("queued turns completed: {error}"))?;
+    assert_eq!(
+        adapter.prompts.lock().await.as_slice(),
+        ["First turn", "Second turn", "Third turn"]
+    );
+    assert!(
+        adapter
+            .modes
+            .lock()
+            .await
+            .iter()
+            .all(|mode| *mode == homebot_providers::ExecutionMode::Plan)
+    );
+    assert_eq!(
+        timeline
+            .working_context
+            .as_ref()
+            .and_then(|value| value.used_tokens),
+        Some(125)
+    );
+
+    let compact_request = CompactWorkingContextRequest {
+        request_id: Uuid::now_v7(),
+        idempotency_key: Uuid::now_v7(),
+        strategy: ContextCompactionStrategy::Compact,
+        target_tokens: Some(64),
+    };
+    for _ in 0..2 {
+        let response = app
+            .clone()
+            .oneshot(json_request(
+                "POST",
+                &format!("/api/v1/chats/{}/working-context", chat.id),
+                &compact_request,
+            ))
+            .await?;
+        let context = response_json::<WorkingContextSummary>(response).await?;
+        assert_eq!(
+            context.compaction_status,
+            ContextCompactionStatus::Completed
+        );
+        assert_eq!(context.generation, 1);
+        assert_eq!(context.used_tokens, None);
+    }
+    assert_eq!(adapter.compactions.lock().await.len(), 1);
+
+    let after_compaction = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            &format!("/api/v1/chats/{}/messages", chat.id),
+            &send_prompt("Post-compact boundary"),
+        ))
+        .await?;
+    assert!(matches!(
+        response_json::<SendMessageResponse>(after_compaction).await?,
+        SendMessageResponse::Sent { .. }
+    ));
+    let pending = wait_for_timeline(&app, chat.id, |timeline| {
+        timeline
+            .approvals
+            .iter()
+            .any(|approval| approval.status == homebot_protocol::ApprovalStatus::Pending)
+    })
+    .await
+    .map_err(|error| format!("post-compaction approval: {error}"))?;
+    let approval_id = pending
+        .approvals
+        .iter()
+        .find(|approval| approval.status == homebot_protocol::ApprovalStatus::Pending)
+        .ok_or("post-compaction approval missing")?
+        .id;
+    let allowed = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            &format!("/api/v1/approvals/{approval_id}/decision"),
+            &ApprovalDecisionRequest {
+                request_id: Uuid::now_v7(),
+                idempotency_key: Uuid::now_v7(),
+                allow: true,
+            },
+        ))
+        .await?;
+    assert_eq!(allowed.status(), StatusCode::OK);
+    let _ = wait_for_timeline(&app, chat.id, |timeline| {
+        !timeline.chat.running && timeline.messages.len() == 8
+    })
+    .await
+    .map_err(|error| format!("post-compaction turn completed: {error}"))?;
+    assert_eq!(
+        adapter.prompts.lock().await.last().map(String::as_str),
+        Some("Post-compact boundary")
+    );
+
+    storage
+        .begin_working_context_compaction(Uuid::nil(), chat.id, 40)
+        .await?;
+    let concurrent_reset = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            &format!("/api/v1/chats/{}/working-context", chat.id),
+            &CompactWorkingContextRequest {
+                request_id: Uuid::now_v7(),
+                idempotency_key: Uuid::now_v7(),
+                strategy: ContextCompactionStrategy::Reset,
+                target_tokens: None,
+            },
+        ))
+        .await?;
+    assert_eq!(concurrent_reset.status(), StatusCode::CONFLICT);
+    storage
+        .set_working_context_compaction(Uuid::nil(), chat.id, "completed", false, false, None, 41)
+        .await?;
+
+    let reset = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            &format!("/api/v1/chats/{}/working-context", chat.id),
+            &CompactWorkingContextRequest {
+                request_id: Uuid::now_v7(),
+                idempotency_key: Uuid::now_v7(),
+                strategy: ContextCompactionStrategy::Reset,
+                target_tokens: None,
+            },
+        ))
+        .await?;
+    assert_eq!(
+        response_json::<WorkingContextSummary>(reset)
+            .await?
+            .generation,
+        2
+    );
+    assert_eq!(
+        storage
+            .provider_conversation(bot.id.0, chat.id, profile_id)
+            .await?,
+        None
+    );
+    assert_eq!(storage.chat_messages(Uuid::nil(), chat.id).await?.len(), 8);
+
+    let fresh = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            &format!("/api/v1/chats/{}/messages", chat.id),
+            &send_prompt("Fresh context only"),
+        ))
+        .await?;
+    assert_eq!(fresh.status(), StatusCode::OK);
+    let _ = wait_for_timeline(&app, chat.id, |timeline| timeline.messages.len() == 10)
+        .await
+        .map_err(|error| format!("reset turn persisted: {error}"))?;
+    assert_eq!(
+        adapter.prompts.lock().await.last().map(String::as_str),
+        Some("Fresh context only")
+    );
+    let _ = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            &format!("/api/v1/chats/{}/stop", chat.id),
+            &BotMutationRequest {
+                request_id: Uuid::now_v7(),
+                idempotency_key: Uuid::now_v7(),
+            },
+        ))
+        .await?;
+    let _ = wait_for_timeline(&app, chat.id, |timeline| !timeline.chat.running)
+        .await
+        .map_err(|error| format!("reset turn stopped: {error}"))?;
+    storage
+        .set_working_context_compaction(Uuid::nil(), chat.id, "running", false, false, None, 99)
+        .await?;
+    drop(app);
+    drop(storage);
+    let reopened = Storage::open(&database).await?;
+    assert_eq!(
+        reopened.chat_messages(Uuid::nil(), chat.id).await?.len(),
+        10
+    );
+    let context = reopened.load_working_context(Uuid::nil(), chat.id).await?;
+    assert_eq!(context.generation, 2);
+    assert_eq!(context.interaction_mode, "plan");
+    assert_eq!(context.compaction_status, "failed");
+    assert_eq!(
+        context.last_error.as_deref(),
+        Some("HomeBot restarted before the context operation completed")
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn unsupported_plan_and_native_compaction_fail_closed_while_reset_remains_available()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let storage = Storage::open(&directory.path().join("homebot.db")).await?;
+    let profile_id = Uuid::now_v7();
+    sqlx::query("INSERT INTO provider_profiles (id, adapter_kind, display_name, configuration_json, created_at_ms, updated_at_ms) VALUES (?, 'chat-basic', 'Basic', '{}', 1, 1)")
+        .bind(profile_id.to_string()).execute(storage.pool()).await?;
+    let runtime = Arc::new(ProviderRuntime::new());
+    runtime
+        .register(Arc::new(ChatFakeAdapter::without_context_features()?))
+        .await?;
+    let mut bot = homebot_domain::Bot::create("Basic Bot", "Chat")?;
+    bot.provider_profile_id = Some(profile_id);
+    let bot = storage.create_bot(Uuid::nil(), bot, 1).await?;
+    let chat = storage
+        .create_direct_chat(Uuid::nil(), bot.id.0, Uuid::now_v7(), 2)
+        .await?;
+    let app = router(AppState::new(storage, "correct-token").with_provider_runtime(runtime));
+
+    let plan = app
+        .clone()
+        .oneshot(json_request(
+            "PUT",
+            &format!("/api/v1/chats/{}/interaction-mode", chat.id),
+            &SetInteractionModeRequest {
+                request_id: Uuid::now_v7(),
+                idempotency_key: Uuid::now_v7(),
+                mode: InteractionMode::Plan,
+            },
+        ))
+        .await?;
+    assert_eq!(plan.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let compact = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            &format!("/api/v1/chats/{}/working-context", chat.id),
+            &CompactWorkingContextRequest {
+                request_id: Uuid::now_v7(),
+                idempotency_key: Uuid::now_v7(),
+                strategy: ContextCompactionStrategy::Compact,
+                target_tokens: None,
+            },
+        ))
+        .await?;
+    assert_eq!(compact.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let reset = app
+        .oneshot(json_request(
+            "POST",
+            &format!("/api/v1/chats/{}/working-context", chat.id),
+            &CompactWorkingContextRequest {
+                request_id: Uuid::now_v7(),
+                idempotency_key: Uuid::now_v7(),
+                strategy: ContextCompactionStrategy::Reset,
+                target_tokens: None,
+            },
+        ))
+        .await?;
+    let reset = response_json::<WorkingContextSummary>(reset).await?;
+    assert_eq!(reset.generation, 1);
+    assert!(!reset.plan_mode_available && !reset.compaction_available);
     Ok(())
 }
 
@@ -1831,7 +2518,7 @@ async fn wait_for_timeline(
     chat_id: Uuid,
     ready: impl Fn(&ChatTimelineResponse) -> bool,
 ) -> Result<ChatTimelineResponse, Box<dyn std::error::Error>> {
-    for _ in 0..100 {
+    for _ in 0..500 {
         let timeline = fetch_timeline(app, chat_id).await?;
         if ready(&timeline) {
             return Ok(timeline);

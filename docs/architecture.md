@@ -44,6 +44,8 @@ Coding turns are bracketed by hidden-ref commits built through alternate Git ind
 
 Status, staged/unstaged diffs, commits, clean branch creation, pushes and pull requests are also server-owned. Remote mutations pass through digest-bound structured approvals; exact results are durably replayed by idempotency key. Clients receive normalized state without remote URLs, credentials, or raw provider output. See [source-control.md](source-control.md).
 
+Queued direct-chat prompts, interaction mode and working-context lifecycle are also server authority. Provider conversation mappings can be compacted or reset without deleting the HomeBot transcript, and archived messages are never silently rebuilt into a reset provider context. See [working-context.md](working-context.md).
+
 ## Identity and conversations
 
 A `Bot` has a HomeBot-owned stable ID, identity, instructions, memory policy, provider profile reference, permissions, skills, and plugins. A direct chat or group chat owns HomeBot transcript history. Backend conversation IDs are mappings keyed by chat and provider profile. Provider switching retains Bot identity and transcript but creates or resumes the appropriate backend mapping.

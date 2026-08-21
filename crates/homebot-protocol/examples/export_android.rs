@@ -187,7 +187,28 @@ data class ApprovalSummary(val id: String, val chat_id: String, val message_id: 
 data class ApprovalDecisionRequest(val request_id: String, val idempotency_key: String, val allow: Boolean)
 
 @Serializable
-data class QueuedPromptSummary(val id: String, val chat_id: String, val content: String, val attachment_ids: List<String>, val skill_ids: List<String> = emptyList(), val position: Int, val created_at_ms: Long)
+enum class QueuedPromptKind { @SerialName("follow_up") FOLLOW_UP, @SerialName("steering") STEERING }
+
+@Serializable
+data class QueuedPromptSummary(val id: String, val chat_id: String, val content: String, val attachment_ids: List<String>, val skill_ids: List<String> = emptyList(), val kind: QueuedPromptKind = QueuedPromptKind.FOLLOW_UP, val position: Int, val created_at_ms: Long)
+
+@Serializable
+enum class InteractionMode { @SerialName("default") DEFAULT, @SerialName("plan") PLAN }
+
+@Serializable
+enum class ContextCompactionStatus { @SerialName("idle") IDLE, @SerialName("running") RUNNING, @SerialName("completed") COMPLETED, @SerialName("failed") FAILED }
+
+@Serializable
+enum class ContextCompactionStrategy { @SerialName("compact") COMPACT, @SerialName("reset") RESET }
+
+@Serializable
+data class WorkingContextSummary(val chat_id: String, val provider_profile_id: String, val interaction_mode: InteractionMode, val plan_mode_available: Boolean, val compaction_available: Boolean, val reset_available: Boolean, val used_tokens: Long? = null, val context_window_tokens: Long? = null, val compaction_status: ContextCompactionStatus, val generation: Int, val compacted_at_ms: Long? = null, val error_message: String? = null, val updated_at_ms: Long)
+
+@Serializable
+data class SetInteractionModeRequest(val request_id: String, val idempotency_key: String, val mode: InteractionMode)
+
+@Serializable
+data class CompactWorkingContextRequest(val request_id: String, val idempotency_key: String, val strategy: ContextCompactionStrategy, val target_tokens: Long? = null)
 
 @Serializable
 data class SecretSummary(val id: String, val label: String, val status: String, val created_at_unix_ms: Long, val updated_at_unix_ms: Long)
@@ -394,7 +415,7 @@ sealed interface SendMessageResponse {
 }
 
 @Serializable
-data class ChatTimelineResponse(val chat: ChatSummary, val messages: List<MessageSummary>, val activities: List<ActivitySummary>, val approvals: List<ApprovalSummary>, val queued_prompts: List<QueuedPromptSummary>, val checkpoints: List<TurnCheckpointSummary> = emptyList(), val boundary_sequence: Long)
+data class ChatTimelineResponse(val chat: ChatSummary, val messages: List<MessageSummary>, val activities: List<ActivitySummary>, val approvals: List<ApprovalSummary>, val queued_prompts: List<QueuedPromptSummary>, val working_context: WorkingContextSummary? = null, val checkpoints: List<TurnCheckpointSummary> = emptyList(), val boundary_sequence: Long)
 
 @Serializable
 data class CreateAttachmentRequest(val request_id: String, val idempotency_key: String, val filename: String, val media_type: String, val size_bytes: Long, val sha256: String)

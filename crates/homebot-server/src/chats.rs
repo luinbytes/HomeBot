@@ -8,6 +8,7 @@ use homebot_domain::chat::{
     ChatApproval as DomainApproval, ChatMessage as DomainMessage, DirectChat as DomainChat,
     ExecutionActivity as DomainActivity, MessageAuthor as DomainAuthor, MessagePart as DomainPart,
     MessageStatus as DomainStatus, QueuedPrompt as DomainPrompt,
+    QueuedPromptKind as DomainPromptKind,
 };
 use homebot_protocol::{
     ActivityDetail, ActivityKind, ActivityPresentation, ActivityStatus, ActivitySummary,
@@ -106,6 +107,7 @@ pub(super) async fn timeline(
         activities: activities.into_iter().map(activity_summary).collect(),
         approvals: approvals.into_iter().map(approval_summary).collect(),
         queued_prompts: prompts.into_iter().map(prompt_summary).collect(),
+        working_context: crate::working_context::summary(&state, chat_id).await?,
         checkpoints,
         boundary_sequence: state
             .storage
@@ -163,6 +165,7 @@ pub(super) async fn send_message(
                         content: &request.content,
                         attachment_ids: &request.attachment_ids,
                         applied_skills: &applied_skills,
+                        kind: DomainPromptKind::FollowUp,
                     },
                     unix_time_ms(),
                 )
@@ -170,14 +173,7 @@ pub(super) async fn send_message(
         };
         let prompt = prompt_summary(prompt);
         if !replayed {
-            publish(
-                &state,
-                "queued_prompt_changed",
-                ServerEventBody::QueuedPromptChanged {
-                    prompt: prompt.clone(),
-                },
-            )
-            .await?;
+            publish_queue_state(&state, chat_id).await?;
         }
         return Ok(Json(SendMessageResponse::Queued { prompt }));
     }
@@ -264,42 +260,36 @@ pub(super) async fn steer(
             .resolve_applied_skills(state.owner_id, chat.bot_id, &request.skill_ids)
             .await?
     };
-    let message = if replayed {
+    let prompt = if replayed {
         state
             .storage
-            .chat_messages(state.owner_id, chat_id)
+            .queued_prompts(state.owner_id, chat_id)
             .await?
             .into_iter()
-            .find(|message| message.id == request.idempotency_key)
+            .find(|prompt| prompt.id == request.idempotency_key)
             .ok_or_else(ApiError::internal)?
     } else {
         state
             .storage
-            .append_user_message(
+            .enqueue_prompt(
                 state.owner_id,
                 chat_id,
                 request.idempotency_key,
-                &request.content,
-                &request.attachment_ids,
-                request.reply_to_message_id,
-                request.mentioned_bot_ids,
-                &applied_skills,
+                QueuedPromptInput {
+                    content: &request.content,
+                    attachment_ids: &request.attachment_ids,
+                    applied_skills: &applied_skills,
+                    kind: DomainPromptKind::Steering,
+                },
                 unix_time_ms(),
             )
             .await?
     };
-    let message = message_summary(&state, message).await?;
+    let prompt = prompt_summary(prompt);
     if !replayed {
-        publish(
-            &state,
-            "message_changed",
-            ServerEventBody::MessageChanged {
-                message: message.clone(),
-            },
-        )
-        .await?;
+        publish_queue_state(&state, chat_id).await?;
     }
-    Ok(Json(SendMessageResponse::Sent { message }))
+    Ok(Json(SendMessageResponse::Queued { prompt }))
 }
 
 pub(super) async fn stop(
@@ -608,16 +598,49 @@ pub(super) async fn message_summary(
     })
 }
 
-fn prompt_summary(prompt: DomainPrompt) -> QueuedPromptSummary {
+pub(super) fn prompt_summary(prompt: DomainPrompt) -> QueuedPromptSummary {
     QueuedPromptSummary {
         id: prompt.id,
         chat_id: prompt.chat_id,
         content: prompt.content,
         attachment_ids: prompt.attachment_ids,
         skill_ids: prompt.skill_ids,
+        kind: match prompt.kind {
+            DomainPromptKind::FollowUp => homebot_protocol::QueuedPromptKind::FollowUp,
+            DomainPromptKind::Steering => homebot_protocol::QueuedPromptKind::Steering,
+        },
         position: prompt.position,
         created_at_ms: prompt.created_at_ms,
     }
+}
+
+async fn publish_queue_state(state: &AppState, chat_id: Uuid) -> Result<(), ApiError> {
+    for prompt in state
+        .storage
+        .queued_prompts(state.owner_id, chat_id)
+        .await?
+    {
+        publish(
+            state,
+            "queued_prompt_changed",
+            ServerEventBody::QueuedPromptChanged {
+                prompt: prompt_summary(prompt),
+            },
+        )
+        .await?;
+    }
+    let chat = state
+        .storage
+        .get_direct_chat(state.owner_id, chat_id)
+        .await?;
+    publish(
+        state,
+        "chat_changed",
+        ServerEventBody::ChatChanged {
+            chat: chat_summary(chat),
+        },
+    )
+    .await
 }
 
 pub(super) fn activity_summary(activity: DomainActivity) -> ActivitySummary {

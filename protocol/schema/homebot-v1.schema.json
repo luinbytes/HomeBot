@@ -43,6 +43,9 @@
     "client_message": {
       "$ref": "#/$defs/ClientMessage"
     },
+    "compact_working_context_request": {
+      "$ref": "#/$defs/CompactWorkingContextRequest"
+    },
     "create_attachment_request": {
       "$ref": "#/$defs/CreateAttachmentRequest"
     },
@@ -154,6 +157,9 @@
     "server_event": {
       "$ref": "#/$defs/ServerEvent"
     },
+    "set_interaction_mode_request": {
+      "$ref": "#/$defs/SetInteractionModeRequest"
+    },
     "skill": {
       "$ref": "#/$defs/SkillSummary"
     },
@@ -198,6 +204,9 @@
     },
     "vcs_status": {
       "$ref": "#/$defs/VcsStatus"
+    },
+    "working_context": {
+      "$ref": "#/$defs/WorkingContextSummary"
     },
     "working_tree_diff": {
       "$ref": "#/$defs/WorkingTreeDiffResponse"
@@ -273,6 +282,9 @@
     "send_message_response",
     "message_mutation_request",
     "chat_timeline_response",
+    "working_context",
+    "set_interaction_mode_request",
+    "compact_working_context_request",
     "approval_decision_request"
   ],
   "$defs": {
@@ -1033,6 +1045,17 @@
           "items": {
             "$ref": "#/$defs/QueuedPromptSummary"
           }
+        },
+        "working_context": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WorkingContextSummary"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         }
       },
       "additionalProperties": false,
@@ -1315,6 +1338,52 @@
             "content"
           ]
         }
+      ]
+    },
+    "CompactWorkingContextRequest": {
+      "type": "object",
+      "properties": {
+        "idempotency_key": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "request_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "strategy": {
+          "$ref": "#/$defs/ContextCompactionStrategy"
+        },
+        "target_tokens": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "request_id",
+        "idempotency_key",
+        "strategy"
+      ]
+    },
+    "ContextCompactionStatus": {
+      "type": "string",
+      "enum": [
+        "idle",
+        "running",
+        "completed",
+        "failed"
+      ]
+    },
+    "ContextCompactionStrategy": {
+      "type": "string",
+      "enum": [
+        "compact",
+        "reset"
       ]
     },
     "ConversationReconciliation": {
@@ -2053,6 +2122,13 @@
         "conflict_policy"
       ]
     },
+    "InteractionMode": {
+      "type": "string",
+      "enum": [
+        "default",
+        "plan"
+      ]
+    },
     "MessageAuthor": {
       "type": "string",
       "enum": [
@@ -2668,6 +2744,13 @@
         "base_branch"
       ]
     },
+    "QueuedPromptKind": {
+      "type": "string",
+      "enum": [
+        "follow_up",
+        "steering"
+      ]
+    },
     "QueuedPromptSummary": {
       "type": "object",
       "properties": {
@@ -2692,6 +2775,10 @@
         "id": {
           "type": "string",
           "format": "uuid"
+        },
+        "kind": {
+          "$ref": "#/$defs/QueuedPromptKind",
+          "default": "follow_up"
         },
         "position": {
           "type": "integer",
@@ -3956,6 +4043,44 @@
         {
           "type": "object",
           "properties": {
+            "chat_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "kind": {
+              "type": "string",
+              "const": "queued_prompt_removed"
+            },
+            "prompt_id": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          "required": [
+            "kind",
+            "chat_id",
+            "prompt_id"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "context": {
+              "$ref": "#/$defs/WorkingContextSummary"
+            },
+            "kind": {
+              "type": "string",
+              "const": "working_context_changed"
+            }
+          },
+          "required": [
+            "kind",
+            "context"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
             "kind": {
               "type": "string",
               "const": "secret_changed"
@@ -4384,6 +4509,28 @@
         "protocol_version",
         "sequence",
         "event_id"
+      ]
+    },
+    "SetInteractionModeRequest": {
+      "type": "object",
+      "properties": {
+        "idempotency_key": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "mode": {
+          "$ref": "#/$defs/InteractionMode"
+        },
+        "request_id": {
+          "type": "string",
+          "format": "uuid"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "request_id",
+        "idempotency_key",
+        "mode"
       ]
     },
     "SkillAssignmentRequest": {
@@ -5123,6 +5270,84 @@
       "required": [
         "path",
         "conflicted"
+      ]
+    },
+    "WorkingContextSummary": {
+      "type": "object",
+      "properties": {
+        "chat_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "compacted_at_ms": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int64"
+        },
+        "compaction_available": {
+          "type": "boolean"
+        },
+        "compaction_status": {
+          "$ref": "#/$defs/ContextCompactionStatus"
+        },
+        "context_window_tokens": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "error_message": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "generation": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "interaction_mode": {
+          "$ref": "#/$defs/InteractionMode"
+        },
+        "plan_mode_available": {
+          "type": "boolean"
+        },
+        "provider_profile_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "reset_available": {
+          "type": "boolean"
+        },
+        "updated_at_ms": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "used_tokens": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "chat_id",
+        "provider_profile_id",
+        "interaction_mode",
+        "plan_mode_available",
+        "compaction_available",
+        "reset_available",
+        "compaction_status",
+        "generation",
+        "updated_at_ms"
       ]
     },
     "WorkingTreeCondition": {

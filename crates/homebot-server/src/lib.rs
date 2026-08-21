@@ -13,6 +13,7 @@ mod scheduler;
 mod secrets;
 mod skills;
 mod source_control;
+mod working_context;
 mod workspaces;
 
 use axum::{
@@ -213,6 +214,14 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/chats/{chat_id}/steer", post(chats::steer))
         .route("/api/v1/chats/{chat_id}/stop", post(chats::stop))
         .route("/api/v1/chats/{chat_id}/read", post(chats::mark_read))
+        .route(
+            "/api/v1/chats/{chat_id}/working-context",
+            get(working_context::get).post(working_context::compact),
+        )
+        .route(
+            "/api/v1/chats/{chat_id}/interaction-mode",
+            put(working_context::set_mode),
+        )
         .route(
             "/api/v1/chats/{chat_id}/messages/{message_id}/retry",
             post(chats::retry),

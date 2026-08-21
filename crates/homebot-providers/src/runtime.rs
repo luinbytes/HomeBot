@@ -74,6 +74,21 @@ impl ProviderRuntime {
         Ok(descriptors)
     }
 
+    /// Discovers one configured adapter without allowing unrelated providers to block it.
+    ///
+    /// # Errors
+    /// Fails when the adapter is unknown or its normalized discovery fails.
+    pub async fn descriptor(
+        &self,
+        adapter_id: &ProviderAdapterId,
+    ) -> Result<ProviderDescriptor, ProviderRuntimeError> {
+        self.adapter(adapter_id)
+            .await?
+            .discover()
+            .await
+            .map_err(ProviderRuntimeError::Provider)
+    }
+
     /// Checks all adapters independently so one unavailable provider does not hide others.
     pub async fn health(&self) -> Vec<(ProviderAdapterId, ProviderHealth)> {
         let adapters = self

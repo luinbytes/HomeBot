@@ -67,6 +67,7 @@ Read the deeper contracts:
 - [Repository workspaces](docs/workspaces.md)
 - [Turn checkpoints, diffs, and restore](docs/checkpoints.md)
 - [Source control and pull requests](docs/source-control.md)
+- [Queued work and provider context](docs/working-context.md)
 - [Security and threat model](docs/security.md)
 - [Android](docs/android.md)
 - [Routines](docs/routines.md)

@@ -86,7 +86,9 @@ Bot mutation idempotency hashes include the operation and target Bot as well as 
 
 Direct-chat HTTP operations create or recover the one chat for a Bot, load a complete timeline, submit or queue a message, steer active work and stop active work. Rich message parts cover text, attachments and notices with stable IDs and ordinals. Reply and mention IDs are first-class metadata.
 
-Timeline snapshots contain canonical messages, normalized execution activities, approvals and queued prompts at a durable outbox boundary. Incremental Chat-changed, Message-changed, Message-delta, Activity-changed, Approval-changed and Queued-prompt-changed events reconcile that state. Clients deduplicate event IDs and sequences and replace the timeline when a gap is detected.
+Timeline snapshots contain canonical messages, normalized execution activities, approvals and typed `follow_up`/`steering` queued prompts at a durable outbox boundary. Incremental Chat-changed, Message-changed, Message-delta, Activity-changed, Approval-changed and Queued-prompt-changed events reconcile that state. Clients deduplicate event IDs and sequences and replace the timeline when a gap is detected.
+
+Timeline snapshots also include optional provider-neutral working-context state. Authenticated mode and compact/reset mutations return that state directly and publish `working_context_changed`; atomic queue promotion publishes `queued_prompt_removed`, the durable user message and changed chat state in sequence. Capability flags distinguish unsupported provider features from transient failures.
 
 ## Heartbeats and backpressure
 

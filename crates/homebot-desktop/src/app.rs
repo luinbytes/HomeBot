@@ -243,6 +243,9 @@ impl HomeBotApp {
                     self.workspaces.remove_chat(chat_id);
                 }
                 DesktopEvent::WorkspaceBranches { .. } => {}
+                DesktopEvent::WorkingContext(context) => {
+                    self.timeline.working_context = Some(context);
+                }
                 DesktopEvent::CheckpointDiff(diff) => self.checkpoint_diff = Some(diff),
                 DesktopEvent::MutationFailed(error) => {
                     self.transport_error = Some(error.to_string());
@@ -573,13 +576,18 @@ impl HomeBotApp {
                     });
                 }
                 for prompt in &self.timeline.queued_prompts {
+                    let label = match prompt.kind {
+                        homebot_protocol::QueuedPromptKind::FollowUp => "Queued",
+                        homebot_protocol::QueuedPromptKind::Steering => "Steering",
+                    };
                     ui.label(format!(
-                        "Queued {} · {}",
+                        "{label} {} · {}",
                         prompt.position + 1,
                         prompt.content
                     ));
                 }
             });
+        self.working_context_controls(ui);
         ui.separator();
         ui.text_edit_multiline(&mut self.timeline.composer.content);
         if self.composer_error == Some(ComposerError::EmptyComposer) {
@@ -601,6 +609,68 @@ impl HomeBotApp {
             }
             if self.timeline.scroll.unseen_updates > 0 && ui.button("Jump to latest").clicked() {
                 self.timeline.set_at_bottom(true);
+            }
+        });
+    }
+
+    fn working_context_controls(&mut self, ui: &mut egui::Ui) {
+        let Some(context) = self.timeline.working_context.clone() else {
+            return;
+        };
+        let idle = self
+            .timeline
+            .chat
+            .as_ref()
+            .is_some_and(|chat| !chat.running);
+        let context_idle =
+            context.compaction_status != homebot_protocol::ContextCompactionStatus::Running;
+        ui.horizontal(|ui| {
+            let usage = match (context.used_tokens, context.context_window_tokens) {
+                (Some(used), Some(limit)) => format!("Context {used}/{limit} tokens"),
+                (Some(used), None) => format!("Context {used} tokens"),
+                _ => "Context size unavailable".to_owned(),
+            };
+            ui.label(usage);
+            if context.plan_mode_available {
+                let plan = context.interaction_mode == homebot_protocol::InteractionMode::Plan;
+                if ui
+                    .button(if plan { "Use default" } else { "Use plan" })
+                    .clicked()
+                {
+                    self.timeline.set_interaction_mode(if plan {
+                        homebot_protocol::InteractionMode::Default
+                    } else {
+                        homebot_protocol::InteractionMode::Plan
+                    });
+                }
+            }
+            if context.compaction_available
+                && ui
+                    .add_enabled(idle && context_idle, egui::Button::new("Compact"))
+                    .clicked()
+            {
+                self.timeline
+                    .compact_context(homebot_protocol::ContextCompactionStrategy::Compact);
+            }
+            if context.reset_available
+                && ui
+                    .add_enabled(idle && context_idle, egui::Button::new("Reset context"))
+                    .clicked()
+            {
+                self.timeline
+                    .compact_context(homebot_protocol::ContextCompactionStrategy::Reset);
+            }
+            match context.compaction_status {
+                homebot_protocol::ContextCompactionStatus::Running => {
+                    ui.label("Updating context…");
+                }
+                homebot_protocol::ContextCompactionStatus::Completed => {
+                    ui.label(format!("Context generation {}", context.generation));
+                }
+                homebot_protocol::ContextCompactionStatus::Failed => {
+                    ui.colored_label(self.theme.palette.danger, "Context operation failed");
+                }
+                homebot_protocol::ContextCompactionStatus::Idle => {}
             }
         });
     }

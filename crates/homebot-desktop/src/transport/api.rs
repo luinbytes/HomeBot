@@ -609,7 +609,64 @@ async fn execute_timeline(
             )
             .await
         }
+        command @ (TimelineCommand::SetInteractionMode(_)
+        | TimelineCommand::CompactContext { .. }) => {
+            execute_context_command(client, config, chat_id, command, events).await
+        }
     }
+}
+
+async fn execute_context_command(
+    client: &Client,
+    config: &RuntimeConfig,
+    chat_id: Option<Uuid>,
+    command: TimelineCommand,
+    events: &Sender<DesktopEvent>,
+) -> Result<(), TransportFailure> {
+    let chat_id = chat_id.ok_or_else(|| TransportFailure::Protocol("No active chat".to_owned()))?;
+    let context = match command {
+        TimelineCommand::SetInteractionMode(mode) => {
+            let body = super::SetInteractionModeRequest {
+                request_id: Uuid::now_v7(),
+                idempotency_key: Uuid::now_v7(),
+                mode,
+            };
+            response_json(
+                authenticated(
+                    client,
+                    config,
+                    Method::PUT,
+                    &format!("/api/v1/chats/{chat_id}/interaction-mode"),
+                )
+                .json(&body)
+                .send()
+                .await
+                .map_err(request_error)?,
+            )
+            .await?
+        }
+        TimelineCommand::CompactContext {
+            strategy,
+            target_tokens,
+        } => {
+            let body = super::CompactWorkingContextRequest {
+                request_id: Uuid::now_v7(),
+                idempotency_key: Uuid::now_v7(),
+                strategy,
+                target_tokens,
+            };
+            post_json(
+                client,
+                config,
+                &format!("/api/v1/chats/{chat_id}/working-context"),
+                &body,
+            )
+            .await?
+        }
+        _ => unreachable!("only working-context commands are dispatched here"),
+    };
+    let _ = events.send(DesktopEvent::WorkingContext(context));
+    Ok(())
 }
 
 async fn create_direct_chat(

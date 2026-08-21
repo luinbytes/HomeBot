@@ -102,6 +102,14 @@ impl Default for TimelineModel {
 }
 
 impl TimelineModel {
+    pub fn begin_reply(&mut self, message_id: Uuid) {
+        self.composer.reply_to_message_id = Some(message_id);
+    }
+
+    pub fn cancel_reply(&mut self) {
+        self.composer.reply_to_message_id = None;
+    }
+
     pub fn set_reaction(&mut self, message_id: Uuid, emoji: impl Into<String>, active: bool) {
         self.commands.push(TimelineCommand::SetReaction {
             message_id,

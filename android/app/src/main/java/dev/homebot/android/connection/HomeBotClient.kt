@@ -262,8 +262,9 @@ class HomeBotClient(
         content: String,
         steering: Boolean = false,
         attachmentIds: List<String> = emptyList(),
+        replyToMessageId: String? = null,
     ): Result<SendMessageResponse> = authenticated {
-        val request = SendMessageRequest(ids(), ids(), content, attachmentIds, null, emptyList())
+        val request = SendMessageRequest(ids(), ids(), content, attachmentIds, replyToMessageId, emptyList())
         post(
             "api/v1/chats/$chatId/${if (steering) "steer" else "messages"}",
             request,
@@ -296,8 +297,9 @@ class HomeBotClient(
         chatId: String,
         content: String,
         mentionedBotIds: List<String>,
+        replyToMessageId: String? = null,
     ): Result<MessageSummary> = authenticated {
-        val request = SendGroupMessageRequest(ids(), ids(), content, mentionedBotIds, emptyList())
+        val request = SendGroupMessageRequest(ids(), ids(), content, mentionedBotIds, emptyList(), replyToMessageId)
         post(
             "api/v1/groups/$chatId/messages",
             request,

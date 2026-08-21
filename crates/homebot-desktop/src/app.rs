@@ -786,6 +786,9 @@ impl HomeBotApp {
                         {
                             self.timeline.set_reaction(item.id, "👍", true);
                         }
+                        if ui.small_button("Reply").clicked() {
+                            self.timeline.begin_reply(item.id);
+                        }
                     });
                     ui.add_space(self.theme.spacing.md);
                 }
@@ -837,6 +840,22 @@ impl HomeBotApp {
 
     fn composer_controls(&mut self, ui: &mut egui::Ui) {
         ui.separator();
+        if let Some(message_id) = self.timeline.composer.reply_to_message_id {
+            ui.horizontal(|ui| {
+                ui.label(format!(
+                    "Replying to {}",
+                    message_id
+                        .simple()
+                        .to_string()
+                        .chars()
+                        .take(8)
+                        .collect::<String>()
+                ));
+                if ui.small_button("Cancel").clicked() {
+                    self.timeline.cancel_reply();
+                }
+            });
+        }
         let composer = ui.text_edit_multiline(&mut self.timeline.composer.content);
         if self.focus_composer {
             composer.request_focus();

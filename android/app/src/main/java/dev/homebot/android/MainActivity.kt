@@ -213,7 +213,7 @@ private fun DirectChatScreen(viewModel: MainViewModel, timeline: ChatTimelineRes
         approvals = timeline.approvals,
         queue = timeline.queued_prompts.map { "${it.kind.name.lowercase()}: ${it.content}" },
         highlightedActivityId = state.highlightedActivityId,
-        onSend = { text, steer -> viewModel.send(text, steer) },
+        onSend = { text, steer, reply -> viewModel.send(text, steer, replyToMessageId = reply) },
         onStop = viewModel::stopWorking,
         onRetry = viewModel::retry,
         onDecision = viewModel::decide,
@@ -244,7 +244,7 @@ private fun GroupChatScreen(viewModel: MainViewModel, timeline: GroupTimelineRes
         messages = timeline.messages,
         activities = emptyList(), approvals = emptyList(), queue = emptyList(),
         highlightedActivityId = null,
-        onSend = { text, _ -> viewModel.send(text, mentions = mentions) },
+        onSend = { text, _, reply -> viewModel.send(text, mentions = mentions, replyToMessageId = reply) },
         onStop = viewModel::stopWorking, onRetry = {}, onDecision = { _, _ -> },
         onAttachment = {},
         onReaction = viewModel::setReaction,
@@ -267,7 +267,7 @@ private fun ChatLayout(
     approvals: List<ApprovalSummary>,
     queue: List<String>,
     highlightedActivityId: String?,
-    onSend: (String, Boolean) -> Unit,
+    onSend: (String, Boolean, String?) -> Unit,
     onStop: () -> Unit,
     onRetry: (MessageSummary) -> Unit,
     onDecision: (ApprovalSummary, Boolean) -> Unit,
@@ -277,6 +277,7 @@ private fun ChatLayout(
 ) {
     var composer by remember { mutableStateOf("") }
     var steering by remember { mutableStateOf(false) }
+    var replyToMessageId by remember { mutableStateOf<String?>(null) }
     val attachmentPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
         if (uri != null) onAttachment(uri)
     }
@@ -289,7 +290,9 @@ private fun ChatLayout(
             if (running) OutlinedButton(onClick = onStop) { Text("Stop") }
         }
         LazyColumn(Modifier.weight(1f).padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            items(messages, key = { it.id }) { MessageCard(it, onRetry, onReaction) }
+            items(messages, key = { it.id }) {
+                MessageCard(it, onRetry, onReaction, onReply = { replyToMessageId = it })
+            }
             items(activities, key = { it.id }) {
                 HomeBotCard(it.title, "${it.detail}\n${it.status}", if (it.id == highlightedActivityId) Violet else Color.Unspecified)
             }
@@ -298,6 +301,12 @@ private fun ChatLayout(
             item { extras(); Spacer(Modifier.height(8.dp)) }
         }
         Column(Modifier.background(Color.White).padding(12.dp)) {
+            replyToMessageId?.let { reply ->
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("Replying to ${reply.take(8)}", modifier = Modifier.weight(1f), color = Muted)
+                    TextButton(onClick = { replyToMessageId = null }) { Text("Cancel") }
+                }
+            }
             OutlinedTextField(
                 composer, { composer = it }, modifier = Modifier.fillMaxWidth(), minLines = 2,
                 placeholder = { Text(if (steering) "Steer this Bot…" else "Message HomeBot…") },
@@ -309,7 +318,7 @@ private fun ChatLayout(
                 TextButton(onClick = { attachmentPicker.launch("*/*") }) { Text("Attach") }
                 Spacer(Modifier.weight(1f))
                 Button(
-                    onClick = { onSend(composer.trim(), steering); composer = "" }, enabled = composer.isNotBlank(),
+                    onClick = { onSend(composer.trim(), steering, replyToMessageId); composer = ""; replyToMessageId = null }, enabled = composer.isNotBlank(),
                     colors = ButtonDefaults.buttonColors(containerColor = Violet),
                 ) { Text("Send") }
             }
@@ -322,6 +331,7 @@ private fun MessageCard(
     message: MessageSummary,
     onRetry: (MessageSummary) -> Unit,
     onReaction: (String, String, Boolean) -> Unit,
+    onReply: (String) -> Unit,
 ) {
     Row(Modifier.fillMaxWidth(), horizontalArrangement = if (message.author == "user") Arrangement.End else Arrangement.Start) {
         Card(shape = RoundedCornerShape(18.dp), modifier = Modifier.fillMaxWidth(if (message.author == "user") .84f else .96f)) {
@@ -336,6 +346,7 @@ private fun MessageCard(
                 }
                 if (message.status == "failed") TextButton(onClick = { onRetry(message) }) { Text("Retry") }
                 message.error?.let { Text(it.message, color = Danger, fontSize = 12.sp) }
+                message.reply_to_message_id?.let { Text("Reply to ${it.take(8)}", color = Muted, fontSize = 11.sp) }
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     message.reactions.forEach { reaction ->
                         TextButton(onClick = { onReaction(message.id, reaction.emoji, !reaction.reacted_by_user) }) {
@@ -345,6 +356,7 @@ private fun MessageCard(
                     if (message.reactions.none { it.emoji == "👍" }) {
                         TextButton(onClick = { onReaction(message.id, "👍", true) }) { Text("React") }
                     }
+                    TextButton(onClick = { onReply(message.id) }) { Text("Reply") }
                 }
             }
         }

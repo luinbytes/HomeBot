@@ -173,7 +173,7 @@ data class CreateGroupChatResponse(val group: GroupChatSummary, val participants
 data class GroupTimelineResponse(val group: GroupChatSummary, val participants: List<GroupParticipantSummary>, val messages: List<MessageSummary>, val handoffs: List<OwnershipHandoffSummary>, val boundary_sequence: Long)
 
 @Serializable
-data class SendGroupMessageRequest(val request_id: String, val idempotency_key: String, val content: String, val mentioned_bot_ids: List<String>, val shared_context_message_ids: List<String>)
+data class SendGroupMessageRequest(val request_id: String, val idempotency_key: String, val content: String, val mentioned_bot_ids: List<String>, val shared_context_message_ids: List<String>, val reply_to_message_id: String? = null)
 
 @Serializable
 data class HandoffGroupRequest(val request_id: String, val idempotency_key: String, val from_bot_id: String, val to_bot_id: String, val message_id: String? = null, val reason: String)

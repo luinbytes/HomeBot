@@ -2887,6 +2887,7 @@ impl Storage {
         content: &str,
         mentioned_bot_ids: &[Uuid],
         shared_context_message_ids: &[Uuid],
+        reply_to_message_id: Option<Uuid>,
         now_ms: i64,
     ) -> Result<ChatMessage, StorageError> {
         let _ = self.get_group_chat(owner_id, chat_id).await?;
@@ -2907,11 +2908,16 @@ impl Storage {
                 return Err(StorageError::MessageNotFound);
             }
         }
+        if let Some(reply_to) = reply_to_message_id
+            && self.message(owner_id, reply_to).await?.chat_id != chat_id
+        {
+            return Err(StorageError::MessageNotFound);
+        }
         let mut message = ChatMessage::user(
             chat_id,
             content,
             &[],
-            None,
+            reply_to_message_id,
             mentioned_bot_ids.to_vec(),
             now_ms,
         )?;
@@ -2920,12 +2926,13 @@ impl Storage {
         let mut transaction = self.pool.begin().await?;
         sqlx::query(
             "INSERT INTO messages (
-                id, chat_id, author_kind, status, mentioned_bot_ids_json,
+                id, chat_id, author_kind, status, reply_to_message_id, mentioned_bot_ids_json,
                 shared_context_message_ids_json, created_at_ms, completed_at_ms
-             ) VALUES (?, ?, 'user', 'completed', ?, ?, ?, ?)",
+             ) VALUES (?, ?, 'user', 'completed', ?, ?, ?, ?, ?)",
         )
         .bind(message_id.to_string())
         .bind(chat_id.to_string())
+        .bind(reply_to_message_id.map(|id| id.to_string()))
         .bind(serde_json::to_value(mentioned_bot_ids).map_err(|error| json_error(&error))?)
         .bind(serde_json::to_value(shared_context_message_ids).map_err(|error| json_error(&error))?)
         .bind(now_ms)

@@ -2,6 +2,9 @@ package dev.homebot.android
 
 import android.content.Intent
 import android.os.Bundle
+import android.os.Build
+import android.Manifest
+import android.net.Uri
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -29,12 +32,13 @@ import dev.homebot.protocol.*
 class MainActivity : ComponentActivity() {
     private val viewModel by viewModels<MainViewModel>()
     private val incomingPairing = mutableStateOf<String?>(null)
+    private val incomingNavigation = mutableStateOf<Uri?>(null)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         acceptIntent(intent)
-        setContent { HomeBotTheme { HomeBotRoot(viewModel, incomingPairing.value) } }
+        setContent { HomeBotTheme { HomeBotRoot(viewModel, incomingPairing.value, incomingNavigation.value) } }
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -45,14 +49,24 @@ class MainActivity : ComponentActivity() {
 
     private fun acceptIntent(intent: Intent?) {
         incomingPairing.value = intent?.data?.takeIf { it.scheme == "homebot" && it.host == "pair" }?.toString()
+        incomingNavigation.value = intent?.data?.takeIf {
+            it.scheme == "homebot" && it.host in setOf("chat", "routine", "settings")
+        }
     }
 }
 
 @Composable
-private fun HomeBotRoot(viewModel: MainViewModel, incomingPairing: String?) {
+private fun HomeBotRoot(viewModel: MainViewModel, incomingPairing: String?, incomingNavigation: Uri?) {
     val connection by viewModel.connection.collectAsState()
     val product by viewModel.product.collectAsState()
     val live = connection as? ConnectionState.Live
+    val permission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {}
+    LaunchedEffect(incomingNavigation, live != null) {
+        if (live != null && incomingNavigation != null) viewModel.handleDeepLink(incomingNavigation)
+    }
+    LaunchedEffect(live != null) {
+        if (live != null && Build.VERSION.SDK_INT >= 33) permission.launch(Manifest.permission.POST_NOTIFICATIONS)
+    }
     if (live == null) PairingScreen(viewModel, connection, incomingPairing)
     else ProductShell(viewModel, live, product)
 }
@@ -189,6 +203,7 @@ private fun DirectChatScreen(viewModel: MainViewModel, timeline: ChatTimelineRes
         activities = timeline.activities,
         approvals = timeline.approvals,
         queue = timeline.queued_prompts.map { "${it.kind.name.lowercase()}: ${it.content}" },
+        highlightedActivityId = state.highlightedActivityId,
         onSend = { text, steer -> viewModel.send(text, steer) },
         onStop = viewModel::stopWorking,
         onRetry = viewModel::retry,
@@ -218,6 +233,7 @@ private fun GroupChatScreen(viewModel: MainViewModel, timeline: GroupTimelineRes
         running = !timeline.group.stop_requested,
         messages = timeline.messages,
         activities = emptyList(), approvals = emptyList(), queue = emptyList(),
+        highlightedActivityId = null,
         onSend = { text, _ -> viewModel.send(text, mentions = mentions) },
         onStop = viewModel::stopWorking, onRetry = {}, onDecision = { _, _ -> },
         onAttachment = {},
@@ -239,6 +255,7 @@ private fun ChatLayout(
     activities: List<ActivitySummary>,
     approvals: List<ApprovalSummary>,
     queue: List<String>,
+    highlightedActivityId: String?,
     onSend: (String, Boolean) -> Unit,
     onStop: () -> Unit,
     onRetry: (MessageSummary) -> Unit,
@@ -261,7 +278,9 @@ private fun ChatLayout(
         }
         LazyColumn(Modifier.weight(1f).padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             items(messages, key = { it.id }) { MessageCard(it, onRetry) }
-            items(activities, key = { it.id }) { HomeBotCard(it.title, "${it.detail}\n${it.status}") {} }
+            items(activities, key = { it.id }) {
+                HomeBotCard(it.title, "${it.detail}\n${it.status}", if (it.id == highlightedActivityId) Violet else Color.Unspecified) {}
+            }
             items(approvals.filter { it.status == "pending" }, key = { it.id }) { ApprovalCard(it, onDecision) }
             items(queue) { HomeBotCard("Queued", it) {} }
             item { extras(); Spacer(Modifier.height(8.dp)) }

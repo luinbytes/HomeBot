@@ -77,6 +77,22 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         )
     }
 
+    fun handleDeepLink(uri: Uri) {
+        when (uri.host) {
+            "chat" -> uri.pathSegments.firstOrNull()?.let { chatId ->
+                val activity = uri.getQueryParameter("activity")
+                mutableProduct.value = mutableProduct.value.copy(highlightedActivityId = activity)
+                if (liveSnapshot()?.group_chats?.any { it.id == chatId } == true) openGroupChat(chatId)
+                else openDirectChat(chatId)
+            }
+            "routine" -> uri.pathSegments.firstOrNull()?.let { routineId ->
+                showSettings()
+                selectRoutine(routineId)
+            }
+            "settings" -> showSettings()
+        }
+    }
+
     fun showSettings() {
         mutableProduct.value = mutableProduct.value.copy(destination = ProductDestination.Settings, error = null)
         loadServices()

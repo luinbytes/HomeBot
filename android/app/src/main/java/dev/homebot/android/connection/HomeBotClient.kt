@@ -57,6 +57,9 @@ import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -103,12 +106,14 @@ class HomeBotClient(
         classDiscriminator = "kind"
     }
     private val mutableState = MutableStateFlow<ConnectionState>(ConnectionState.Unpaired)
+    private val mutableAlerts = MutableSharedFlow<ClientAlert>(extraBufferCapacity = 32)
     private var runner: Job? = null
     private var socket: WebSocket? = null
     private var cursor: Long? = null
     private var projection = Snapshot()
 
     val state: StateFlow<ConnectionState> = mutableState.asStateFlow()
+    val alerts: SharedFlow<ClientAlert> = mutableAlerts.asSharedFlow()
 
     fun start() {
         if (runner?.isActive == true) return
@@ -120,6 +125,18 @@ class HomeBotClient(
         runner = null
         socket?.close(1000, "HomeBot Android stopped")
         socket = null
+    }
+
+    fun nudgeReconnect() {
+        val previous = runner
+        previous?.cancel()
+        runner = null
+        socket?.cancel()
+        socket = null
+        scope.launch {
+            previous?.join()
+            start()
+        }
     }
 
     suspend fun updateEndpoint(raw: String): Result<String> = runCatching {
@@ -663,6 +680,7 @@ class HomeBotClient(
             )
             else -> projection
         }
+        NotificationEventMapper.map(kind, event, json)?.let(mutableAlerts::tryEmit)
         cursor = sequence
         mutableState.value = ConnectionState.Live(
             endpoint.toString().trimEnd('/'),

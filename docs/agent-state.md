@@ -11,6 +11,7 @@ This file is operational state for coding agents. It is not user-facing product 
 - Current Git branch: `main`.
 - Latest verified implementation commit: `a684abb4ecc6310a7537ef559e9315e5ae31adf8` (6C7-60; exact tree `1d1eb73101e04c286b9447c92faa70d43e1becd0`).
 - Latest verified GitHub Actions run: `32442039471`, all nine jobs passed.
+- Current public implementation checkpoint: `1671c4432ae0da41ef31fe6dc52b8400931e75d7` (6C7-61 Android foundation; remote CI pending, so not yet accepted as verified).
 - Public repository: `https://github.com/luinbytes/HomeBot`.
 - Required commit identity: `luinbytes <42706009+luinbytes@users.noreply.github.com>`.
 
@@ -60,8 +61,8 @@ Current blockers:
 ## Immediate next work
 
 1. Scaffold the real Gradle Android application and Compose shell with Kotlin, Coroutines/Flow, OkHttp, DataStore and Keystore-backed device-session storage.
-2. Implement endpoint configuration, pairing exchange, authentication, protocol negotiation, snapshot hydration, sequenced WebSocket resume/reconnect, stale-cursor fallback, version/revocation failures and generated Rust-owned models.
-3. Add deterministic fake-server integration tests and Android lint/unit/build jobs to CI; do not mark 6C7-61 Done until remote Android compilation passes.
+2. Inspect the first Android CI result for public checkpoint `1671c443`, fix every compile/test/lint failure, and republish immediately.
+3. Run the full remote gate; do not mark 6C7-61 Done until Android lint, fake-server tests, APK assembly and every existing Rust/macOS/Linux job pass.
 
 ## Verification state
 
@@ -77,6 +78,9 @@ Verified at the latest remote baseline:
 - 6C7-50's authenticated integration fixture proves Connect -> Waiting -> Connected discovery, then malformed MCP health -> Error with disablement and cleared tools; the child environment is cleared and MCP results remain explicitly untrusted.
 
 Verified locally at the current baseline:
+
+- 6C7-61 now has a real Gradle application module, Compose shell, Coroutines/Flow state machine, OkHttp HTTP/WebSocket transport, Keystore-encrypted device session, DataStore endpoint preferences, generated Rust-owned snapshot/version models and Android CI artifact job. Protocol tests and both Rust-owned generation drift checks pass locally.
+- Deterministic Android tests cover one-time pairing, credential redaction, version skew, revocation, snapshot hydration, cursor resume, stale-cursor fallback, replay and duplicate-sequence suppression. This container has JDK 17 but no Android SDK, and its Java process cannot reach the managed dependency proxy; remote Android compilation remains the acceptance authority.
 
 - `./scripts/check.sh` passes on Rust 1.98.0: formatting, strict clippy, the complete workspace suite with 152 tests, protocol/schema drift checks, generated Android binding drift checks, and all 15 exact desktop visual fixtures. This environment requires `CARGO_BUILD_JOBS=1` for the test build after a transient parallel egui archive-mapping failure; the serial rerun passed fully.
 - Targeted routine/plugin/storage/server/desktop suites also pass independently.
@@ -103,7 +107,7 @@ Verified locally at the current baseline:
 
 ## Known failures and incomplete implementation
 
-- Native Android app, packaging, and release artifacts remain incomplete roadmap work.
+- 6C7-61 is not complete until remote Android compilation, tests and lint pass. Later Android feature parity, packaging, and release artifacts remain incomplete roadmap work.
 - Real authenticated Codex/Claude round trips are unavailable in this environment. OpenAI-compatible and CDP behavior use protocol-faithful local fixtures.
 - No release artifact exists. Do not describe HomeBot as installable or v1-ready.
 

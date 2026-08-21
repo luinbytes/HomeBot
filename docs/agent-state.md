@@ -7,10 +7,10 @@ This file is operational state for coding agents. It is not user-facing product 
 ## Current state
 
 - Current milestone: M6, packaging, hardening and the v1 parity gate. M0 through M5 are verified complete.
-- Current Linear issue: 6C7-74, Bot lifecycle, conversation semantics and search parity (`In Progress`).
-- Current Git branch: `feat/6c7-74-lifecycle-conversation-parity`.
-- Latest public and verified implementation commit: `bf1a613019ee02b10ee0c7d4a4e0f685003fc78b` (6C7-70 performance/resource/accessibility gates on public `main`).
-- Latest verified GitHub Actions run: `32461879059`, all sixteen jobs passed, including Rust quality, Android, dependency gates, Linux and Arch resource probes, both macOS architectures' builds/goldens/packages, and Intel/Apple Silicon resource probes.
+- Current Linear issue: 6C7-76, group/shared-computer/capability-policy parity (`In Progress`).
+- Current Git branch: `feat/6c7-76-group-shared-policy`.
+- Latest public and verified implementation commit: `92c78fcac652c6b07d99692c6b5e81e1bab37fdc` (completed 6C7-74 on public `main`).
+- Latest verified GitHub Actions run: `32471204374`, all sixteen jobs passed, including Rust quality, Android, dependency gates, Linux and Arch resource probes, both macOS architectures' builds/goldens/packages, and Intel/Apple Silicon resource probes.
 - Public repository: `https://github.com/luinbytes/HomeBot`.
 - Required commit identity: `luinbytes <42706009+luinbytes@users.noreply.github.com>`.
 
@@ -64,19 +64,21 @@ Current blockers:
 - 6C7-68, explicit manifest-driven desktop update staging, verified pre-migration backups, too-new-schema refusal and deterministic recovery coverage.
 - 6C7-69, repository-wide security hardening, parser/resource bounds, hostile repository/MCP/provider fixtures, all-capability negative approvals and a clean exact-revision security scan.
 - 6C7-70, measurable startup/reconnect/chat/stream/concurrency/CPU/RSS budgets, bounded local telemetry, desktop keyboard/text scaling, Android screen-reader semantics and cross-platform CI resource gates.
+- 6C7-74, complete Bot lifecycle, reply/thread and reaction reconciliation, exact-target global search, demonstration-to-Skill conversion, and immutable versioned Bot/group/routine/plugin/Skill references across server, desktop and Android.
 - Most recent completed issue: 6C7-70.
 - Focused repository presentation pass: README badges and real desktop previews added from checked-in visual goldens; tracked-file hygiene audited with no junk removals required and `.gitignore` expanded for common Rust, Android, editor, environment, Python, Node, log and temporary outputs.
 
 ## Immediate next work
 
-1. Implement 6C7-74's verified Bot lifecycle, typed reference, thread/reaction, search and demonstrated-Skill parity gaps across server, desktop and Android.
-2. Implement 6C7-76's group rename/2-to-6 membership, shared browser/takeover and durable capability-rule parity gaps.
-3. Execute 6C7-75's physical platforms, assistive technologies, signing/notarisation and live Codex/Claude acceptance, then finish 6C7-71 and publish v1.0.0 only if every row passes.
+1. Implement 6C7-76's group rename/2-to-6 membership, shared browser/takeover and durable capability-rule parity gaps.
+2. Execute 6C7-75's physical platforms, assistive technologies, signing/notarisation and live Codex/Claude acceptance.
+3. Finish 6C7-71 and publish v1.0.0 only if every parity row passes.
 
 ## Verification state
 
 Verified at the latest remote baseline:
 
+- GitHub Actions run `32471204374` passed all sixteen jobs for exact tree `e190fdebde97e97919fb01c4f8693b3aa7a4ff7c`, merged as public `main` commit `92c78fc`. It verifies 6C7-74's typed-reference migration and server/client contract alongside Android, Rust, packaging, visual, dependency and resource gates. PRs #11 through #14 collectively close every 6C7-74 acceptance row.
 - GitHub Actions run `32461879059` passed all sixteen jobs for public 6C7-70 commit `bf1a613`. Android lint/tests/APK, the five-cycle rejected-event cleanup stress test, strict Rust/workspace gates, fresh Arch package lifecycle and Linux/macOS Intel/macOS Apple Silicon process-resource budgets all passed.
 - GitHub Actions run `32458792462` passed all thirteen jobs for public 6C7-69 commit `4c65711`. The exact-revision canonical security scan reports complete repository coverage, zero surviving findings and no unresolved high/critical issue.
 - GitHub Actions run `32456932817` passed all thirteen jobs for public 6C7-68 commit `e52bdbc`. It verified updater/migration recovery, Android, dependency policy/audit, Linux, both macOS builds and packages/goldens, and the Arch clean package lifecycle.
@@ -132,7 +134,7 @@ Verified locally at the current baseline:
 ## Known failures and incomplete implementation
 
 - macOS Developer ID signing/notarisation credentials and clean Intel/Apple Silicon test machines are unavailable in this environment. CI can verify reproducible ad-hoc-signed bundles, but those checks do not satisfy final release signing acceptance.
-- Concrete final-parity gaps are tracked in urgent 6C7-74 (Bot/chat/search), 6C7-76 (groups/shared computer/policy) and 6C7-75 (physical/live-provider/signing acceptance); each blocks 6C7-71.
+- Remaining final-parity gaps are tracked in urgent 6C7-76 (groups/shared computer/policy) and 6C7-75 (physical/live-provider/signing acceptance); each blocks 6C7-71.
 - Real authenticated Codex/Claude round trips are unavailable in this environment. OpenAI-compatible and CDP behavior use protocol-faithful local fixtures.
 - No release artifact exists. Do not describe HomeBot as installable or v1-ready.
 

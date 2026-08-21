@@ -587,6 +587,7 @@ class HomeBotClient(
         override fun onMessage(webSocket: WebSocket, text: String) {
             if (text.toByteArray(Charsets.UTF_8).size > MAX_EVENT_BYTES) {
                 webSocket.close(1009, "HomeBot event exceeded the size limit")
+                webSocket.cancel()
                 disconnected.complete(
                     DisconnectReason.Retry(ClientFailure.Protocol("HomeBot event exceeded the size limit")),
                 )
@@ -595,6 +596,7 @@ class HomeBotClient(
             }
             if (events.trySend(webSocket to text).isFailure) {
                 webSocket.close(1013, "HomeBot event processor is backpressured")
+                webSocket.cancel()
                 disconnected.complete(
                     DisconnectReason.Retry(ClientFailure.Protocol("HomeBot event processor is backpressured")),
                 )

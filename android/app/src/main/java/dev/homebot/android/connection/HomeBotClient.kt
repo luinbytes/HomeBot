@@ -14,6 +14,7 @@ import dev.homebot.protocol.CreateDirectChatResponse
 import dev.homebot.protocol.DeleteBotRequest
 import dev.homebot.protocol.CreateGroupChatRequest
 import dev.homebot.protocol.CreateGroupChatResponse
+import dev.homebot.protocol.AddGroupParticipantRequest
 import dev.homebot.protocol.ErrorEnvelope
 import dev.homebot.protocol.ExchangePairingRequest
 import dev.homebot.protocol.GroupChatSummary
@@ -28,6 +29,7 @@ import dev.homebot.protocol.PairingExchangeResponse
 import dev.homebot.protocol.ProtocolRange
 import dev.homebot.protocol.RepositoryWorkspaceSummary
 import dev.homebot.protocol.ReactionMutationRequest
+import dev.homebot.protocol.RenameGroupChatRequest
 import dev.homebot.protocol.RestoreCheckpointRequest
 import dev.homebot.protocol.SendGroupMessageRequest
 import dev.homebot.protocol.SendMessageRequest
@@ -258,6 +260,20 @@ class HomeBotClient(
 
     suspend fun createGroup(request: CreateGroupChatRequest): Result<CreateGroupChatResponse> = authenticated {
         post("api/v1/groups", request, CreateGroupChatRequest.serializer(), CreateGroupChatResponse.serializer())
+    }
+
+    suspend fun renameGroup(chatId: String, title: String): Result<GroupChatSummary> = authenticated {
+        val request = RenameGroupChatRequest(ids(), ids(), title)
+        put("api/v1/groups/$chatId", request, RenameGroupChatRequest.serializer(), GroupChatSummary.serializer())
+    }
+
+    suspend fun addGroupParticipant(chatId: String, botId: String): Result<Unit> = authenticated {
+        val request = AddGroupParticipantRequest(ids(), ids(), botId)
+        postDiscarding("api/v1/groups/$chatId/participants", request, AddGroupParticipantRequest.serializer())
+    }
+
+    suspend fun removeGroupParticipant(chatId: String, botId: String): Result<Unit> = authenticated {
+        postDiscarding("api/v1/groups/$chatId/participants/$botId/remove", mutation(), BotMutationRequest.serializer())
     }
 
     suspend fun sendMessage(

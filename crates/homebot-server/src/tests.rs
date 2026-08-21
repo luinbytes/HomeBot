@@ -24,18 +24,18 @@ use homebot_protocol::{
     MessageReferenceKind, MissedRunPolicy, OverlapPolicy, PairingEndpointKind,
     PairingExchangeResponse, PairingOffer, PluginConnectionState, PluginMutationRequest,
     PluginSummary, PullRequestMetadata, PullRequestMutationResponse, QueuedPromptKind,
-    ReactionMutationRequest, RecordedAction, RecordedActor, RepositoryWorkspaceSummary,
-    RestoreCheckpointRequest, RetryPolicy, RevokeDeviceSessionRequest, RoutineDefinition,
-    RoutineInput, RoutineInputKind, RoutineJobSummary, RoutineRecordingSummary, RoutineRunSummary,
-    RoutineSchedule, RoutineStep, RoutineStepStatus, RoutineSummary, RoutineTriggerDefinition,
-    RoutineTriggerSource, RunRoutineRequest, SecretSummary, SendGroupMessageRequest,
-    SendMessageRequest, SendMessageResponse, SetInteractionModeRequest, SkillAssignmentRequest,
-    SkillBundle, SkillContext, SkillDefinition, SkillImportConflictPolicy, SkillSummary,
-    SkillTestSummary, SkillToolReference, StartRoutineRecordingRequest, TurnCheckpointSummary,
-    UpdateBotRequest, UpdateGroupParticipantRequest, UpdateRoutineRequest, UpdateSkillRequest,
-    VcsCommitRequest, VcsCommitResult, VcsCreateBranchRequest, VcsMutationStatus, VcsPushRequest,
-    VcsRemoteMutationResponse, VcsStatus, WorkingContextSummary, WorkingTreeCondition,
-    WorkingTreeDiffResponse, WorkspaceBranchesResponse, WorkspaceMode,
+    ReactionMutationRequest, RecordedAction, RecordedActor, RenameGroupChatRequest,
+    RepositoryWorkspaceSummary, RestoreCheckpointRequest, RetryPolicy, RevokeDeviceSessionRequest,
+    RoutineDefinition, RoutineInput, RoutineInputKind, RoutineJobSummary, RoutineRecordingSummary,
+    RoutineRunSummary, RoutineSchedule, RoutineStep, RoutineStepStatus, RoutineSummary,
+    RoutineTriggerDefinition, RoutineTriggerSource, RunRoutineRequest, SecretSummary,
+    SendGroupMessageRequest, SendMessageRequest, SendMessageResponse, SetInteractionModeRequest,
+    SkillAssignmentRequest, SkillBundle, SkillContext, SkillDefinition, SkillImportConflictPolicy,
+    SkillSummary, SkillTestSummary, SkillToolReference, StartRoutineRecordingRequest,
+    TurnCheckpointSummary, UpdateBotRequest, UpdateGroupParticipantRequest, UpdateRoutineRequest,
+    UpdateSkillRequest, VcsCommitRequest, VcsCommitResult, VcsCreateBranchRequest,
+    VcsMutationStatus, VcsPushRequest, VcsRemoteMutationResponse, VcsStatus, WorkingContextSummary,
+    WorkingTreeCondition, WorkingTreeDiffResponse, WorkspaceBranchesResponse, WorkspaceMode,
 };
 use homebot_providers::{
     ActivityKind, ActivityStatus as ProviderActivityStatus, ApprovalDecision, CompactRequest,
@@ -2841,7 +2841,12 @@ async fn group_chat_contract_coordinates_three_bots_with_bounded_handoff()
     let directory = tempfile::tempdir()?;
     let storage = Storage::open(&directory.path().join("homebot.db")).await?;
     let mut bot_ids = Vec::new();
-    for (index, name) in ["Nova", "Patch", "Scout", "Relay"].into_iter().enumerate() {
+    for (index, name) in [
+        "Nova", "Patch", "Scout", "Relay", "Atlas", "Echo", "Overflow",
+    ]
+    .into_iter()
+    .enumerate()
+    {
         let bot = storage
             .create_bot(
                 Uuid::nil(),
@@ -2857,7 +2862,7 @@ async fn group_chat_contract_coordinates_three_bots_with_bounded_handoff()
         request_id: Uuid::now_v7(),
         idempotency_key: chat_id,
         title: "Release team".to_owned(),
-        bot_ids: bot_ids[..3].to_vec(),
+        bot_ids: bot_ids[..2].to_vec(),
         ownership_bot_id: bot_ids[0],
         coordination_max_turns: 2,
         max_parallel_bots: 2,
@@ -2872,7 +2877,7 @@ async fn group_chat_contract_coordinates_three_bots_with_bounded_handoff()
             .await?
             .participants
             .len(),
-        3
+        2
     );
     let replay = app
         .clone()
@@ -2880,7 +2885,45 @@ async fn group_chat_contract_coordinates_three_bots_with_bounded_handoff()
         .await?;
     assert_eq!(replay.status(), StatusCode::OK);
 
-    let response = app
+    let rename = RenameGroupChatRequest {
+        request_id: Uuid::now_v7(),
+        idempotency_key: Uuid::now_v7(),
+        title: "Release crew".to_owned(),
+    };
+    for _ in 0..2 {
+        let response = app
+            .clone()
+            .oneshot(json_request(
+                "PUT",
+                &format!("/api/v1/groups/{chat_id}"),
+                &rename,
+            ))
+            .await?;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response_json::<homebot_protocol::GroupChatSummary>(response)
+                .await?
+                .title,
+            "Release crew"
+        );
+    }
+
+    for bot_id in &bot_ids[2..6] {
+        let response = app
+            .clone()
+            .oneshot(json_request(
+                "POST",
+                &format!("/api/v1/groups/{chat_id}/participants"),
+                &AddGroupParticipantRequest {
+                    request_id: Uuid::now_v7(),
+                    idempotency_key: Uuid::now_v7(),
+                    bot_id: *bot_id,
+                },
+            ))
+            .await?;
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+    let overflow = app
         .clone()
         .oneshot(json_request(
             "POST",
@@ -2888,26 +2931,25 @@ async fn group_chat_contract_coordinates_three_bots_with_bounded_handoff()
             &AddGroupParticipantRequest {
                 request_id: Uuid::now_v7(),
                 idempotency_key: Uuid::now_v7(),
-                bot_id: bot_ids[3],
+                bot_id: bot_ids[6],
             },
         ))
         .await?;
-    assert_eq!(response.status(), StatusCode::OK);
-    let response = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            &format!(
-                "/api/v1/groups/{chat_id}/participants/{}/remove",
-                bot_ids[3]
-            ),
-            &BotMutationRequest {
-                request_id: Uuid::now_v7(),
-                idempotency_key: Uuid::now_v7(),
-            },
-        ))
-        .await?;
-    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    assert_eq!(overflow.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    for bot_id in &bot_ids[3..6] {
+        let response = app
+            .clone()
+            .oneshot(json_request(
+                "POST",
+                &format!("/api/v1/groups/{chat_id}/participants/{bot_id}/remove"),
+                &BotMutationRequest {
+                    request_id: Uuid::now_v7(),
+                    idempotency_key: Uuid::now_v7(),
+                },
+            ))
+            .await?;
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    }
 
     let first_message = Uuid::now_v7();
     let response = app
@@ -3087,7 +3129,7 @@ async fn group_chat_contract_coordinates_three_bots_with_bounded_handoff()
         .ok_or("referenced message missing")?;
     assert_eq!(referenced.references.len(), 2);
     assert_eq!(referenced.references[0].label, "Nova");
-    assert_eq!(referenced.references[1].label, "Release team");
+    assert_eq!(referenced.references[1].label, "Release crew");
 
     let response = app
         .oneshot(json_request(

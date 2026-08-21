@@ -167,6 +167,9 @@ data class OwnershipHandoffSummary(val id: String, val chat_id: String, val from
 data class CreateGroupChatRequest(val request_id: String, val idempotency_key: String, val title: String, val bot_ids: List<String>, val ownership_bot_id: String, val coordination_max_turns: Int, val max_parallel_bots: Int)
 
 @Serializable
+data class RenameGroupChatRequest(val request_id: String, val idempotency_key: String, val title: String)
+
+@Serializable
 data class CreateGroupChatResponse(val group: GroupChatSummary, val participants: List<GroupParticipantSummary>)
 
 @Serializable

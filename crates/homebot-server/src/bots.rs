@@ -566,7 +566,7 @@ impl From<StorageError> for ApiError {
             StorageError::InvalidGroupParticipants => Self::new(
                 StatusCode::UNPROCESSABLE_ENTITY,
                 ErrorCode::ValidationFailed,
-                "Group chat requires at least three distinct active Bots",
+                "Group chat requires two to six distinct active Bots",
             ),
             StorageError::CoordinationLimitReached => {
                 Self::conflict("Group coordination limit was reached or the group was stopped")

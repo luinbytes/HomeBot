@@ -7,10 +7,10 @@ This file is operational state for coding agents. It is not user-facing product 
 ## Current state
 
 - Current milestone: M6, packaging, hardening and the v1 parity gate. M0 through M5 are verified complete.
-- Current Linear issue: 6C7-75, physical-platform, assistive-technology and live-provider release acceptance (`In Progress`, externally blocked).
-- Current Git branch: public `main`; local continuity branch `feat/6c7-76-group-shared-policy` has the same verified code/state tree.
-- Latest public and verified code commit before this handoff: `c0a4aec287a36f157ab33a9435d9dc1a2fc1be1f` (exact tree `389b8c140fb5341c53c5ec4d266c9872c04f18a1`). It includes completed 6C7-76 plus deterministic provider-queue test isolation discovered during the final handoff gate.
-- Latest verified GitHub Actions run: `32480288326`, all sixteen jobs passed, including Rust quality, Android, dependency gates, Linux and Arch packaging, both macOS architectures' builds/goldens/packages, and all resource probes.
+- Current Linear issues: 6C7-66, real Developer ID signing/notarisation and clean Intel/Apple Silicon validation (`In Progress`); 6C7-75, physical-platform, assistive-technology and live-provider release acceptance (`In Progress`, externally blocked). Final gate 6C7-71 remains Todo and blocked by them.
+- Current Git branch: public `main`; local continuity branch `audit/6c7-75-release-readiness` contains the same verified implementation tree plus this handoff update.
+- Latest public and verified implementation commit: `84084ff8a61607cc3fa36a85484d8f03352e5e88` (exact tree `97d83a132c116fc0b205bf61bbddd31064642b8e`). It includes production provider composition (6C7-77), the fail-closed macOS notarisation pipeline, and the verified Android release-artifact pipeline (6C7-78).
+- Latest verified GitHub Actions run: `32534100793`, all sixteen jobs passed, including Rust quality, Android lint/tests/debug and minified release builds/signature packaging, dependency gates, Linux and Arch packaging, both macOS architectures' builds/goldens/packages, and all resource probes.
 - Public repository: `https://github.com/luinbytes/HomeBot`.
 - Required commit identity: `luinbytes <42706009+luinbytes@users.noreply.github.com>`.
 
@@ -23,6 +23,7 @@ Architecture decisions currently frozen:
 - Secret values use macOS Keychain or Linux Secret Service through `homebot-secrets`; SQLite, protocol events, chat/routine context, and normal provider configuration hold opaque references only.
 - OS credential calls run on Tokio's blocking pool. Locked/unavailable stores fail closed with no plaintext fallback. Resolved provider values are redacted and zeroized.
 - Codex uses structured App Server stdio JSONL. Claude uses its documented stream-JSON CLI surface. Community processes use a constrained direct-executable JSONL contract.
+- The production server composition root owns the real provider registry. It creates strict, bounded provider profiles from production configuration, injects the resulting `ProviderRuntime` into `AppState`, exposes only secret-free projections, and never selects fixture adapters as production defaults.
 - Local MCP plugins use a provider-neutral adapter boundary and constrained direct-executable stdio lifecycle. Plugin results are explicitly untrusted data; connection and Bot assignment never grant tool capability authority.
 - Filesystem authority uses `cap-std`; terminal authority uses bounded `portable-pty`; browser authority uses loopback-only CDP.
 - Repository registrations and per-chat primary/isolated workspace associations are SQLite authority. `homebot-vcs` invokes a fixed Git executable without a shell, never mutates the primary checkout, and removes only clean canonical children of the server-managed worktree root.
@@ -32,10 +33,11 @@ Architecture decisions currently frozen:
 - Provider interaction mode and working-context generation/status/usage are server-owned. Capability-gated native compaction preserves provider mapping; reset removes only that mapping. Neither operation deletes HomeBot identity, transcript, attachments, Skills, checkpoints or app memory.
 - Pairing offers are five-minute, single-use, endpoint-bound credentials stored only as digests. Named device sessions use the same authenticated versioned protocol as desktop, are owner-listable/revocable, and cannot administer devices. Remote binding is explicit and loopback remains the safe default.
 - Shared browser profiles and sessions are server-owned, owner-scoped state. Generated profile directory references never expose native paths or credentials; group handoff preserves access. Navigation and human takeover remain digest-bound capability operations, while watch/return and live activity use the authenticated sequenced contract.
+- Android release packaging accepts only a cryptographically verified, version/package-matched signed APK and emits a manifest, certificate-digest evidence, and SHA-256 checksums. CI uses an explicitly `ci-ephemeral` identity that cannot be represented as the public signing identity.
 
 Current blockers:
 
-- Final release blockers remain external to this environment: neither Codex nor Claude is installed/authenticated for genuine provider smoke tests, and Apple Developer ID/notarisation credentials plus physical clean Intel/Apple Silicon verification machines are unavailable. Continue every other unblocked gate.
+- All currently known non-external v1 work is complete. Final release blockers are external to this environment: neither Codex nor Claude is installed/authenticated for genuine provider smoke tests; Apple Developer ID/notarisation credentials and clean Intel/Apple Silicon machines are unavailable; and physical Arch/Omarchy and Android devices with VoiceOver/TalkBack-equivalent acceptance facilities are unavailable.
 - No active M2 blocker. Corrective issue 6C7-73 and epic 6C7-41 are verified Done.
 - `egui` 0.32.3 transitively uses unmaintained `ttf-parser` 0.25.1. RUSTSEC-2026-0192 reports no known vulnerability or safe upgrade; the exact-revision 6C7-69 review accepted the warning with a required pre-v1 dependency recheck.
 
@@ -67,18 +69,25 @@ Current blockers:
 - 6C7-70, measurable startup/reconnect/chat/stream/concurrency/CPU/RSS budgets, bounded local telemetry, desktop keyboard/text scaling, Android screen-reader semantics and cross-platform CI resource gates.
 - 6C7-74, complete Bot lifecycle, reply/thread and reaction reconciliation, exact-target global search, demonstration-to-Skill conversion, and immutable versioned Bot/group/routine/plugin/Skill references across server, desktop and Android.
 - 6C7-76, durable bounded group rename/membership, owner-managed deny-first capability rules/audit, and server-owned shared browser watch/takeover/return with approval, artifact, handoff, restart, desktop and Android parity.
-- Most recent completed issue: 6C7-76.
+- 6C7-77, production provider configuration/registry composition, real `ProviderRuntime` injection into `AppState`, safe profile projection, configured Bot-turn resolution, clean configuration failures and fixture-provider exclusion.
+- 6C7-78, deterministic Android v1 version injection, minified release assembly, fail-closed APK signature/package/version verification, manifest/certificate evidence/checksums and explicitly non-release CI signing.
+- Most recent completed issue: 6C7-78.
 - Focused repository presentation pass: README badges and real desktop previews added from checked-in visual goldens; tracked-file hygiene audited with no junk removals required and `.gitignore` expanded for common Rust, Android, editor, environment, Python, Node, log and temporary outputs.
 
 ## Immediate next work
 
-1. On provisioned external machines/accounts, execute 6C7-75's genuine Codex/Claude, clean physical platform, VoiceOver/TalkBack, Developer ID signing and notarisation acceptance matrix; record secret-free versions and evidence.
-2. Finish 6C7-71 and publish v1.0.0 only after every 6C7-75 criterion and every parity row passes.
+1. On a macOS release host with Developer ID and stored notary credentials, run the exact commands in `docs/release-acceptance.md` to build, Developer-ID sign, notarise, staple and verify both x86_64 and arm64 candidates; record the immutable artifact hashes and close 6C7-66 only after clean Intel and Apple Silicon first-run/provider-discovery checks pass.
+2. On authenticated provider hosts, execute the documented Codex CLI and Claude Code smoke matrix for auth discovery, streamed Bot turns, activities/tools, approvals, cancel, restart/resume, plan mode and compaction where supported. Record versions and secret-free evidence in 6C7-75.
+3. Install the exact candidate artifacts on clean Intel Mac, Apple Silicon Mac, Arch/Omarchy and Android; complete keyboard/VoiceOver/TalkBack, install/upgrade, pairing/reconnect and parity rows from `docs/release-acceptance.md`.
+4. Only after 6C7-66 and 6C7-75 are genuinely Done, execute 6C7-71, create the immutable v1.0.0 tag/release, download every public artifact, reverify manifests/checksums/signatures, and close M6.
 
 ## Verification state
 
 Verified at the latest remote baseline:
 
+- GitHub Actions run `32534100793` passed all sixteen jobs for public 6C7-78 tree `97d83a132c116fc0b205bf61bbddd31064642b8e`, merged as `84084ff8`. Android lint/tests, debug and minified release assembly, ephemeral CI signing, `apksigner` verification, package/version validation, manifest/checksum generation and artifact upload all passed. The CI-only release-pipeline artifact from run `32533932893` has workflow-archive digest `sha256:03266a922fc915aa5c69b05ca7f235323d9a9cfb679457f1c45f8d6ba5ab787e` and is explicitly not a release candidate.
+- GitHub Actions run `32532554784` passed all sixteen jobs for macOS notarisation-pipeline tree `53f29dae2c1fdcf3d6b152efe24d90cdcad5e8d1`, merged as `a3f44842`. Automated evidence covers deterministic bundles, architecture validation, notarisation ZIPs, fail-closed Developer ID/notary commands, manifests and checksums; real Apple signing/notarisation and physical Macs remain open in 6C7-66/75.
+- GitHub Actions run `32531703016` passed all sixteen jobs for production-provider composition tree `8bfbabf9a0cf1b2da31741f34ba13fb6b01327cf`, merged as `6fece576`. Tests exercise the production composition root, safe defaults/configuration errors, real runtime injection and a structured CLI Bot turn without fixture defaults.
 - GitHub Actions run `32480288326` passed all sixteen jobs for public code tree `389b8c140fb5341c53c5ec4d266c9872c04f18a1`. It confirms the provider queue/context lifecycle fixtures no longer starve each other under the full concurrent server suite; PR #19 also synchronizes this handoff to 6C7-75.
 - GitHub Actions run `32478602118` passed all sixteen jobs for exact 6C7-76 tree `ad451acede6713456801f35532cf0a22df41b3b1`, merged as public `main` commit `7391c362`. It verifies 39 server tests, 36 storage tests, Android lint/tests/APK, Rust/schema/generated-Kotlin/security gates, Linux and both macOS builds/goldens/packages/resources, and the fresh Arch install/update/uninstall lifecycle. PRs #15 through #17 cover the group, policy and shared-computer slices.
 - GitHub Actions run `32471204374` passed all sixteen jobs for exact tree `e190fdebde97e97919fb01c4f8693b3aa7a4ff7c`, merged as public `main` commit `92c78fc`. It verifies 6C7-74's typed-reference migration and server/client contract alongside Android, Rust, packaging, visual, dependency and resource gates. PRs #11 through #14 collectively close every 6C7-74 acceptance row.
@@ -136,10 +145,10 @@ Verified locally at the current baseline:
 
 ## Known failures and incomplete implementation
 
-- macOS Developer ID signing/notarisation credentials and clean Intel/Apple Silicon test machines are unavailable in this environment. CI can verify reproducible ad-hoc-signed bundles, but those checks do not satisfy final release signing acceptance.
-- The only remaining final-parity implementation gate is externally executed 6C7-75 (physical/live-provider/accessibility/signing acceptance), which blocks 6C7-71.
-- Real authenticated Codex/Claude round trips are unavailable in this environment. OpenAI-compatible and CDP behavior use protocol-faithful local fixtures.
-- CI produces unsigned/ad-hoc-signed package artifacts, but no signed/notarised public v1 release exists. Do not describe HomeBot as v1-ready.
+- 6C7-66 remains In Progress because real Developer ID signing/notarisation/stapling and clean Intel/Apple Silicon first-run/provider discovery have not occurred. CI's ad-hoc artifacts and simulated notary responses do not satisfy it.
+- 6C7-75 remains In Progress because real authenticated Codex/Claude round trips and physical Intel Mac, Apple Silicon Mac, Arch/Omarchy and Android install/upgrade/accessibility checks are unavailable in this environment.
+- The Android production signing keystore and physical device are unavailable. CI's `ci-ephemeral` APK proves the pipeline only and must never be published as v1.
+- 6C7-71 and the public v1.0.0 tag/release remain blocked by 6C7-66 and 6C7-75. No signed/notarised public v1 release exists; do not describe HomeBot as v1-ready.
 
 ## Environment notes
 

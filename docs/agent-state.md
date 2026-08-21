@@ -6,11 +6,11 @@ This file is operational state for coding agents. It is not user-facing product 
 
 ## Current state
 
-- Current milestone: M4, T3 Code Developer Superpowers. M2 and M3 are verified complete.
-- Current Linear issue: 6C7-58, queued steering, provider plan mode and context compaction (`In Progress`).
+- Current milestone: M5, Android and secure remote parity. M0 through M4 are verified complete.
+- Current Linear issue: 6C7-60, owner pairing, device sessions and Tailscale/LAN endpoint discovery (`In Progress`).
 - Current Git branch: `main`.
-- Latest verified implementation commit: `3224de00956d4c7b859630deb8554389db9ada16` (6C7-57; exact tree `b8e637cc89d69e19c060a30402628ed65b390022`).
-- Latest verified GitHub Actions run: `32429140362`, all nine jobs passed.
+- Latest verified implementation commit: `0856e56b01bfb551792081a53971c5fb79bf1831` (6C7-58; exact tree `d1feb6a9e0c3fe522b63b1953a69bc1020b79ea9`).
+- Latest verified GitHub Actions run: `32435023890`, all nine jobs passed.
 - Public repository: `https://github.com/luinbytes/HomeBot`.
 - Required commit identity: `luinbytes <42706009+luinbytes@users.noreply.github.com>`.
 
@@ -28,6 +28,8 @@ Architecture decisions currently frozen:
 - Repository registrations and per-chat primary/isolated workspace associations are SQLite authority. `homebot-vcs` invokes a fixed Git executable without a shell, never mutates the primary checkout, and removes only clean canonical children of the server-managed worktree root.
 - Coding turns use alternate-index hidden-ref checkpoints. Restore captures a safety checkpoint, preserves the real branch/index, refuses ignored-content overwrite conflicts, and explicitly forks incompatible provider conversation mappings.
 - Source-control reads and mutations are server-owned and normalized. Commit/branch/push use a fixed shell-free Git executable with repository hooks suppressed; remote push and PR creation require digest-bound server approval, and exact idempotent results persist independently from remote side effects.
+- Queued prompts are durable server state with typed `steering` and `follow_up` semantics. Steering retains FIFO priority ahead of ordinary follow-ups, stop/failure preserves remaining order, and SQLite write reservations prevent provider-event races during insert/promotion.
+- Provider interaction mode and working-context generation/status/usage are server-owned. Capability-gated native compaction preserves provider mapping; reset removes only that mapping. Neither operation deletes HomeBot identity, transcript, attachments, Skills, checkpoints or app memory.
 
 Current blockers:
 
@@ -49,17 +51,22 @@ Current blockers:
 - 6C7-55, owner-scoped repository registration, primary/isolated per-chat workspaces, deterministic branches, guarded cleanup, authenticated protocol/events, desktop transport/projection and Android/schema parity.
 - 6C7-56, hidden-ref before/after turn checkpoints, exact binary-capable per-turn/full-chat diffs, safe restore, provider-conversation fork reconciliation, authenticated desktop/server contracts and Android/schema parity.
 - 6C7-57, normalized status/staged and unstaged diff/commit/branch/push/PR workflows, server-side capability approvals, durable exact replay, hostile-repository hook denial, authenticated desktop projection and Android/schema parity.
-- Most recent completed issue: 6C7-57.
+- 6C7-58, durable typed queued steering/follow-ups, deterministic restart-safe promotion, provider-neutral plan/default modes, capability-gated compaction/reset, persistent working-context boundaries, desktop projection and Android/schema parity.
+- M4 epic 6C7-54: all coding workspace, checkpoint/diff/restore, source-control and context workflow children verified complete.
+- Most recent completed issue: 6C7-58.
 
 ## Immediate next work
 
-1. Audit the existing durable queue/steer behavior and provider capability/compaction contracts against all 6C7-58 postconditions.
-2. Add a server-owned interaction-mode and working-context contract, durable compaction boundaries/status and authenticated idempotent mutations without deleting Bot identity or transcript history.
-3. Wire compatible provider modes/compaction plus desktop projections and generated Android models; prove queued order, restart behavior, compaction history isolation and unsupported-provider errors.
+1. Implement 6C7-60's short-lived single-use pairing credential and named, revocable persistent device-session model without placing permanent credentials in QR/deep links.
+2. Add expiry, consumption, rate limiting, origin/endpoint validation, loopback-safe defaults and explicit LAN/Tailscale/custom-HTTPS endpoint classification.
+3. Add authenticated owner list/revoke and pairing create APIs, unauthenticated bounded exchange, durable migration/restart fixtures, server permission-negative tests, desktop/headless projections and Rust-owned Android/schema models.
 
 ## Verification state
 
 Verified at the latest remote baseline:
+
+- GitHub Actions run `32435023890` passed all nine jobs for commit `0856e56`: formatting/strict clippy/workspace tests, dependency audit/policy, Linux, macOS Intel, macOS Apple Silicon, and all three visual-golden platforms.
+- Remote tree `d1feb6a9e0c3fe522b63b1953a69bc1020b79ea9` exactly matches the locally verified 6C7-58 implementation tree. GitHub resolves both author and committer to account `luinbytes`.
 
 - GitHub Actions run `32429140362` passed all nine jobs for commit `3224de0`: formatting, strict clippy, 152 Rust tests, dependency policy/audit, Linux, macOS Intel, macOS Apple Silicon, and 15 cross-platform visual fixtures.
 - Remote tree `b8e637cc89d69e19c060a30402628ed65b390022` exactly matches the locally verified implementation tree. The remote author and committer resolve to GitHub account `luinbytes`.
@@ -85,12 +92,14 @@ Verified locally at the current baseline:
 - GitHub Actions run `32425371202` passed all nine jobs for public commit `20412a0` and exact remote tree `229c7d8`: Rust quality, dependency audit/policy, Linux and both macOS builds, and all three visual-golden platforms. Author and committer resolve to GitHub account `luinbytes`.
 - 6C7-57's real Git/server fixtures prove normalized staged/unstaged/untracked/conflicted/detached status, bounded exact diffs, commit/clean branch/local bare push, no-remote and redacted auth failure, duplicate/deny/approve approval semantics, exact durable replay, PR metadata/create, migration restart safety and hostile Git-hook denial.
 - GitHub Actions run `32429140362` passed all nine jobs for public commit `3224de0` and exact remote tree `b8e637c`; both author and committer resolve to GitHub account `luinbytes`.
+- 6C7-58's complete local gate passes: strict all-target clippy, every workspace test suite, all 15 visual fixtures, schema drift, generated Android binding drift and cargo-deny advisories/bans/licenses/sources.
+- Its server fixtures prove typed steering priority/FIFO follow-ups, duplicate replay, cancel-order stability, restart durability, three automatic queued turns, default/plan/default capability routing, unsupported-mode denial, compaction/reset concurrency exclusion, transcript preservation, fresh provider-context isolation and restart recovery. The 32-test server suite passed three consecutive 16-thread stress runs after the SQLite write-reservation fix.
 
-6C7-73 and reopened M2 epic 6C7-41 completion evidence is recorded in Linear; both are Done. M3 epic 6C7-48 and M4 issues 6C7-55 through 6C7-57 are verified Done. M4 epic 6C7-54 and 6C7-58 are In Progress.
+6C7-73 and reopened M2 epic 6C7-41 completion evidence is recorded in Linear; both are Done. M3 epic 6C7-48, M4 issues 6C7-55 through 6C7-58, and M4 epic 6C7-54 are verified Done. M5 epic 6C7-59 and first child 6C7-60 are In Progress.
 
 ## Known failures and incomplete implementation
 
-- Android app, queued steering/plan mode/context compaction, device pairing/Tailscale, packaging, and release artifacts remain incomplete roadmap work.
+- Native Android app, device pairing/Tailscale, packaging, and release artifacts remain incomplete roadmap work.
 - Real authenticated Codex/Claude round trips are unavailable in this environment. OpenAI-compatible and CDP behavior use protocol-faithful local fixtures.
 - No release artifact exists. Do not describe HomeBot as installable or v1-ready.
 
@@ -98,6 +107,7 @@ Verified locally at the current baseline:
 
 - Workspace: `/workspace/scratch/e0bbfdbe8a8b/HomeBot`.
 - Rust commands require `RUSTUP_HOME=/tmp/homebot-rustup`, `CARGO_HOME=/tmp/homebot-cargo`, and `/tmp/homebot-cargo/bin` first in `PATH`.
+- Rust 1.98's bundled `rust-lld` fails to link the large server test binary in this container. Local verification uses `CARGO_TARGET_DIR=/tmp/homebot-target` and `RUSTFLAGS='-C linker=cc -C link-arg=-fuse-ld=bfd -C codegen-units=1'`; GitHub CI uses the normal stable toolchain and is green.
 - Local cargo-deny binary: `/tmp/cargo-deny-0.20.2-x86_64-unknown-linux-musl/cargo-deny`.
 - Shell Git read access works. If authenticated push is unavailable, publish with the connected GitHub blob/tree/commit/ref tools and then fast-forward local `main` to `origin/main`.
 - Do not expose the current server beyond loopback. Preserve unrelated work and never reset/clean user repositories destructively.

@@ -1,0 +1,23 @@
+[Unit]
+Description=HomeBot self-hosted server
+Documentation=https://github.com/luinbytes/HomeBot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+LoadCredentialEncrypted=homebot-owner-token:%h/.config/homebot/homebot-owner-token.cred
+Environment=HOMEBOT_DEVICE_TOKEN_FILE=%d/homebot-owner-token
+Environment=HOMEBOT_DATABASE=%h/.local/share/homebot/homebot.db
+Environment=HOMEBOT_BIND=127.0.0.1:7123
+EnvironmentFile=-%h/.config/homebot/server.env
+ExecStartPre=/usr/bin/mkdir -p %h/.local/share/homebot
+ExecStart=/usr/bin/homebot-server
+Restart=on-failure
+RestartSec=3s
+NoNewPrivileges=true
+PrivateTmp=true
+UMask=0077
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-labelledby="title">
+  <title id="title">HomeBot</title>
+  <defs>
+    <linearGradient id="g" x1="32" y1="24" x2="224" y2="232" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#8B7CFF"/>
+      <stop offset="1" stop-color="#5B43E8"/>
+    </linearGradient>
+  </defs>
+  <rect x="16" y="16" width="224" height="224" rx="68" fill="url(#g)"/>
+  <path d="M65 119 128 65l63 54v72a12 12 0 0 1-12 12H77a12 12 0 0 1-12-12z" fill="#fff" opacity=".96"/>
+  <rect x="93" y="120" width="70" height="54" rx="22" fill="#5B43E8"/>
+  <circle cx="115" cy="145" r="6" fill="#fff"/>
+  <circle cx="141" cy="145" r="6" fill="#fff"/>
+  <path d="M116 160h24" stroke="#fff" stroke-width="6" stroke-linecap="round"/>
+</svg>

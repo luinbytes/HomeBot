@@ -14,7 +14,9 @@ def main() -> None:
     parser.add_argument("--platform", required=True)
     parser.add_argument("--architecture", required=True)
     parser.add_argument("--version", required=True)
-    parser.add_argument("--signing", required=True, choices=("adhoc", "developer-id"))
+    parser.add_argument(
+        "--signing", required=True, choices=("unsigned", "adhoc", "developer-id")
+    )
     args = parser.parse_args()
 
     payload = args.artifact.read_bytes()

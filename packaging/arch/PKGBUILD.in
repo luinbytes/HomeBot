@@ -1,0 +1,40 @@
+# Maintainer: HomeBot contributors <https://github.com/luinbytes/HomeBot>
+pkgname=homebot
+pkgver=@VERSION@
+pkgrel=@PKGREL@
+pkgdesc='Your self-hosted AI team'
+arch=('x86_64')
+url='https://github.com/luinbytes/HomeBot'
+license=('MIT')
+depends=('dbus' 'fontconfig' 'gcc-libs' 'glibc' 'libx11' 'libxcursor' 'libxi' 'libxkbcommon' 'libxrandr' 'mesa' 'wayland')
+makedepends=('cargo')
+source=("HomeBot-${pkgver}.tar.gz::https://github.com/luinbytes/HomeBot/archive/refs/tags/v${pkgver}.tar.gz")
+sha256sums=('@SOURCE_SHA256@')
+
+prepare() {
+  cd "HomeBot-${pkgver}"
+  cargo fetch --locked --target x86_64-unknown-linux-gnu
+}
+
+build() {
+  cd "HomeBot-${pkgver}"
+  CARGO_TARGET_DIR=target cargo build --frozen --release -p homebot-desktop -p homebot-server
+}
+
+check() {
+  cd "HomeBot-${pkgver}"
+  CARGO_TARGET_DIR=target cargo test --frozen --release -p homebot-server --bin homebot-server
+}
+
+package() {
+  cd "HomeBot-${pkgver}"
+  install -Dm755 target/release/homebot-desktop "$pkgdir/usr/bin/homebot-desktop"
+  install -Dm755 target/release/homebot-server "$pkgdir/usr/bin/homebot-server"
+  install -Dm644 packaging/arch/dev.homebot.desktop.desktop "$pkgdir/usr/share/applications/dev.homebot.desktop.desktop"
+  install -Dm644 packaging/arch/homebot.svg "$pkgdir/usr/share/icons/hicolor/scalable/apps/homebot.svg"
+  install -Dm644 packaging/arch/homebot.service "$pkgdir/usr/lib/systemd/user/homebot.service"
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/homebot/LICENSE"
+  install -Dm644 README.md "$pkgdir/usr/share/doc/homebot/README.md"
+  install -Dm644 INSTALL.md "$pkgdir/usr/share/doc/homebot/INSTALL.md"
+  install -Dm644 AGENT_INSTALL.md "$pkgdir/usr/share/doc/homebot/AGENT_INSTALL.md"
+}

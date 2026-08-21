@@ -15,8 +15,10 @@ async fn main() -> anyhow::Result<()> {
         || std::path::PathBuf::from("homebot.db"),
         std::path::PathBuf::from,
     );
-    let token = std::env::var("HOMEBOT_DEVICE_TOKEN")
-        .map_err(|_| anyhow::anyhow!("HOMEBOT_DEVICE_TOKEN must be set"))?;
+    let token = load_device_token(
+        std::env::var_os("HOMEBOT_DEVICE_TOKEN"),
+        std::env::var_os("HOMEBOT_DEVICE_TOKEN_FILE").map(std::path::PathBuf::from),
+    )?;
     let storage = Storage::open(&data_path).await?;
     let artifact_root = data_path
         .parent()
@@ -45,6 +47,37 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
+fn load_device_token(
+    direct: Option<std::ffi::OsString>,
+    credential_file: Option<std::path::PathBuf>,
+) -> anyhow::Result<String> {
+    let raw = match (direct, credential_file) {
+        (Some(_), Some(_)) => {
+            anyhow::bail!("set only one of HOMEBOT_DEVICE_TOKEN or HOMEBOT_DEVICE_TOKEN_FILE")
+        }
+        (Some(value), None) => value
+            .into_string()
+            .map_err(|_| anyhow::anyhow!("HOMEBOT_DEVICE_TOKEN is not valid UTF-8"))?,
+        (None, Some(path)) => {
+            let metadata = std::fs::metadata(&path)
+                .map_err(|_| anyhow::anyhow!("HomeBot owner credential file is unavailable"))?;
+            if !metadata.is_file() || metadata.len() > 4_096 {
+                anyhow::bail!("HomeBot owner credential file is invalid");
+            }
+            std::fs::read_to_string(path)
+                .map_err(|_| anyhow::anyhow!("HomeBot owner credential file is unreadable"))?
+        }
+        (None, None) => {
+            anyhow::bail!("HOMEBOT_DEVICE_TOKEN or HOMEBOT_DEVICE_TOKEN_FILE must be set")
+        }
+    };
+    let token = raw.trim().to_owned();
+    if token.is_empty() {
+        anyhow::bail!("HomeBot owner credential must not be empty");
+    }
+    Ok(token)
+}
+
 fn validated_bind(raw: &str, allow_remote: bool) -> anyhow::Result<SocketAddr> {
     let address: SocketAddr = raw
         .parse()
@@ -57,7 +90,8 @@ fn validated_bind(raw: &str, allow_remote: bool) -> anyhow::Result<SocketAddr> {
 
 #[cfg(test)]
 mod tests {
-    use super::validated_bind;
+    use super::{load_device_token, validated_bind};
+    use std::ffi::OsString;
 
     #[test]
     fn remote_bind_requires_explicit_acknowledgement() {
@@ -68,5 +102,23 @@ mod tests {
         assert!(validated_bind("0.0.0.0:7123", false).is_err());
         assert!(validated_bind("192.168.1.20:7123", true).is_ok());
         assert!(validated_bind("hostname:7123", true).is_err());
+    }
+
+    #[test]
+    fn credential_file_is_bounded_trimmed_and_mutually_exclusive() -> anyhow::Result<()> {
+        let directory = tempfile::tempdir()?;
+        let credential = directory.path().join("owner-token");
+        std::fs::write(&credential, "owner-secret\n")?;
+        assert_eq!(
+            load_device_token(None, Some(credential.clone()))?,
+            "owner-secret"
+        );
+        assert!(
+            load_device_token(Some(OsString::from("direct")), Some(credential.clone())).is_err()
+        );
+        std::fs::write(&credential, vec![b'x'; 4_097])?;
+        assert!(load_device_token(None, Some(credential)).is_err());
+        assert!(load_device_token(None, None).is_err());
+        Ok(())
     }
 }

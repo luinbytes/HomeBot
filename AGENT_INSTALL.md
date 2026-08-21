@@ -52,7 +52,7 @@ rustup-init -y --profile minimal --default-toolchain stable
 Arch/Omarchy (install a Secret Service provider such as GNOME Keyring for BYOK secrets):
 
 ```bash
-sudo pacman -S --needed base-devel git rustup gnome-keyring
+sudo pacman -S --needed base-devel git rustup gnome-keyring systemd openssl
 rustup default stable
 rustup component add clippy rustfmt
 ```
@@ -104,7 +104,20 @@ Expected JSON shape:
 
 Also verify the process remains alive after the request and the listener is loopback-only using `lsof -nP -iTCP:7123 -sTCP:LISTEN` on macOS or `ss -ltnp '( sport = :7123 )'` on Linux. A command exit code without these postconditions is not success.
 
-SQLite migrations, authenticated Bot/chat transport, secure pairing, and the native Android client are implemented and covered by tests. The standalone server still lacks a supported release bootstrap command for creating its first owner credential, and real provider health/message verification depends on installed authenticated provider CLIs or a configured BYOK profile. Therefore an agent MUST report unavailable end-to-end installation checks accurately and MUST NOT claim a functional v1 installation.
+SQLite migrations, authenticated Bot/chat transport, secure pairing, and the native Android client are implemented and covered by tests. A source-development server requires an operator-provided owner credential; the packaged systemd route below creates one without displaying or storing it as plaintext. Real provider health/message verification depends on installed authenticated provider CLIs or a configured BYOK profile. Therefore an agent MUST report unavailable end-to-end installation checks accurately and MUST NOT claim a functional v1 installation.
+
+For a verified Arch package artifact, create the encrypted systemd owner credential and start the headless unit without exposing the token:
+
+```bash
+install -d -m 700 "$HOME/.config/homebot"
+openssl rand -hex 32 | systemd-creds encrypt --user - "$HOME/.config/homebot/homebot-owner-token.cred"
+systemctl --user daemon-reload
+systemctl --user enable --now homebot.service
+systemctl --user is-active --quiet homebot.service
+curl --fail --silent --show-error http://127.0.0.1:7123/health
+```
+
+Require the health JSON shape documented above, a live process after the request, a loopback-only listener, and a database under `~/.local/share/homebot`. Do not print, decrypt, or copy the credential into `server.env`.
 
 ## 6. Provider checks
 

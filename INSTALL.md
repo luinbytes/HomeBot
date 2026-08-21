@@ -22,7 +22,19 @@ CI produces separate `HomeBot-<version>-macos-x86_64` and `HomeBot-<version>-mac
 
 ## Arch Linux and Omarchy
 
-v1 will provide an AUR-ready `PKGBUILD`, desktop entry, Wayland/X11 guidance, and a systemd user service for headless mode. Graphical and systemd launches frequently have a narrower `PATH` than an interactive shell; HomeBot will support explicit provider binary paths.
+CI now builds an AUR-ready package on current Arch, validates its desktop entry and dual Wayland/X11 build, and tests clean install, update, and uninstall. It remains a test artifact until the v1 release gate passes. The rendered release `PKGBUILD` requires an exact source SHA-256 and never uses `SKIP`.
+
+The installed headless unit is `homebot.service`. Before enabling it, create its owner credential without printing the value:
+
+```bash
+install -d -m 700 "$HOME/.config/homebot"
+openssl rand -hex 32 | systemd-creds encrypt --user - "$HOME/.config/homebot/homebot-owner-token.cred"
+systemctl --user daemon-reload
+systemctl --user enable --now homebot.service
+curl --fail --silent --show-error http://127.0.0.1:7123/health
+```
+
+The unit binds to loopback, stores data beneath `~/.local/share/homebot`, and obtains the token through systemd's encrypted credential directory rather than SQLite or a plaintext environment file. The desktop supports Wayland and X11. Graphical and systemd launches often have narrower `PATH` values than interactive shells; configure provider executables by absolute path or place a narrow non-secret override in `~/.config/homebot/server.env`.
 
 ## Android and pairing
 

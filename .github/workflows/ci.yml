@@ -148,3 +148,52 @@ jobs:
             dist/*.manifest.json
             dist/*.SHA256SUMS
           if-no-files-found: error
+
+  arch-package:
+    name: Arch package install/update/uninstall
+    runs-on: ubuntu-latest
+    container: archlinux:base-devel
+    steps:
+      - name: Install Arch build and verification dependencies
+        run: >-
+          pacman -Syu --noconfirm --needed rustup git python desktop-file-utils systemd dbus fontconfig
+          libx11 libxcursor libxi libxkbcommon libxrandr mesa wayland
+      - uses: actions/checkout@v4
+      - name: Configure Rust and unprivileged package builder
+        run: |
+          rustup default stable
+          useradd --create-home builder
+          chown -R builder:builder "$GITHUB_WORKSPACE"
+      - name: Create source archive and packages
+        run: |
+          version=0.0.1
+          mkdir -p packaging/arch/dist
+          git archive --format=tar.gz --prefix="HomeBot-$version/" HEAD > "packaging/arch/HomeBot-$version.tar.gz"
+          source_sha=$(sha256sum "packaging/arch/HomeBot-$version.tar.gz" | cut -d' ' -f1)
+          runuser -u builder -- ./scripts/render-arch-pkgbuild.sh "$version" "$source_sha" 1 packaging/arch/PKGBUILD
+          runuser -u builder -- sh -c 'cd packaging/arch && makepkg --cleanbuild --force --noconfirm'
+          mv packaging/arch/homebot-0.0.1-1-x86_64.pkg.tar.zst packaging/arch/dist/
+          runuser -u builder -- ./scripts/render-arch-pkgbuild.sh "$version" "$source_sha" 2 packaging/arch/PKGBUILD
+          runuser -u builder -- sh -c 'cd packaging/arch && makepkg --force --noconfirm'
+          mv packaging/arch/homebot-0.0.1-2-x86_64.pkg.tar.zst packaging/arch/dist/
+      - name: Verify clean install, update, and uninstall
+        run: >-
+          ./scripts/verify-arch-package.sh
+          packaging/arch/dist/homebot-0.0.1-1-x86_64.pkg.tar.zst
+          packaging/arch/dist/homebot-0.0.1-2-x86_64.pkg.tar.zst
+      - name: Create checksums and manifest
+        run: |
+          cd packaging/arch/dist
+          sha256sum *.pkg.tar.zst > HomeBot-0.0.1-arch-x86_64.SHA256SUMS
+          cd ../../..
+          python3 scripts/release-manifest.py \
+            --output packaging/arch/dist/HomeBot-0.0.1-arch-x86_64.manifest.json \
+            --artifact packaging/arch/dist/homebot-0.0.1-2-x86_64.pkg.tar.zst \
+            --platform linux --architecture x86_64 --version 0.0.1 --signing unsigned
+      - uses: actions/upload-artifact@v4
+        with:
+          name: HomeBot-Arch-x86_64
+          path: |
+            packaging/arch/dist/*
+            packaging/arch/PKGBUILD
+          if-no-files-found: error

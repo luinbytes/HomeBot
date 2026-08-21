@@ -49,10 +49,9 @@ class HomeBotClientTest {
     @Test
     fun pairingExchangesOneTimeCredentialAndRedactsPersistentSession() = runBlocking {
         server.enqueue(
-            MockResponse.Builder().code(200).body(PAIRING_RESPONSE)
+            MockResponse().setResponseCode(200).setBody(PAIRING_RESPONSE)
                 .addHeader("Content-Type", "application/json")
-                .addHeader("Cache-Control", "no-store")
-                .build(),
+                .addHeader("Cache-Control", "no-store"),
         )
         server.start()
         val client = client()
@@ -83,16 +82,16 @@ class HomeBotClientTest {
                 "/api/v1/version" -> jsonResponse(VERSION_RESPONSE)
                 "/api/v1/events" -> {
                     val socketNumber = sockets.incrementAndGet()
-                    MockResponse.Builder().webSocketUpgrade(object : WebSocketListener() {
+                    MockResponse().withWebSocketUpgrade(object : WebSocketListener() {
                         override fun onMessage(webSocket: WebSocket, text: String) {
                             hellos += text
-                            webSocket.send(hello(if (socketNumber == 1) "snapshot_required" else "snapshot_required"))
+                            webSocket.send(hello("snapshot_required"))
                             webSocket.send(snapshot(if (socketNumber == 1) 5 else 9))
                             if (socketNumber == 1) webSocket.close(1001, "fixture restart")
                         }
-                    }).build()
+                    })
                 }
-                else -> MockResponse.Builder().code(404).build()
+                else -> MockResponse().setResponseCode(404)
             }
         }
         val client = client(reconnectDelayMs = { 1 })
@@ -118,7 +117,7 @@ class HomeBotClientTest {
                 "/api/v1/version" -> jsonResponse(VERSION_RESPONSE)
                 "/api/v1/events" -> {
                     val socketNumber = sockets.incrementAndGet()
-                    MockResponse.Builder().webSocketUpgrade(object : WebSocketListener() {
+                    MockResponse().withWebSocketUpgrade(object : WebSocketListener() {
                         override fun onMessage(webSocket: WebSocket, text: String) {
                             if (socketNumber == 1) {
                                 webSocket.send(hello("snapshot_required"))
@@ -130,9 +129,9 @@ class HomeBotClientTest {
                                 webSocket.send(botChanged(5, "Duplicate must be ignored"))
                             }
                         }
-                    }).build()
+                    })
                 }
-                else -> MockResponse.Builder().code(404).build()
+                else -> MockResponse().setResponseCode(404)
             }
         }
         val client = client(reconnectDelayMs = { 1 })
@@ -149,7 +148,7 @@ class HomeBotClientTest {
 
     @Test
     fun revokedSessionIsDeletedAndVersionSkewIsStructured() = runBlocking {
-        server.enqueue(MockResponse.Builder().code(401).body(ERROR_RESPONSE).build())
+        server.enqueue(MockResponse().setResponseCode(401).setBody(ERROR_RESPONSE))
         server.start()
         sessions.save(credentials())
         val revokedClient = client()
@@ -159,7 +158,7 @@ class HomeBotClientTest {
         server.close()
 
         server = MockWebServer().apply {
-            enqueue(MockResponse.Builder().code(426).body(ERROR_RESPONSE).build())
+            enqueue(MockResponse().setResponseCode(426).setBody(ERROR_RESPONSE))
             start()
         }
         sessions.save(credentials())
@@ -195,10 +194,9 @@ class HomeBotClientTest {
         deviceSession = "hbds_fixture_session",
     )
 
-    private fun jsonResponse(body: String) = MockResponse.Builder().code(200)
+    private fun jsonResponse(body: String) = MockResponse().setResponseCode(200)
         .addHeader("Content-Type", "application/json")
-        .body(body)
-        .build()
+        .setBody(body)
 
     private class FakeSessionStore : SessionStore {
         @Volatile private var credentials: SessionCredentials? = null

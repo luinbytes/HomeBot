@@ -99,6 +99,27 @@ data class UpdateBotRequest(
 data class BotMutationRequest(val request_id: String, val idempotency_key: String)
 
 @Serializable
+enum class PairingEndpointKind { @SerialName("loopback") LOOPBACK, @SerialName("lan") LAN, @SerialName("tailscale") TAILSCALE, @SerialName("custom_https") CUSTOM_HTTPS }
+
+@Serializable
+data class CreatePairingRequest(val request_id: String, val endpoint: String, val allow_insecure_private_network: Boolean = false)
+
+@Serializable
+data class PairingOffer(val id: String, val endpoint: String, val endpoint_kind: PairingEndpointKind, val pairing_token: String, val deep_link: String, val expires_at_unix_ms: Long, val warning: String? = null)
+
+@Serializable
+data class ExchangePairingRequest(val request_id: String, val pairing_token: String, val device_name: String)
+
+@Serializable
+data class DeviceSessionSummary(val id: String, val name: String, val endpoint_kind: PairingEndpointKind, val created_at_unix_ms: Long, val last_seen_at_unix_ms: Long? = null, val revoked_at_unix_ms: Long? = null)
+
+@Serializable
+data class PairingExchangeResponse(val device: DeviceSessionSummary, val device_session: String)
+
+@Serializable
+data class RevokeDeviceSessionRequest(val request_id: String, val idempotency_key: String)
+
+@Serializable
 data class BotResponse(val bot: BotSummary)
 
 @Serializable

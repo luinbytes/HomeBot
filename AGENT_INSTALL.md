@@ -119,9 +119,9 @@ Do not print provider configuration or tokens. Codex, Claude Code, and OpenAI-co
 
 ## 7. Networking and Android pairing
 
-Current builds: localhost only. Do not enable LAN, Tailscale, reverse proxying, or public access because authentication and pairing are not implemented.
+Default to `HOMEBOT_BIND=127.0.0.1:7123`. For an explicitly requested private listener, detect the machine address first, set `HOMEBOT_BIND=IP:7123` and `HOMEBOT_ALLOW_REMOTE=1`, and confirm the startup log contains the remote-listener warning. Prefer Tailscale. Never advertise a public/custom HTTP endpoint; terminate HTTPS at a trusted reverse proxy.
 
-The finished flow will provide a server command that creates a short-lived single-use pairing token, display only a QR/deep link to the owner, exchange it for a named device session, verify that reuse fails, and verify revocation. Exact commands will replace this paragraph before v1.
+Create, inspect, and revoke pairing/device state with the deterministic owner-authenticated commands in [docs/remote-access.md](docs/remote-access.md). Verify that the offer expires within five minutes, the deep link contains an `hbpair_` token rather than an `hbds_` session, a second exchange fails, the new named device appears in `GET /api/v1/devices`, and authenticated access fails after revocation. Never print a persistent device session in diagnostic output.
 
 ## 8. Troubleshooting
 

@@ -48,8 +48,90 @@ pub(super) async fn execute_command(
         DesktopCommand::Workspace(command) => {
             execute_workspace(client, config, command, events).await
         }
+        DesktopCommand::LoadDevices => load_devices(client, config, events).await,
+        DesktopCommand::CreatePairing {
+            endpoint,
+            allow_insecure_private_network,
+        } => {
+            create_pairing(
+                client,
+                config,
+                events,
+                endpoint,
+                allow_insecure_private_network,
+            )
+            .await
+        }
+        DesktopCommand::RevokeDevice(device_id) => {
+            revoke_device(client, config, events, device_id).await
+        }
         DesktopCommand::Shutdown => Ok(()),
     }
+}
+
+async fn load_devices(
+    client: &Client,
+    config: &RuntimeConfig,
+    events: &Sender<DesktopEvent>,
+) -> Result<(), TransportFailure> {
+    let devices = response_json(
+        authenticated(client, config, Method::GET, "/api/v1/devices")
+            .send()
+            .await
+            .map_err(request_error)?,
+    )
+    .await?;
+    let _ = events.send(DesktopEvent::Devices(devices));
+    Ok(())
+}
+
+async fn create_pairing(
+    client: &Client,
+    config: &RuntimeConfig,
+    events: &Sender<DesktopEvent>,
+    endpoint: String,
+    allow_insecure_private_network: bool,
+) -> Result<(), TransportFailure> {
+    let offer = response_json(
+        authenticated(client, config, Method::POST, "/api/v1/pairing")
+            .json(&super::CreatePairingRequest {
+                request_id: Uuid::now_v7(),
+                endpoint,
+                allow_insecure_private_network,
+            })
+            .send()
+            .await
+            .map_err(request_error)?,
+    )
+    .await?;
+    let _ = events.send(DesktopEvent::PairingOffer(offer));
+    Ok(())
+}
+
+async fn revoke_device(
+    client: &Client,
+    config: &RuntimeConfig,
+    events: &Sender<DesktopEvent>,
+    device_id: Uuid,
+) -> Result<(), TransportFailure> {
+    let device = response_json(
+        authenticated(
+            client,
+            config,
+            Method::POST,
+            &format!("/api/v1/devices/{device_id}/revoke"),
+        )
+        .json(&super::RevokeDeviceSessionRequest {
+            request_id: Uuid::now_v7(),
+            idempotency_key: Uuid::now_v7(),
+        })
+        .send()
+        .await
+        .map_err(request_error)?,
+    )
+    .await?;
+    let _ = events.send(DesktopEvent::DeviceRevoked(device));
+    Ok(())
 }
 
 async fn execute_workspace(

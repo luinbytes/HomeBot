@@ -53,6 +53,8 @@ Large artifacts live in a content-addressed application data directory. SQLite i
 
 Remote clients pair with a short-lived, single-use credential and receive a named, revocable device session. HomeBot binds to loopback by default. Private-network access such as Tailscale is the recommended remote path.
 
+See [remote access and pairing](docs/remote-access.md) for the current server/desktop flow and conservative listener controls.
+
 Read the deeper contracts:
 
 - [Architecture](docs/architecture.md)

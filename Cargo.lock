@@ -1985,7 +1985,9 @@ dependencies = [
  "anyhow",
  "async-trait",
  "axum",
+ "base64",
  "futures-util",
+ "getrandom 0.3.4",
  "homebot-domain",
  "homebot-plugins",
  "homebot-protocol",
@@ -2008,6 +2010,7 @@ dependencies = [
  "tower",
  "tracing",
  "tracing-subscriber",
+ "url",
  "uuid",
 ]
 

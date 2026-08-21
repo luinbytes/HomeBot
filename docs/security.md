@@ -46,6 +46,8 @@ Local MCP executables are direct absolute-path child processes with no shell and
 
 Default bind is `127.0.0.1`. LAN and Tailscale require explicit configuration. Plain HTTP/WebSocket is allowed only on loopback by default. Private-network plaintext may be enabled only with a visible warning and threat acknowledgement; public endpoints require HTTPS/WSS through a supported TLS configuration or reverse proxy. Origin and CSRF checks protect browser-capable surfaces.
 
+The headless binary refuses a non-loopback bind unless `HOMEBOT_ALLOW_REMOTE=1` is explicitly set and warns whenever it is enabled. Pairing offers expire after five minutes and are single-use; SQLite stores only SHA-256 token digests. Exchange has durable global and per-token failure limits, exact browser-origin validation, and no-store responses. Revoked device sessions fail HTTP authentication and are disconnected from WebSocket streaming on heartbeat. Details and operator commands are in [remote-access.md](remote-access.md).
+
 ## Secrets
 
 Secret values are created and resolved through `homebot-secrets`. Production builds use macOS Keychain or a Linux Secret Service-compatible store; every blocking OS call runs outside async executor threads. SQLite stores only owner, opaque locator, label, and timestamps. Values never appear in SQLite, normal chat, activity details, routine history, outbox events, crash reports, CLI arguments, process listings, or ordinary environment inheritance. Secret-bearing Rust request/input types have redacted or absent `Debug` implementations, and short-lived resolved allocations zero memory on drop.

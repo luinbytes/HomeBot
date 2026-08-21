@@ -30,6 +30,8 @@ Every mutation has a client-generated request ID and idempotency key. Repeating 
 
 Errors contain a stable machine code, safe user-facing message, retryable flag, and request ID where relevant. Debug details remain in redacted local diagnostics and never expose provider secrets, pairing tokens, raw environment variables, or filesystem data outside the requesting capability scope.
 
+Pairing is owner-initiated but exchange is the sole narrowly unauthenticated mutation. `POST /api/v1/pairing` returns a five-minute single-use offer, `POST /api/v1/pairing/exchange` atomically consumes it and returns a named persistent device session once, and owner-only device routes list/revoke sessions. Raw tokens never enter SQLite or events. Device bearers authenticate the same HTTP/WebSocket protocol but cannot administer devices. See [remote-access.md](remote-access.md).
+
 Required common codes include `unauthenticated`, `forbidden`, `approval_required`, `not_found`, `conflict`, `validation_failed`, `rate_limited`, `provider_unavailable`, `plugin_unavailable`, `secret_store_locked`, `secret_store_unavailable`, `operation_cancelled`, `resume_unavailable`, `protocol_version_unsupported`, and `internal`.
 
 ## Secret metadata

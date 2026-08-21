@@ -64,6 +64,9 @@
     "create_local_mcp_plugin_request": {
       "$ref": "#/$defs/CreateLocalMcpPluginRequest"
     },
+    "create_pairing_request": {
+      "$ref": "#/$defs/CreatePairingRequest"
+    },
     "create_pull_request_request": {
       "$ref": "#/$defs/CreatePullRequestRequest"
     },
@@ -88,6 +91,9 @@
     "detach_chat_workspace_request": {
       "$ref": "#/$defs/DetachChatWorkspaceRequest"
     },
+    "device_session": {
+      "$ref": "#/$defs/DeviceSessionSummary"
+    },
     "duplicate_routine_request": {
       "$ref": "#/$defs/DuplicateRoutineRequest"
     },
@@ -97,6 +103,9 @@
     "error": {
       "$ref": "#/$defs/ErrorEnvelope"
     },
+    "exchange_pairing_request": {
+      "$ref": "#/$defs/ExchangePairingRequest"
+    },
     "finalize_attachment_request": {
       "$ref": "#/$defs/FinalizeAttachmentRequest"
     },
@@ -105,6 +114,12 @@
     },
     "message_mutation_request": {
       "$ref": "#/$defs/MessageMutationRequest"
+    },
+    "pairing_exchange_response": {
+      "$ref": "#/$defs/PairingExchangeResponse"
+    },
+    "pairing_offer": {
+      "$ref": "#/$defs/PairingOffer"
     },
     "plugin": {
       "$ref": "#/$defs/PluginSummary"
@@ -126,6 +141,9 @@
     },
     "restore_checkpoint_request": {
       "$ref": "#/$defs/RestoreCheckpointRequest"
+    },
+    "revoke_device_session_request": {
+      "$ref": "#/$defs/RevokeDeviceSessionRequest"
     },
     "routine": {
       "$ref": "#/$defs/RoutineSummary"
@@ -219,6 +237,12 @@
     "client_message",
     "server_event",
     "error",
+    "create_pairing_request",
+    "pairing_offer",
+    "exchange_pairing_request",
+    "pairing_exchange_response",
+    "device_session",
+    "revoke_device_session_request",
     "create_secret_request",
     "update_secret_request",
     "secret",
@@ -1573,6 +1597,27 @@
         "program"
       ]
     },
+    "CreatePairingRequest": {
+      "type": "object",
+      "properties": {
+        "allow_insecure_private_network": {
+          "type": "boolean",
+          "default": false
+        },
+        "endpoint": {
+          "type": "string"
+        },
+        "request_id": {
+          "type": "string",
+          "format": "uuid"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "request_id",
+        "endpoint"
+      ]
+    },
     "CreatePullRequestRequest": {
       "type": "object",
       "properties": {
@@ -1815,6 +1860,49 @@
         "idempotency_key"
       ]
     },
+    "DeviceSessionSummary": {
+      "type": "object",
+      "properties": {
+        "created_at_unix_ms": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "endpoint_kind": {
+          "$ref": "#/$defs/PairingEndpointKind"
+        },
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "last_seen_at_unix_ms": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "name": {
+          "type": "string"
+        },
+        "revoked_at_unix_ms": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "name",
+        "endpoint_kind",
+        "created_at_unix_ms"
+      ]
+    },
     "DuplicateRoutineRequest": {
       "type": "object",
       "properties": {
@@ -1913,6 +2001,27 @@
         "code",
         "message",
         "retryable"
+      ]
+    },
+    "ExchangePairingRequest": {
+      "type": "object",
+      "properties": {
+        "device_name": {
+          "type": "string"
+        },
+        "pairing_token": {
+          "type": "string"
+        },
+        "request_id": {
+          "type": "string",
+          "format": "uuid"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "request_id",
+        "pairing_token",
+        "device_name"
       ]
     },
     "ExpectedOutput": {
@@ -2444,6 +2553,72 @@
         "created_at_ms"
       ]
     },
+    "PairingEndpointKind": {
+      "type": "string",
+      "enum": [
+        "loopback",
+        "lan",
+        "tailscale",
+        "custom_https"
+      ]
+    },
+    "PairingExchangeResponse": {
+      "type": "object",
+      "properties": {
+        "device": {
+          "$ref": "#/$defs/DeviceSessionSummary"
+        },
+        "device_session": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "device",
+        "device_session"
+      ]
+    },
+    "PairingOffer": {
+      "type": "object",
+      "properties": {
+        "deep_link": {
+          "type": "string"
+        },
+        "endpoint": {
+          "type": "string"
+        },
+        "endpoint_kind": {
+          "$ref": "#/$defs/PairingEndpointKind"
+        },
+        "expires_at_unix_ms": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "pairing_token": {
+          "type": "string"
+        },
+        "warning": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "endpoint",
+        "endpoint_kind",
+        "pairing_token",
+        "deep_link",
+        "expires_at_unix_ms"
+      ]
+    },
     "PluginAssignmentRequest": {
       "type": "object",
       "properties": {
@@ -2920,6 +3095,24 @@
         "maximum_attempts",
         "initial_backoff_seconds",
         "maximum_backoff_seconds"
+      ]
+    },
+    "RevokeDeviceSessionRequest": {
+      "type": "object",
+      "properties": {
+        "idempotency_key": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "request_id": {
+          "type": "string",
+          "format": "uuid"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "request_id",
+        "idempotency_key"
       ]
     },
     "RiskLevel": {

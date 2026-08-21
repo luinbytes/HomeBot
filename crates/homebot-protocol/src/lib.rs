@@ -329,6 +329,69 @@ pub struct BotMutationRequest {
     pub idempotency_key: Uuid,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PairingEndpointKind {
+    Loopback,
+    Lan,
+    Tailscale,
+    CustomHttps,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CreatePairingRequest {
+    pub request_id: Uuid,
+    pub endpoint: String,
+    #[serde(default)]
+    pub allow_insecure_private_network: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PairingOffer {
+    pub id: Uuid,
+    pub endpoint: String,
+    pub endpoint_kind: PairingEndpointKind,
+    pub pairing_token: String,
+    pub deep_link: String,
+    pub expires_at_unix_ms: u64,
+    pub warning: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExchangePairingRequest {
+    pub request_id: Uuid,
+    pub pairing_token: String,
+    pub device_name: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct DeviceSessionSummary {
+    pub id: Uuid,
+    pub name: String,
+    pub endpoint_kind: PairingEndpointKind,
+    pub created_at_unix_ms: u64,
+    pub last_seen_at_unix_ms: Option<u64>,
+    pub revoked_at_unix_ms: Option<u64>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PairingExchangeResponse {
+    pub device: DeviceSessionSummary,
+    pub device_session: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RevokeDeviceSessionRequest {
+    pub request_id: Uuid,
+    pub idempotency_key: Uuid,
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct BotResponse {
@@ -1437,6 +1500,12 @@ pub struct ProtocolV1Schema {
     pub client_message: ClientMessage,
     pub server_event: ServerEvent,
     pub error: ErrorEnvelope,
+    pub create_pairing_request: CreatePairingRequest,
+    pub pairing_offer: PairingOffer,
+    pub exchange_pairing_request: ExchangePairingRequest,
+    pub pairing_exchange_response: PairingExchangeResponse,
+    pub device_session: DeviceSessionSummary,
+    pub revoke_device_session_request: RevokeDeviceSessionRequest,
     pub create_secret_request: CreateSecretRequest,
     pub update_secret_request: UpdateSecretRequest,
     pub secret: SecretSummary,

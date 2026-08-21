@@ -26,8 +26,8 @@ v1 will provide an AUR-ready `PKGBUILD`, desktop entry, Wayland/X11 guidance, an
 
 ## Android and pairing
 
-The Android application and pairing flow are not implemented yet. v1 pairing will use a short-lived, single-use QR/deep-link credential exchanged for a named, revocable device session. Permanent API keys will not appear in QR codes.
+The native Android application is still under construction. The server and desktop already implement secure pairing: the desktop Devices screen creates a five-minute, single-use QR/deep-link credential, which is exchanged for a named and revocable device session. Permanent credentials never appear in the QR code. See [Remote access and device pairing](docs/remote-access.md) for endpoint and revocation rules.
 
 ## Headless and remote access
 
-The development server currently binds only to `127.0.0.1:7123`. Authentication, LAN/Tailscale binding, pairing, HTTPS configuration, and the headless service are release blockers. Do not proxy or expose the current endpoint.
+The server binds to `127.0.0.1:7123` by default. LAN or Tailscale listening requires both an explicit `HOMEBOT_BIND` IP socket and `HOMEBOT_ALLOW_REMOTE=1`; public/custom endpoints require an HTTPS reverse proxy. Follow [Remote access and device pairing](docs/remote-access.md). Packaged headless services remain release work.

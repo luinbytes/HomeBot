@@ -33,6 +33,7 @@ chrono-tz = { version = "0.10", features = ["serde"] }
 egui = "0.32.3"
 eframe = { version = "0.32.3", default-features = false, features = ["accesskit", "default_fonts", "glow", "wayland", "x11"] }
 futures-util = "0.3"
+getrandom = "0.3"
 homebot-domain = { version = "=0.0.1", path = "crates/homebot-domain" }
 homebot-protocol = { version = "=0.0.1", path = "crates/homebot-protocol" }
 homebot-providers = { version = "=0.0.1", path = "crates/homebot-providers" }
@@ -58,6 +59,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 tower = { version = "0.5", features = ["util"] }
 uuid = { version = "1.18", features = ["serde", "v7"] }
+url = "2.5"
 zeroize = "1.8"
 portable-pty = "0.9"
 

@@ -14,14 +14,16 @@ use homebot_protocol::{
     CompactWorkingContextRequest, ContextCompactionStatus, ContextCompactionStrategy,
     ConversationReconciliation, CreateAttachmentRequest, CreateAttachmentResponse,
     CreateBotRequest, CreateDirectChatRequest, CreateDirectChatResponse, CreateGroupChatRequest,
-    CreateGroupChatResponse, CreateLocalMcpPluginRequest, CreatePullRequestRequest,
-    CreateRepositoryWorkspaceRequest, CreateRoutineRequest, CreateRoutineTriggerRequest,
-    CreateSkillRequest, DeliverRoutineTriggerRequest, DetachChatWorkspaceRequest,
-    DuplicateRoutineRequest, DuplicateSkillRequest, FinalizeAttachmentRequest, GroupBotStatus,
+    CreateGroupChatResponse, CreateLocalMcpPluginRequest, CreatePairingRequest,
+    CreatePullRequestRequest, CreateRepositoryWorkspaceRequest, CreateRoutineRequest,
+    CreateRoutineTriggerRequest, CreateSkillRequest, DeliverRoutineTriggerRequest,
+    DetachChatWorkspaceRequest, DeviceSessionSummary, DuplicateRoutineRequest,
+    DuplicateSkillRequest, ExchangePairingRequest, FinalizeAttachmentRequest, GroupBotStatus,
     GroupTimelineResponse, HandoffGroupRequest, ImportSkillRequest, InteractionMode,
-    MissedRunPolicy, OverlapPolicy, PluginConnectionState, PluginMutationRequest, PluginSummary,
-    PullRequestMetadata, PullRequestMutationResponse, QueuedPromptKind, RecordedAction,
-    RecordedActor, RepositoryWorkspaceSummary, RestoreCheckpointRequest, RetryPolicy,
+    MissedRunPolicy, OverlapPolicy, PairingEndpointKind, PairingExchangeResponse, PairingOffer,
+    PluginConnectionState, PluginMutationRequest, PluginSummary, PullRequestMetadata,
+    PullRequestMutationResponse, QueuedPromptKind, RecordedAction, RecordedActor,
+    RepositoryWorkspaceSummary, RestoreCheckpointRequest, RetryPolicy, RevokeDeviceSessionRequest,
     RoutineDefinition, RoutineInput, RoutineInputKind, RoutineJobSummary, RoutineRecordingSummary,
     RoutineRunSummary, RoutineSchedule, RoutineStep, RoutineStepStatus, RoutineSummary,
     RoutineTriggerDefinition, RoutineTriggerSource, RunRoutineRequest, SecretSummary,
@@ -2553,6 +2555,230 @@ async fn protected_routes_deny_missing_and_invalid_tokens_server_side()
             .await?;
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
+    Ok(())
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn pairing_is_single_use_restart_durable_revocable_and_owner_managed()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let database = directory.path().join("homebot.db");
+    let storage = Storage::open(&database).await?;
+    let app = router(AppState::new(storage.clone(), "correct-token"));
+
+    let unauthorized = app
+        .clone()
+        .oneshot(
+            Request::post("/api/v1/pairing")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&CreatePairingRequest {
+                    request_id: Uuid::now_v7(),
+                    endpoint: "http://127.0.0.1:7123".to_owned(),
+                    allow_insecure_private_network: false,
+                })?))?,
+        )
+        .await?;
+    assert_eq!(unauthorized.status(), StatusCode::UNAUTHORIZED);
+
+    for (endpoint, acknowledge) in [
+        ("http://203.0.113.7:7123", true),
+        ("http://192.168.1.20:7123", false),
+    ] {
+        let denied = app
+            .clone()
+            .oneshot(json_request(
+                "POST",
+                "/api/v1/pairing",
+                &CreatePairingRequest {
+                    request_id: Uuid::now_v7(),
+                    endpoint: endpoint.to_owned(),
+                    allow_insecure_private_network: acknowledge,
+                },
+            ))
+            .await?;
+        assert_eq!(denied.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    let tailscale = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/pairing",
+            &CreatePairingRequest {
+                request_id: Uuid::now_v7(),
+                endpoint: "http://homebot.tailnet.ts.net:7123".to_owned(),
+                allow_insecure_private_network: true,
+            },
+        ))
+        .await?;
+    let tailscale = response_json::<PairingOffer>(tailscale).await?;
+    assert_eq!(tailscale.endpoint_kind, PairingEndpointKind::Tailscale);
+    assert!(tailscale.warning.is_some());
+
+    let created = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/pairing",
+            &CreatePairingRequest {
+                request_id: Uuid::now_v7(),
+                endpoint: "http://127.0.0.1:7123".to_owned(),
+                allow_insecure_private_network: false,
+            },
+        ))
+        .await?;
+    assert_eq!(
+        created
+            .headers()
+            .get("cache-control")
+            .and_then(|value| value.to_str().ok()),
+        Some("no-store")
+    );
+    let offer = response_json::<PairingOffer>(created).await?;
+    assert_eq!(offer.endpoint_kind, PairingEndpointKind::Loopback);
+    assert!(offer.pairing_token.starts_with("hbpair_"));
+    assert!(offer.deep_link.contains(&offer.pairing_token));
+
+    let exchange_request = ExchangePairingRequest {
+        request_id: Uuid::now_v7(),
+        pairing_token: offer.pairing_token.clone(),
+        device_name: "Pixel test device".to_owned(),
+    };
+    let mismatched = app
+        .clone()
+        .oneshot(
+            Request::post("/api/v1/pairing/exchange")
+                .header("content-type", "application/json")
+                .header("origin", "https://attacker.example")
+                .body(Body::from(serde_json::to_vec(&exchange_request)?))?,
+        )
+        .await?;
+    assert_eq!(mismatched.status(), StatusCode::FORBIDDEN);
+
+    let exchanged = app
+        .clone()
+        .oneshot(
+            Request::post("/api/v1/pairing/exchange")
+                .header("content-type", "application/json")
+                .header("origin", "http://127.0.0.1:7123")
+                .body(Body::from(serde_json::to_vec(&exchange_request)?))?,
+        )
+        .await?;
+    assert_eq!(exchanged.status(), StatusCode::OK);
+    assert_eq!(
+        exchanged
+            .headers()
+            .get("cache-control")
+            .and_then(|value| value.to_str().ok()),
+        Some("no-store")
+    );
+    let exchanged = response_json::<PairingExchangeResponse>(exchanged).await?;
+    assert!(exchanged.device_session.starts_with("hbds_"));
+    assert_eq!(exchanged.device.name, "Pixel test device");
+    assert!(!offer.deep_link.contains(&exchanged.device_session));
+
+    let used = app
+        .clone()
+        .oneshot(
+            Request::post("/api/v1/pairing/exchange")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&exchange_request)?))?,
+        )
+        .await?;
+    assert_eq!(used.status(), StatusCode::CONFLICT);
+
+    drop(app);
+    let restarted = router(AppState::new(storage.clone(), "correct-token"));
+    let device_version = restarted
+        .clone()
+        .oneshot(
+            Request::get("/api/v1/version")
+                .header(
+                    "authorization",
+                    format!("Bearer {}", exchanged.device_session),
+                )
+                .body(Body::empty())?,
+        )
+        .await?;
+    assert_eq!(device_version.status(), StatusCode::OK);
+    let device_cannot_pair = restarted
+        .clone()
+        .oneshot(
+            Request::post("/api/v1/pairing")
+                .header(
+                    "authorization",
+                    format!("Bearer {}", exchanged.device_session),
+                )
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&CreatePairingRequest {
+                    request_id: Uuid::now_v7(),
+                    endpoint: "http://127.0.0.1:7123".to_owned(),
+                    allow_insecure_private_network: false,
+                })?))?,
+        )
+        .await?;
+    assert_eq!(device_cannot_pair.status(), StatusCode::FORBIDDEN);
+
+    let listed = restarted
+        .clone()
+        .oneshot(
+            Request::get("/api/v1/devices")
+                .header("authorization", "Bearer correct-token")
+                .body(Body::empty())?,
+        )
+        .await?;
+    let listed = response_json::<Vec<DeviceSessionSummary>>(listed).await?;
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].id, exchanged.device.id);
+    assert_eq!(listed[0].name, exchanged.device.name);
+    assert!(listed[0].last_seen_at_unix_ms.is_some());
+
+    let revoke = RevokeDeviceSessionRequest {
+        request_id: Uuid::now_v7(),
+        idempotency_key: Uuid::now_v7(),
+    };
+    let mut revoked = None;
+    for _ in 0..2 {
+        let response = restarted
+            .clone()
+            .oneshot(json_request(
+                "POST",
+                &format!("/api/v1/devices/{}/revoke", exchanged.device.id),
+                &revoke,
+            ))
+            .await?;
+        assert_eq!(response.status(), StatusCode::OK);
+        let response = response_json::<DeviceSessionSummary>(response).await?;
+        if let Some(original) = &revoked {
+            assert_eq!(original, &response);
+        } else {
+            revoked = Some(response);
+        }
+    }
+    assert!(revoked.is_some_and(|device| device.revoked_at_unix_ms.is_some()));
+    let denied = restarted
+        .clone()
+        .oneshot(
+            Request::get("/api/v1/version")
+                .header(
+                    "authorization",
+                    format!("Bearer {}", exchanged.device_session),
+                )
+                .body(Body::empty())?,
+        )
+        .await?;
+    assert_eq!(denied.status(), StatusCode::UNAUTHORIZED);
+
+    let persisted_text: Vec<String> = sqlx::query_scalar(
+        "SELECT endpoint || expected_origin || endpoint_kind FROM pairing_credentials
+         UNION ALL SELECT name || endpoint_kind FROM device_sessions",
+    )
+    .fetch_all(storage.pool())
+    .await?;
+    assert!(persisted_text.iter().all(|value| {
+        !value.contains(&offer.pairing_token) && !value.contains(&exchanged.device_session)
+    }));
     Ok(())
 }
 

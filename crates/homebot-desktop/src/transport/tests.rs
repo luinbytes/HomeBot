@@ -200,6 +200,32 @@ fn clean_local_launch_supervises_server_and_persists_real_api_state()
     let _ = receive_until(&transport, Duration::from_secs(10), |event| {
         matches!(event, DesktopEvent::AttachmentUploaded(_))
     })?;
+
+    transport.send(DesktopCommand::LoadDevices)?;
+    let devices = receive_until(&transport, Duration::from_secs(10), |event| {
+        matches!(event, DesktopEvent::Devices(_))
+    })?;
+    assert!(
+        devices
+            .iter()
+            .any(|event| matches!(event, DesktopEvent::Devices(devices) if devices.is_empty()))
+    );
+    transport.send(DesktopCommand::CreatePairing {
+        endpoint: config.endpoint.clone(),
+        allow_insecure_private_network: false,
+    })?;
+    let offer = receive_until(&transport, Duration::from_secs(10), |event| {
+        matches!(event, DesktopEvent::PairingOffer(_))
+    })?
+    .into_iter()
+    .find_map(|event| match event {
+        DesktopEvent::PairingOffer(offer) => Some(offer),
+        _ => None,
+    })
+    .ok_or("missing pairing offer")?;
+    assert_eq!(offer.endpoint, config.endpoint);
+    assert!(offer.pairing_token.starts_with("hbpair_"));
+    assert!(offer.deep_link.starts_with("homebot://pair?"));
     drop(transport);
 
     let restarted = DesktopTransport::start(config);

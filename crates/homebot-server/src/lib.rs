@@ -6,6 +6,7 @@ mod bots;
 mod chats;
 mod checkpoints;
 mod groups;
+mod pairing;
 mod plugins;
 mod provider_turn;
 mod routines;
@@ -19,7 +20,7 @@ mod workspaces;
 use axum::{
     Json, Router,
     extract::{
-        Request, State, WebSocketUpgrade,
+        Extension, Request, State, WebSocketUpgrade,
         ws::{CloseFrame, Message, WebSocket},
     },
     http::{HeaderMap, StatusCode},
@@ -70,6 +71,12 @@ struct ChatOperation {
     profile: Uuid,
     bot: Uuid,
     message: Uuid,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum AuthenticatedIdentity {
+    Owner,
+    Device { id: Uuid },
 }
 
 #[derive(Clone)]
@@ -199,6 +206,12 @@ pub fn router(state: AppState) -> Router {
     }
     let authenticated = Router::new()
         .route("/api/v1/version", get(version))
+        .route("/api/v1/pairing", post(pairing::create))
+        .route("/api/v1/devices", get(pairing::list_devices))
+        .route(
+            "/api/v1/devices/{device_id}/revoke",
+            post(pairing::revoke_device),
+        )
         .route("/api/v1/events", get(events_socket))
         .route("/api/v1/bots", get(bots::list).post(bots::create))
         .route("/api/v1/bots/{bot_id}", put(bots::update))
@@ -426,6 +439,7 @@ pub fn router(state: AppState) -> Router {
         .route_layer(middleware::from_fn_with_state(state.clone(), authenticate));
     Router::new()
         .route("/health", get(health))
+        .route("/api/v1/pairing/exchange", post(pairing::exchange))
         .merge(authenticated)
         .with_state(state)
 }
@@ -452,11 +466,15 @@ pub async fn serve(
         .await
 }
 
-async fn events_socket(State(state): State<AppState>, upgrade: WebSocketUpgrade) -> Response {
-    upgrade.on_upgrade(move |socket| serve_events(socket, state))
+async fn events_socket(
+    State(state): State<AppState>,
+    Extension(identity): Extension<AuthenticatedIdentity>,
+    upgrade: WebSocketUpgrade,
+) -> Response {
+    upgrade.on_upgrade(move |socket| serve_events(socket, state, identity))
 }
 
-async fn serve_events(mut socket: WebSocket, state: AppState) {
+async fn serve_events(mut socket: WebSocket, state: AppState, identity: AuthenticatedIdentity) {
     let mut live_events = state.live_events.subscribe();
     let mut server_shutdown = state.server_shutdown.subscribe();
     let Some(mut last_queued) = initial_sync(&mut socket, &state).await else {
@@ -484,6 +502,12 @@ async fn serve_events(mut socket: WebSocket, state: AppState) {
                 if changed.is_err() || *server_shutdown.borrow() { break; }
             }
             _ = heartbeat.tick() => {
+                if let AuthenticatedIdentity::Device { id } = &identity
+                    && !state.storage.device_session_is_active(state.owner_id, *id).await.unwrap_or(false)
+                {
+                    let _ = disconnect_tx.send(true);
+                    break;
+                }
                 if last_pong.elapsed() >= state.heartbeat_timeout {
                     let _ = disconnect_tx.send(true);
                     break;
@@ -962,18 +986,45 @@ async fn version(headers: HeaderMap) -> Response {
 async fn authenticate(
     State(state): State<AppState>,
     headers: HeaderMap,
-    request: Request,
+    mut request: Request,
     next: Next,
 ) -> Response {
     let supplied = headers
         .get(axum::http::header::AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
         .and_then(|value| value.strip_prefix("Bearer "));
-    let valid = supplied.is_some_and(|token| {
+    let owner = supplied.is_some_and(|token| {
         let candidate: [u8; 32] = Sha256::digest(token.as_bytes()).into();
         bool::from(candidate.ct_eq(&state.bearer_digest))
     });
-    if !valid {
+    let identity = if owner {
+        Some(AuthenticatedIdentity::Owner)
+    } else if let Some(token) = supplied {
+        let digest: [u8; 32] = Sha256::digest(token.as_bytes()).into();
+        match state
+            .storage
+            .authenticate_device_session(&digest, unix_time_ms())
+            .await
+        {
+            Ok(Some(device)) => Some(AuthenticatedIdentity::Device { id: device.id }),
+            Ok(None) => None,
+            Err(_) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({
+                        "code": "internal",
+                        "message": "HomeBot could not validate the device session",
+                        "retryable": true,
+                        "request_id": null
+                    })),
+                )
+                    .into_response();
+            }
+        }
+    } else {
+        None
+    };
+    let Some(identity) = identity else {
         return (
             StatusCode::UNAUTHORIZED,
             Json(json!({
@@ -984,7 +1035,8 @@ async fn authenticate(
             })),
         )
             .into_response();
-    }
+    };
+    request.extensions_mut().insert(identity);
     next.run(request).await
 }
 

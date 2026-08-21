@@ -314,6 +314,20 @@ impl ApiError {
         Self::new(StatusCode::CONFLICT, ErrorCode::Conflict, message)
     }
 
+    pub(super) fn forbidden(message: &str) -> Self {
+        Self::new(StatusCode::FORBIDDEN, ErrorCode::Forbidden, message)
+    }
+
+    pub(super) fn rate_limited(message: &str, retry_after_ms: u64) -> Self {
+        let mut error = Self::new(
+            StatusCode::TOO_MANY_REQUESTS,
+            ErrorCode::RateLimited,
+            message,
+        );
+        error.envelope.retry_after_ms = Some(retry_after_ms);
+        error
+    }
+
     pub(super) fn internal() -> Self {
         Self::new(
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -366,22 +380,10 @@ impl From<DomainError> for ApiError {
 impl From<StorageError> for ApiError {
     fn from(error: StorageError) -> Self {
         match error {
-            StorageError::BotNotFound => Self::new(
-                StatusCode::NOT_FOUND,
-                ErrorCode::NotFound,
-                "Bot was not found",
-            ),
+            StorageError::BotNotFound => not_found("Bot"),
             StorageError::DuplicateBotName => Self::conflict("A Bot with that name already exists"),
-            StorageError::ChatNotFound => Self::new(
-                StatusCode::NOT_FOUND,
-                ErrorCode::NotFound,
-                "Chat was not found",
-            ),
-            StorageError::MessageNotFound => Self::new(
-                StatusCode::NOT_FOUND,
-                ErrorCode::NotFound,
-                "Message was not found",
-            ),
+            StorageError::ChatNotFound => not_found("Chat"),
+            StorageError::MessageNotFound => not_found("Message"),
             StorageError::ApprovalNotFound => Self::new(
                 StatusCode::CONFLICT,
                 ErrorCode::Conflict,
@@ -444,6 +446,12 @@ impl From<StorageError> for ApiError {
                 "Checkpoint was not found",
             ),
             StorageError::WorkingContextBusy => working_context_busy(),
+            error @ (StorageError::PairingNotFound
+            | StorageError::PairingExpired
+            | StorageError::PairingConsumed
+            | StorageError::PairingOriginMismatch
+            | StorageError::PairingRateLimited
+            | StorageError::DeviceSessionNotFound) => pairing_storage_error(&error),
             StorageError::RoutineNotFound => Self::new(
                 StatusCode::NOT_FOUND,
                 ErrorCode::NotFound,
@@ -465,6 +473,44 @@ impl From<StorageError> for ApiError {
             StorageError::Domain(error) => error.into(),
             _ => Self::internal(),
         }
+    }
+}
+
+fn not_found(entity: &str) -> ApiError {
+    ApiError::new(
+        StatusCode::NOT_FOUND,
+        ErrorCode::NotFound,
+        &format!("{entity} was not found"),
+    )
+}
+
+fn pairing_storage_error(error: &StorageError) -> ApiError {
+    match error {
+        StorageError::PairingNotFound => ApiError::new(
+            StatusCode::UNAUTHORIZED,
+            ErrorCode::Unauthenticated,
+            "The pairing credential is invalid",
+        ),
+        StorageError::PairingExpired => ApiError::new(
+            StatusCode::GONE,
+            ErrorCode::Conflict,
+            "The pairing credential expired",
+        ),
+        StorageError::PairingConsumed => {
+            ApiError::conflict("The pairing credential was already used")
+        }
+        StorageError::PairingOriginMismatch => {
+            ApiError::forbidden("The request origin does not match the pairing endpoint")
+        }
+        StorageError::PairingRateLimited => {
+            ApiError::rate_limited("Too many pairing attempts", 60_000)
+        }
+        StorageError::DeviceSessionNotFound => ApiError::new(
+            StatusCode::NOT_FOUND,
+            ErrorCode::NotFound,
+            "Device session was not found",
+        ),
+        _ => ApiError::internal(),
     }
 }
 

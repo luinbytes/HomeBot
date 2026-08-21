@@ -14,7 +14,7 @@ use crate::{
         section_label,
     },
     notifications::{DeepLink, NotificationCenter, NotificationSink, SystemNotificationSink},
-    settings::{DesktopSettings, settings_view},
+    settings::{DesktopSettings, SettingsSection, settings_view},
     skills::SkillProjection,
     timeline::{ComposerError, TimelineModel},
     tokens::HomeBotTheme,
@@ -54,6 +54,10 @@ pub struct HomeBotApp {
     pub skills: SkillProjection,
     pub workspaces: WorkspaceProjection,
     pub checkpoint_diff: Option<homebot_protocol::CheckpointDiffResponse>,
+    pub devices: Vec<homebot_protocol::DeviceSessionSummary>,
+    pub pairing_offer: Option<homebot_protocol::PairingOffer>,
+    pairing_endpoint: String,
+    pairing_insecure_private_acknowledged: bool,
     vcs_commit_message: String,
     vcs_branch_name: String,
     vcs_base_branch: String,
@@ -83,6 +87,10 @@ impl Default for HomeBotApp {
             skills: SkillProjection::default(),
             workspaces: WorkspaceProjection::default(),
             checkpoint_diff: None,
+            devices: Vec::new(),
+            pairing_offer: None,
+            pairing_endpoint: "http://127.0.0.1:7123".to_owned(),
+            pairing_insecure_private_acknowledged: false,
             vcs_commit_message: String::new(),
             vcs_branch_name: String::new(),
             vcs_base_branch: "main".to_owned(),
@@ -126,6 +134,8 @@ impl HomeBotApp {
         {
             app.settings = settings;
         }
+        app.pairing_endpoint
+            .clone_from(&app.settings.server_endpoint);
         app.transport = Some(DesktopTransport::start(RuntimeConfig::desktop_default(
             app.settings.server_endpoint.clone(),
         )));
@@ -149,6 +159,9 @@ impl HomeBotApp {
         CentralPanel::default().show(context, |ui| {
             if self.settings_open {
                 settings_view(ui, self.theme, &mut self.settings);
+                if self.settings.section == SettingsSection::Devices {
+                    self.device_pairing_controls(ui);
+                }
             } else {
                 self.content(ui);
             }
@@ -172,6 +185,7 @@ impl HomeBotApp {
                 DesktopEvent::Connected => {
                     self.roster.connection = ConnectionState::Connected;
                     self.transport_error = None;
+                    self.send_transport(DesktopCommand::LoadDevices);
                 }
                 DesktopEvent::Disconnected(error) => {
                     self.roster.connection = ConnectionState::Disconnected;
@@ -246,6 +260,9 @@ impl HomeBotApp {
                 DesktopEvent::WorkingContext(context) => {
                     self.timeline.working_context = Some(context);
                 }
+                DesktopEvent::Devices(devices) => self.apply_devices(devices),
+                DesktopEvent::PairingOffer(offer) => self.pairing_offer = Some(offer),
+                DesktopEvent::DeviceRevoked(device) => self.apply_device_revoked(device),
                 DesktopEvent::CheckpointDiff(diff) => self.checkpoint_diff = Some(diff),
                 DesktopEvent::MutationFailed(error) => {
                     self.transport_error = Some(error.to_string());
@@ -253,6 +270,28 @@ impl HomeBotApp {
                 _ => unreachable!("source-control events are consumed before primary dispatch"),
             }
         }
+    }
+
+    fn apply_devices(&mut self, devices: Vec<homebot_protocol::DeviceSessionSummary>) {
+        self.devices = devices;
+        self.update_device_count();
+    }
+
+    fn apply_device_revoked(&mut self, device: homebot_protocol::DeviceSessionSummary) {
+        if let Some(existing) = self.devices.iter_mut().find(|item| item.id == device.id) {
+            *existing = device;
+        }
+        self.update_device_count();
+    }
+
+    fn update_device_count(&mut self) {
+        self.settings.paired_devices = u32::try_from(
+            self.devices
+                .iter()
+                .filter(|device| device.revoked_at_unix_ms.is_none())
+                .count(),
+        )
+        .unwrap_or(u32::MAX);
     }
 
     fn apply_vcs_transport_event(&mut self, event: DesktopEvent) -> Option<DesktopEvent> {
@@ -348,6 +387,56 @@ impl HomeBotApp {
         if let Err(error) = result {
             self.transport_error = Some(error.to_string());
             self.roster.connection = ConnectionState::Disconnected;
+        }
+    }
+
+    fn device_pairing_controls(&mut self, ui: &mut egui::Ui) {
+        ui.separator();
+        ui.strong("Secure Android pairing");
+        ui.label("Generate a five-minute, single-use link. Persistent device credentials are returned only after exchange and never appear in the link.");
+        ui.horizontal(|ui| {
+            ui.label("Endpoint");
+            ui.text_edit_singleline(&mut self.pairing_endpoint);
+            if ui.button("Generate link").clicked() {
+                self.pairing_offer = None;
+                self.send_transport(DesktopCommand::CreatePairing {
+                    endpoint: self.pairing_endpoint.trim().to_owned(),
+                    allow_insecure_private_network: self.pairing_insecure_private_acknowledged,
+                });
+            }
+        });
+        let _ = ui.checkbox(
+            &mut self.pairing_insecure_private_acknowledged,
+            "Allow plain HTTP only on this private LAN/Tailscale endpoint",
+        );
+        if let Some(offer) = &self.pairing_offer {
+            ui.label(format!("Expires at {} ms", offer.expires_at_unix_ms));
+            if let Some(warning) = &offer.warning {
+                ui.colored_label(self.theme.palette.warning, warning);
+            }
+            ui.horizontal_wrapped(|ui| {
+                ui.monospace(&offer.deep_link);
+                if ui.button("Copy pairing link").clicked() {
+                    ui.ctx().copy_text(offer.deep_link.clone());
+                }
+            });
+        }
+        ui.separator();
+        ui.strong("Device sessions");
+        let mut revoke = None;
+        for device in &self.devices {
+            ui.horizontal(|ui| {
+                ui.label(&device.name);
+                ui.label(format!("{:?}", device.endpoint_kind));
+                if device.revoked_at_unix_ms.is_some() {
+                    ui.label("Revoked");
+                } else if ui.button("Revoke").clicked() {
+                    revoke = Some(device.id);
+                }
+            });
+        }
+        if let Some(device_id) = revoke {
+            self.send_transport(DesktopCommand::RevokeDevice(device_id));
         }
     }
 

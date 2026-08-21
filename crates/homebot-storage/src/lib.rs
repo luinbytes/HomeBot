@@ -23,7 +23,7 @@ use sqlx::{
 use std::{collections::HashSet, path::Path, str::FromStr, time::Duration};
 use uuid::Uuid;
 
-pub const SCHEMA_VERSION: u32 = 16;
+pub const SCHEMA_VERSION: u32 = 17;
 static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
 
 #[derive(Debug, thiserror::Error)]
@@ -92,6 +92,18 @@ pub enum StorageError {
     CheckpointNotFound,
     #[error("A working-context operation is already running")]
     WorkingContextBusy,
+    #[error("Pairing credential was not found")]
+    PairingNotFound,
+    #[error("Pairing credential expired")]
+    PairingExpired,
+    #[error("Pairing credential was already used")]
+    PairingConsumed,
+    #[error("Pairing origin did not match the generated endpoint")]
+    PairingOriginMismatch,
+    #[error("Pairing exchange is rate limited")]
+    PairingRateLimited,
+    #[error("Device session was not found")]
+    DeviceSessionNotFound,
     #[error("database JSON is invalid: {0}")]
     Serialization(String),
 }
@@ -186,6 +198,29 @@ pub struct WorkingContextRecord {
     pub compacted_at_ms: Option<i64>,
     pub last_error: Option<String>,
     pub updated_at_ms: i64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PairingCredentialRecord {
+    pub id: Uuid,
+    pub owner_id: Uuid,
+    pub endpoint: String,
+    pub expected_origin: String,
+    pub endpoint_kind: String,
+    pub created_at_ms: i64,
+    pub expires_at_ms: i64,
+    pub consumed_at_ms: Option<i64>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DeviceSessionRecord {
+    pub id: Uuid,
+    pub owner_id: Uuid,
+    pub name: String,
+    pub endpoint_kind: String,
+    pub created_at_ms: i64,
+    pub last_seen_at_ms: Option<i64>,
+    pub revoked_at_ms: Option<i64>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -3925,6 +3960,286 @@ impl Storage {
         Ok(())
     }
 
+    /// Persists only the digest and metadata for a short-lived pairing credential.
+    ///
+    /// # Errors
+    /// Returns an integrity or database error for invalid or duplicate records.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn create_pairing_credential(
+        &self,
+        owner_id: Uuid,
+        id: Uuid,
+        token_digest: &[u8; 32],
+        endpoint: &str,
+        expected_origin: &str,
+        endpoint_kind: &str,
+        created_at_ms: i64,
+        expires_at_ms: i64,
+    ) -> Result<PairingCredentialRecord, StorageError> {
+        if expires_at_ms <= created_at_ms {
+            return Err(StorageError::Integrity(
+                "pairing expiry must be after creation".to_owned(),
+            ));
+        }
+        sqlx::query(
+            "INSERT INTO pairing_credentials (
+                id, owner_id, token_digest, endpoint, expected_origin, endpoint_kind,
+                created_at_ms, expires_at_ms
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(id.to_string())
+        .bind(owner_id.to_string())
+        .bind(token_digest.as_slice())
+        .bind(endpoint)
+        .bind(expected_origin)
+        .bind(endpoint_kind)
+        .bind(created_at_ms)
+        .bind(expires_at_ms)
+        .execute(&self.pool)
+        .await?;
+        Ok(PairingCredentialRecord {
+            id,
+            owner_id,
+            endpoint: endpoint.to_owned(),
+            expected_origin: expected_origin.to_owned(),
+            endpoint_kind: endpoint_kind.to_owned(),
+            created_at_ms,
+            expires_at_ms,
+            consumed_at_ms: None,
+        })
+    }
+
+    /// Atomically consumes one pairing credential and creates a revocable device session.
+    ///
+    /// Every attempt is durably rate limited without retaining the supplied raw token.
+    ///
+    /// # Errors
+    /// Returns precise expired, consumed, origin, rate-limit, validation, or database errors.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn exchange_pairing_credential(
+        &self,
+        owner_id: Uuid,
+        token_digest: &[u8; 32],
+        request_origin: Option<&str>,
+        device_id: Uuid,
+        device_name: &str,
+        session_digest: &[u8; 32],
+        now_ms: i64,
+        rate_window_ms: i64,
+    ) -> Result<DeviceSessionRecord, StorageError> {
+        let name = validated_device_name(device_name)?;
+        let mut transaction = self.pool.begin().await?;
+        sqlx::query("DELETE FROM pairing_exchange_attempts WHERE attempted_at_ms < ?")
+            .bind(now_ms.saturating_sub(rate_window_ms))
+            .execute(&mut *transaction)
+            .await?;
+        let global_attempts: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM pairing_exchange_attempts")
+                .fetch_one(&mut *transaction)
+                .await?;
+        if global_attempts >= 30 {
+            transaction.rollback().await?;
+            return Err(StorageError::PairingRateLimited);
+        }
+        sqlx::query(
+            "INSERT INTO pairing_exchange_attempts (token_digest, attempted_at_ms) VALUES (?, ?)",
+        )
+        .bind(token_digest.as_slice())
+        .bind(now_ms)
+        .execute(&mut *transaction)
+        .await?;
+        let row = sqlx::query(
+            "SELECT id, expected_origin, endpoint_kind, expires_at_ms, consumed_at_ms,
+                    failed_attempts
+             FROM pairing_credentials WHERE owner_id = ? AND token_digest = ?",
+        )
+        .bind(owner_id.to_string())
+        .bind(token_digest.as_slice())
+        .fetch_optional(&mut *transaction)
+        .await?;
+        let Some(row) = row else {
+            transaction.commit().await?;
+            return Err(StorageError::PairingNotFound);
+        };
+        let pairing_id: String = row.try_get("id")?;
+        let expected_origin: String = row.try_get("expected_origin")?;
+        let endpoint_kind: String = row.try_get("endpoint_kind")?;
+        let expires_at_ms: i64 = row.try_get("expires_at_ms")?;
+        let consumed_at_ms: Option<i64> = row.try_get("consumed_at_ms")?;
+        let failed_attempts: i64 = row.try_get("failed_attempts")?;
+        if consumed_at_ms.is_some() {
+            transaction.commit().await?;
+            return Err(StorageError::PairingConsumed);
+        }
+        if expires_at_ms <= now_ms {
+            transaction.commit().await?;
+            return Err(StorageError::PairingExpired);
+        }
+        if failed_attempts >= 5 {
+            transaction.commit().await?;
+            return Err(StorageError::PairingRateLimited);
+        }
+        if request_origin.is_some_and(|origin| origin != expected_origin) {
+            sqlx::query(
+                "UPDATE pairing_credentials SET failed_attempts = failed_attempts + 1 WHERE id = ?",
+            )
+            .bind(&pairing_id)
+            .execute(&mut *transaction)
+            .await?;
+            transaction.commit().await?;
+            return Err(StorageError::PairingOriginMismatch);
+        }
+        let consumed = sqlx::query(
+            "UPDATE pairing_credentials SET consumed_at_ms = ?
+             WHERE id = ? AND consumed_at_ms IS NULL",
+        )
+        .bind(now_ms)
+        .bind(&pairing_id)
+        .execute(&mut *transaction)
+        .await?;
+        if consumed.rows_affected() != 1 {
+            transaction.rollback().await?;
+            return Err(StorageError::PairingConsumed);
+        }
+        sqlx::query(
+            "INSERT INTO device_sessions (
+                id, owner_id, name, token_digest, endpoint_kind, created_at_ms
+             ) VALUES (?, ?, ?, ?, ?, ?)",
+        )
+        .bind(device_id.to_string())
+        .bind(owner_id.to_string())
+        .bind(name)
+        .bind(session_digest.as_slice())
+        .bind(&endpoint_kind)
+        .bind(now_ms)
+        .execute(&mut *transaction)
+        .await?;
+        transaction.commit().await?;
+        Ok(DeviceSessionRecord {
+            id: device_id,
+            owner_id,
+            name: name.to_owned(),
+            endpoint_kind,
+            created_at_ms: now_ms,
+            last_seen_at_ms: None,
+            revoked_at_ms: None,
+        })
+    }
+
+    /// Authenticates an active device-session digest and coarsely updates last-seen time.
+    ///
+    /// # Errors
+    /// Returns an integrity or database error when stored device metadata is invalid.
+    pub async fn authenticate_device_session(
+        &self,
+        token_digest: &[u8; 32],
+        now_ms: i64,
+    ) -> Result<Option<DeviceSessionRecord>, StorageError> {
+        let row = sqlx::query(
+            "SELECT id, owner_id, name, endpoint_kind, created_at_ms, last_seen_at_ms, revoked_at_ms
+             FROM device_sessions WHERE token_digest = ? AND revoked_at_ms IS NULL",
+        )
+        .bind(token_digest.as_slice())
+        .fetch_optional(&self.pool)
+        .await?;
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        let record = device_session_from_row(&row)?;
+        if record
+            .last_seen_at_ms
+            .is_none_or(|last_seen| last_seen <= now_ms.saturating_sub(60_000))
+        {
+            sqlx::query(
+                "UPDATE device_sessions SET last_seen_at_ms = ?
+                 WHERE id = ? AND revoked_at_ms IS NULL",
+            )
+            .bind(now_ms)
+            .bind(record.id.to_string())
+            .execute(&self.pool)
+            .await?;
+        }
+        Ok(Some(DeviceSessionRecord {
+            last_seen_at_ms: Some(now_ms),
+            ..record
+        }))
+    }
+
+    /// Lists every active and revoked device session for owner management.
+    ///
+    /// # Errors
+    /// Returns an integrity or database error when device metadata cannot be loaded.
+    pub async fn device_sessions(
+        &self,
+        owner_id: Uuid,
+    ) -> Result<Vec<DeviceSessionRecord>, StorageError> {
+        sqlx::query(
+            "SELECT id, owner_id, name, endpoint_kind, created_at_ms, last_seen_at_ms, revoked_at_ms
+             FROM device_sessions WHERE owner_id = ? ORDER BY created_at_ms, id",
+        )
+        .bind(owner_id.to_string())
+        .fetch_all(&self.pool)
+        .await?
+        .iter()
+        .map(device_session_from_row)
+        .collect()
+    }
+
+    /// Checks whether a device session remains active for long-lived transports.
+    ///
+    /// # Errors
+    /// Returns a database error when session state cannot be read.
+    pub async fn device_session_is_active(
+        &self,
+        owner_id: Uuid,
+        device_id: Uuid,
+    ) -> Result<bool, StorageError> {
+        sqlx::query_scalar(
+            "SELECT EXISTS(
+                SELECT 1 FROM device_sessions
+                WHERE id = ? AND owner_id = ? AND revoked_at_ms IS NULL
+             )",
+        )
+        .bind(device_id.to_string())
+        .bind(owner_id.to_string())
+        .fetch_one(&self.pool)
+        .await
+        .map_err(StorageError::from)
+    }
+
+    /// Revokes a named device session idempotently.
+    ///
+    /// # Errors
+    /// Returns not-found, integrity, or database errors.
+    pub async fn revoke_device_session(
+        &self,
+        owner_id: Uuid,
+        device_id: Uuid,
+        now_ms: i64,
+    ) -> Result<DeviceSessionRecord, StorageError> {
+        let result = sqlx::query(
+            "UPDATE device_sessions SET revoked_at_ms = COALESCE(revoked_at_ms, ?)
+             WHERE id = ? AND owner_id = ?",
+        )
+        .bind(now_ms)
+        .bind(device_id.to_string())
+        .bind(owner_id.to_string())
+        .execute(&self.pool)
+        .await?;
+        if result.rows_affected() == 0 {
+            return Err(StorageError::DeviceSessionNotFound);
+        }
+        let row = sqlx::query(
+            "SELECT id, owner_id, name, endpoint_kind, created_at_ms, last_seen_at_ms, revoked_at_ms
+             FROM device_sessions WHERE id = ? AND owner_id = ?",
+        )
+        .bind(device_id.to_string())
+        .bind(owner_id.to_string())
+        .fetch_one(&self.pool)
+        .await?;
+        device_session_from_row(&row)
+    }
+
     /// Atomically appends a durable event and returns its monotonic sequence.
     ///
     /// # Errors
@@ -4309,6 +4624,16 @@ impl Storage {
     }
 }
 
+fn validated_device_name(device_name: &str) -> Result<&str, StorageError> {
+    let name = device_name.trim();
+    if name.is_empty() || name.chars().count() > 80 {
+        return Err(StorageError::Integrity(
+            "device name must contain 1 to 80 characters".to_owned(),
+        ));
+    }
+    Ok(name)
+}
+
 fn row_to_event(row: &sqlx::sqlite::SqliteRow) -> Result<OutboxEvent, StorageError> {
     let sequence: i64 = row.try_get("sequence")?;
     let event_id: String = row.try_get("event_id")?;
@@ -4635,6 +4960,22 @@ fn working_context_from_row(
         compacted_at_ms: row.try_get("compacted_at_ms")?,
         last_error: row.try_get("last_error")?,
         updated_at_ms: row.try_get("updated_at_ms")?,
+    })
+}
+
+fn device_session_from_row(
+    row: &sqlx::sqlite::SqliteRow,
+) -> Result<DeviceSessionRecord, StorageError> {
+    let id: String = row.try_get("id")?;
+    let owner_id: String = row.try_get("owner_id")?;
+    Ok(DeviceSessionRecord {
+        id: parse_uuid(&id)?,
+        owner_id: parse_uuid(&owner_id)?,
+        name: row.try_get("name")?,
+        endpoint_kind: row.try_get("endpoint_kind")?,
+        created_at_ms: row.try_get("created_at_ms")?,
+        last_seen_at_ms: row.try_get("last_seen_at_ms")?,
+        revoked_at_ms: row.try_get("revoked_at_ms")?,
     })
 }
 
@@ -6094,6 +6435,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(clippy::too_many_lines)]
     async fn version_fourteen_vcs_and_context_upgrades_preserve_chats_and_exact_results()
     -> Result<(), StorageError> {
         let directory = tempfile::tempdir()?;
@@ -6136,6 +6478,9 @@ mod tests {
             .execute(&pool)
             .await?;
         sqlx::raw_sql(include_str!("../migrations/0016_working_context.sql"))
+            .execute(&pool)
+            .await?;
+        sqlx::raw_sql(include_str!("../migrations/0017_device_pairing.sql"))
             .execute(&pool)
             .await?;
         let result = VcsOperationResultRecord {
@@ -6181,6 +6526,32 @@ mod tests {
         storage
             .set_working_context_compaction(owner, chat.id, "completed", true, true, None, 9)
             .await?;
+        let pairing_id = Uuid::now_v7();
+        storage
+            .create_pairing_credential(
+                owner,
+                pairing_id,
+                &[1; 32],
+                "http://127.0.0.1:7123",
+                "http://127.0.0.1:7123",
+                "loopback",
+                10,
+                1_000,
+            )
+            .await?;
+        let device = storage
+            .exchange_pairing_credential(
+                owner,
+                &[1; 32],
+                None,
+                Uuid::now_v7(),
+                "Upgrade fixture",
+                &[2; 32],
+                11,
+                60_000,
+            )
+            .await?;
+        assert_eq!(storage.device_sessions(owner).await?, vec![device]);
         assert_eq!(storage.list_direct_chats(owner).await?.len(), 1);
         Ok(())
     }
@@ -6785,6 +7156,131 @@ mod tests {
         .fetch_one(storage.pool())
         .await?;
         assert_eq!(table_count, 0);
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[allow(clippy::too_many_lines)]
+    async fn pairing_expiry_origin_limits_restart_and_revocation_are_durable()
+    -> Result<(), StorageError> {
+        let directory = tempfile::tempdir()?;
+        let database = directory.path().join("pairing.db");
+        let owner = Uuid::now_v7();
+        let storage = Storage::open(&database).await?;
+        storage
+            .create_pairing_credential(
+                owner,
+                Uuid::now_v7(),
+                &[1; 32],
+                "https://expired.example",
+                "https://expired.example",
+                "custom_https",
+                1,
+                10,
+            )
+            .await?;
+        assert!(matches!(
+            storage
+                .exchange_pairing_credential(
+                    owner,
+                    &[1; 32],
+                    None,
+                    Uuid::now_v7(),
+                    "Expired",
+                    &[2; 32],
+                    10,
+                    60_000,
+                )
+                .await,
+            Err(StorageError::PairingExpired)
+        ));
+
+        storage
+            .create_pairing_credential(
+                owner,
+                Uuid::now_v7(),
+                &[3; 32],
+                "https://homebot.example",
+                "https://homebot.example",
+                "custom_https",
+                20,
+                10_000,
+            )
+            .await?;
+        for _ in 0..5 {
+            assert!(matches!(
+                storage
+                    .exchange_pairing_credential(
+                        owner,
+                        &[3; 32],
+                        Some("https://wrong.example"),
+                        Uuid::now_v7(),
+                        "Wrong origin",
+                        &[4; 32],
+                        21,
+                        60_000,
+                    )
+                    .await,
+                Err(StorageError::PairingOriginMismatch)
+            ));
+        }
+        assert!(matches!(
+            storage
+                .exchange_pairing_credential(
+                    owner,
+                    &[3; 32],
+                    Some("https://homebot.example"),
+                    Uuid::now_v7(),
+                    "Rate limited",
+                    &[5; 32],
+                    22,
+                    60_000,
+                )
+                .await,
+            Err(StorageError::PairingRateLimited)
+        ));
+
+        storage
+            .create_pairing_credential(
+                owner,
+                Uuid::now_v7(),
+                &[6; 32],
+                "http://127.0.0.1:7123",
+                "http://127.0.0.1:7123",
+                "loopback",
+                30,
+                10_000,
+            )
+            .await?;
+        let device = storage
+            .exchange_pairing_credential(
+                owner,
+                &[6; 32],
+                None,
+                Uuid::now_v7(),
+                "Persistent device",
+                &[7; 32],
+                31,
+                60_000,
+            )
+            .await?;
+        assert!(
+            storage
+                .authenticate_device_session(&[7; 32], 32)
+                .await?
+                .is_some()
+        );
+        storage.pool.close().await;
+        let reopened = Storage::open(&database).await?;
+        assert_eq!(reopened.device_sessions(owner).await?.len(), 1);
+        let revoked = reopened.revoke_device_session(owner, device.id, 40).await?;
+        assert_eq!(revoked.revoked_at_ms, Some(40));
+        assert!(
+            reopened
+                .authenticate_device_session(&[7; 32], 41)
+                .await?
+                .is_none()
+        );
         Ok(())
     }
 

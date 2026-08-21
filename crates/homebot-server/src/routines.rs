@@ -619,6 +619,7 @@ impl RoutineActionExecutor for ServerExecutor<'_> {
                         None,
                         Vec::new(),
                         &applied_skills,
+                        &[],
                         unix_time_ms(),
                     )
                     .await

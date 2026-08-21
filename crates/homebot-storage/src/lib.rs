@@ -28,7 +28,7 @@ use std::{
 };
 use uuid::Uuid;
 
-pub const SCHEMA_VERSION: u32 = 19;
+pub const SCHEMA_VERSION: u32 = 20;
 static MIGRATOR: std::sync::LazyLock<sqlx::migrate::Migrator> = std::sync::LazyLock::new(|| {
     use sqlx::migrate::{Migration, MigrationType, Migrator};
     use std::borrow::Cow;
@@ -116,6 +116,11 @@ static MIGRATOR: std::sync::LazyLock<sqlx::migrate::Migrator> = std::sync::LazyL
             19,
             "message reactions",
             include_str!("../migrations/0019_message_reactions.sql"),
+        ),
+        (
+            20,
+            "message references",
+            include_str!("../migrations/0020_message_references.sql"),
         ),
     ]
     .into_iter()
@@ -538,6 +543,7 @@ pub struct QueuedPromptInput<'a> {
     pub content: &'a str,
     pub attachment_ids: &'a [Uuid],
     pub applied_skills: &'a [AppliedSkill],
+    pub references: &'a [(MessageReferenceKind, Uuid)],
     pub kind: QueuedPromptKind,
 }
 
@@ -573,6 +579,22 @@ pub enum SearchRecordKind {
     File,
     Link,
     Routine,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MessageReferenceKind {
+    Bot,
+    Group,
+    Routine,
+    Plugin,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MessageReferenceRecord {
+    pub kind: MessageReferenceKind,
+    pub target_id: Uuid,
+    pub target_version_id: Option<Uuid>,
+    pub label_snapshot: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -3065,6 +3087,7 @@ impl Storage {
         mentioned_bot_ids: &[Uuid],
         shared_context_message_ids: &[Uuid],
         reply_to_message_id: Option<Uuid>,
+        references: &[(MessageReferenceKind, Uuid)],
         now_ms: i64,
     ) -> Result<ChatMessage, StorageError> {
         let _ = self.get_group_chat(owner_id, chat_id).await?;
@@ -3101,6 +3124,8 @@ impl Storage {
         message.id = message_id;
         message.shared_context_message_ids = shared_context_message_ids.to_vec();
         let mut transaction = self.pool.begin().await?;
+        let resolved_references =
+            resolve_typed_references(&mut transaction, owner_id, references).await?;
         sqlx::query(
             "INSERT INTO messages (
                 id, chat_id, author_kind, status, reply_to_message_id, mentioned_bot_ids_json,
@@ -3130,6 +3155,8 @@ impl Storage {
             .execute(&mut *transaction)
             .await?;
         }
+        insert_message_reference_records(&mut transaction, message.id, &resolved_references)
+            .await?;
         transaction.commit().await?;
         Ok(message)
     }
@@ -3362,6 +3389,7 @@ impl Storage {
         reply_to_message_id: Option<Uuid>,
         mentioned_bot_ids: Vec<Uuid>,
         applied_skills: &[AppliedSkill],
+        references: &[(MessageReferenceKind, Uuid)],
         now_ms: i64,
     ) -> Result<ChatMessage, StorageError> {
         let _ = self.get_direct_chat(owner_id, chat_id).await?;
@@ -3376,6 +3404,8 @@ impl Storage {
         message.id = message_id;
         let mut transaction = self.pool.begin().await?;
         validate_message_references(&mut transaction, owner_id, &message).await?;
+        let resolved_references =
+            resolve_typed_references(&mut transaction, owner_id, references).await?;
         sqlx::query(
             "INSERT INTO messages (
                 id, chat_id, author_kind, status, reply_to_message_id,
@@ -3415,6 +3445,8 @@ impl Storage {
                 return Err(StorageError::SkillNotFound);
             }
         }
+        insert_message_reference_records(&mut transaction, message.id, &resolved_references)
+            .await?;
         sqlx::query("UPDATE chats SET updated_at_ms = ? WHERE id = ? AND owner_id = ?")
             .bind(now_ms)
             .bind(chat_id.to_string())
@@ -3512,6 +3544,67 @@ impl Storage {
                         |_| StorageError::Integrity("invalid reaction count".to_owned()),
                     )?,
                     reacted_by_user: row.try_get("reacted_by_user")?,
+                })
+            })
+            .collect()
+    }
+
+    /// Resolves typed references against owner-scoped current state and stores immutable labels
+    /// and version IDs on the message. Replaying the same ordered references is idempotent.
+    ///
+    /// # Errors
+    /// Returns not-found, ownership, or database integrity errors.
+    pub async fn set_message_references(
+        &self,
+        owner_id: Uuid,
+        message_id: Uuid,
+        references: &[(MessageReferenceKind, Uuid)],
+    ) -> Result<Vec<MessageReferenceRecord>, StorageError> {
+        let mut transaction = self.pool.begin().await?;
+        let owned: i64 = sqlx::query_scalar("SELECT count(*) FROM messages m JOIN chats c ON c.id = m.chat_id WHERE c.owner_id = ? AND m.id = ?")
+            .bind(owner_id.to_string()).bind(message_id.to_string()).fetch_one(&mut *transaction).await?;
+        if owned == 0 {
+            return Err(StorageError::MessageNotFound);
+        }
+        let resolved = resolve_typed_references(&mut transaction, owner_id, references).await?;
+        sqlx::query("DELETE FROM message_references WHERE message_id = ?")
+            .bind(message_id.to_string())
+            .execute(&mut *transaction)
+            .await?;
+        insert_message_reference_records(&mut transaction, message_id, &resolved).await?;
+        transaction.commit().await?;
+        Ok(resolved)
+    }
+
+    /// Loads immutable typed references in message order.
+    ///
+    /// # Errors
+    /// Returns ownership, database, or integrity errors.
+    pub async fn message_references(
+        &self,
+        owner_id: Uuid,
+        message_id: Uuid,
+    ) -> Result<Vec<MessageReferenceRecord>, StorageError> {
+        let rows = sqlx::query(
+            "SELECT r.kind, r.target_id, r.target_version_id, r.label_snapshot
+             FROM message_references r JOIN messages m ON m.id = r.message_id
+             JOIN chats c ON c.id = m.chat_id
+             WHERE c.owner_id = ? AND r.message_id = ? ORDER BY r.ordinal",
+        )
+        .bind(owner_id.to_string())
+        .bind(message_id.to_string())
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter()
+            .map(|row| {
+                Ok(MessageReferenceRecord {
+                    kind: MessageReferenceKind::from_str(row.try_get("kind")?)?,
+                    target_id: parse_uuid(row.try_get("target_id")?)?,
+                    target_version_id: row
+                        .try_get::<Option<String>, _>("target_version_id")?
+                        .map(|value| parse_uuid(&value))
+                        .transpose()?,
+                    label_snapshot: row.try_get("label_snapshot")?,
                 })
             })
             .collect()
@@ -4109,6 +4202,8 @@ impl Storage {
         validate_message_references(&mut transaction, owner_id, &validation).await?;
         let next_position =
             queue_position_for_insert(&mut transaction, chat_id, input.kind).await?;
+        let resolved_references =
+            resolve_typed_references(&mut transaction, owner_id, input.references).await?;
         sqlx::query(
             "INSERT INTO queued_prompts (
                 id, owner_id, chat_id, content, attachment_ids_json, skill_ids_json,
@@ -4145,6 +4240,7 @@ impl Storage {
         .bind(now_ms)
         .execute(&mut *transaction)
         .await?;
+        insert_queued_prompt_references(&mut transaction, prompt_id, &resolved_references).await?;
         sqlx::query(
             "UPDATE chats SET queued_count = queued_count + 1, updated_at_ms = ?
              WHERE id = ? AND owner_id = ?",
@@ -4155,27 +4251,7 @@ impl Storage {
         .execute(&mut *transaction)
         .await?;
         transaction.commit().await?;
-        Ok(QueuedPrompt {
-            id: prompt_id,
-            owner_id,
-            chat_id,
-            content: input.content.trim().to_owned(),
-            attachment_ids: input.attachment_ids.to_vec(),
-            skill_ids: input
-                .applied_skills
-                .iter()
-                .map(|skill| skill.skill_id)
-                .collect(),
-            skill_version_ids: input
-                .applied_skills
-                .iter()
-                .map(|skill| skill.version_id)
-                .collect(),
-            kind: input.kind,
-            position: u32::try_from(next_position)
-                .map_err(|_| StorageError::Integrity("invalid queue position".to_owned()))?,
-            created_at_ms: now_ms,
-        })
+        queued_prompt_result(prompt_id, owner_id, chat_id, &input, next_position, now_ms)
     }
 
     /// Loads queued prompts in stable execution order.
@@ -5509,6 +5585,37 @@ async fn queue_position_for_insert(
     Ok(insertion)
 }
 
+fn queued_prompt_result(
+    prompt_id: Uuid,
+    owner_id: Uuid,
+    chat_id: Uuid,
+    input: &QueuedPromptInput<'_>,
+    position: i64,
+    now_ms: i64,
+) -> Result<QueuedPrompt, StorageError> {
+    Ok(QueuedPrompt {
+        id: prompt_id,
+        owner_id,
+        chat_id,
+        content: input.content.trim().to_owned(),
+        attachment_ids: input.attachment_ids.to_vec(),
+        skill_ids: input
+            .applied_skills
+            .iter()
+            .map(|skill| skill.skill_id)
+            .collect(),
+        skill_version_ids: input
+            .applied_skills
+            .iter()
+            .map(|skill| skill.version_id)
+            .collect(),
+        kind: input.kind,
+        position: u32::try_from(position)
+            .map_err(|_| StorageError::Integrity("invalid queue position".to_owned()))?,
+        created_at_ms: now_ms,
+    })
+}
+
 fn queued_prompt_from_row(row: &sqlx::sqlite::SqliteRow) -> Result<QueuedPrompt, StorageError> {
     let id: String = row.try_get("id")?;
     let owner_id: String = row.try_get("owner_id")?;
@@ -5583,7 +5690,101 @@ async fn insert_promoted_message(
             return Err(StorageError::SkillNotFound);
         }
     }
+    sqlx::query("INSERT INTO message_references (message_id, ordinal, kind, target_id, target_version_id, label_snapshot) SELECT ?, ordinal, kind, target_id, target_version_id, label_snapshot FROM queued_prompt_references WHERE prompt_id = ? ORDER BY ordinal")
+        .bind(message.id.to_string()).bind(prompt.id.to_string()).execute(&mut **transaction).await?;
     Ok(message)
+}
+
+async fn resolve_typed_references(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    owner_id: Uuid,
+    references: &[(MessageReferenceKind, Uuid)],
+) -> Result<Vec<MessageReferenceRecord>, StorageError> {
+    let mut resolved = Vec::with_capacity(references.len());
+    for (kind, target_id) in references {
+        let (label_snapshot, target_version_id) = match kind {
+            MessageReferenceKind::Bot => (
+                sqlx::query_scalar::<_, String>(
+                    "SELECT name FROM bots WHERE owner_id = ? AND id = ?",
+                )
+                .bind(owner_id.to_string())
+                .bind(target_id.to_string())
+                .fetch_optional(&mut **transaction)
+                .await?
+                .ok_or(StorageError::BotNotFound)?,
+                None,
+            ),
+            MessageReferenceKind::Group => (
+                sqlx::query_scalar::<_, String>(
+                    "SELECT title FROM chats WHERE owner_id = ? AND id = ? AND kind = 'group'",
+                )
+                .bind(owner_id.to_string())
+                .bind(target_id.to_string())
+                .fetch_optional(&mut **transaction)
+                .await?
+                .ok_or(StorageError::ChatNotFound)?,
+                None,
+            ),
+            MessageReferenceKind::Routine => {
+                let row = sqlx::query("SELECT name, active_version_id FROM routines WHERE owner_id = ? AND id = ? AND bot_id IS NOT NULL")
+                    .bind(owner_id.to_string()).bind(target_id.to_string()).fetch_optional(&mut **transaction).await?.ok_or(StorageError::RoutineNotFound)?;
+                (
+                    row.try_get("name")?,
+                    Some(parse_uuid(&row.try_get::<String, _>("active_version_id")?)?),
+                )
+            }
+            MessageReferenceKind::Plugin => (
+                sqlx::query_scalar::<_, String>(
+                    "SELECT name FROM plugins WHERE owner_id = ? AND id = ?",
+                )
+                .bind(owner_id.to_string())
+                .bind(target_id.to_string())
+                .fetch_optional(&mut **transaction)
+                .await?
+                .ok_or(StorageError::PluginNotFound)?,
+                None,
+            ),
+        };
+        resolved.push(MessageReferenceRecord {
+            kind: *kind,
+            target_id: *target_id,
+            target_version_id,
+            label_snapshot,
+        });
+    }
+    Ok(resolved)
+}
+
+async fn insert_queued_prompt_references(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    prompt_id: Uuid,
+    references: &[MessageReferenceRecord],
+) -> Result<(), StorageError> {
+    for (ordinal, reference) in references.iter().enumerate() {
+        sqlx::query("INSERT INTO queued_prompt_references (prompt_id, ordinal, kind, target_id, target_version_id, label_snapshot) VALUES (?, ?, ?, ?, ?, ?)")
+            .bind(prompt_id.to_string())
+            .bind(i64::try_from(ordinal).map_err(|_| StorageError::Integrity("too many message references".to_owned()))?)
+            .bind(reference.kind.as_str()).bind(reference.target_id.to_string())
+            .bind(reference.target_version_id.map(|id| id.to_string())).bind(&reference.label_snapshot)
+            .execute(&mut **transaction).await?;
+    }
+    Ok(())
+}
+
+async fn insert_message_reference_records(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    message_id: Uuid,
+    references: &[MessageReferenceRecord],
+) -> Result<(), StorageError> {
+    for (ordinal, reference) in references.iter().enumerate() {
+        sqlx::query("INSERT INTO message_references (message_id, ordinal, kind, target_id, target_version_id, label_snapshot) VALUES (?, ?, ?, ?, ?, ?)")
+            .bind(message_id.to_string())
+            .bind(i64::try_from(ordinal).map_err(|_| StorageError::Integrity("too many message references".to_owned()))?)
+            .bind(reference.kind.as_str()).bind(reference.target_id.to_string())
+            .bind(reference.target_version_id.map(|id| id.to_string())).bind(&reference.label_snapshot)
+            .execute(&mut **transaction).await?;
+    }
+    Ok(())
 }
 
 async fn reserve_promoted_chat(
@@ -6154,6 +6355,29 @@ fn parse_uuid(value: &str) -> Result<Uuid, StorageError> {
         .map_err(|_| StorageError::Integrity("database contains an invalid UUID".to_owned()))
 }
 
+impl MessageReferenceKind {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Bot => "bot",
+            Self::Group => "group",
+            Self::Routine => "routine",
+            Self::Plugin => "plugin",
+        }
+    }
+
+    fn from_str(value: &str) -> Result<Self, StorageError> {
+        match value {
+            "bot" => Ok(Self::Bot),
+            "group" => Ok(Self::Group),
+            "routine" => Ok(Self::Routine),
+            "plugin" => Ok(Self::Plugin),
+            _ => Err(StorageError::Integrity(
+                "database contains an invalid message reference kind".to_owned(),
+            )),
+        }
+    }
+}
+
 fn links_in(text: &str) -> impl Iterator<Item = String> + '_ {
     text.split_whitespace().filter_map(|word| {
         let candidate = word.trim_matches(|character: char| {
@@ -6256,6 +6480,7 @@ mod tests {
                 None,
                 Vec::new(),
                 &applied_v1,
+                &[],
                 5,
             )
             .await?;
@@ -6349,6 +6574,124 @@ mod tests {
         );
         reopened.detach_chat_workspace(owner, chat.id).await?;
         assert!(reopened.chat_workspace(owner, chat.id).await?.is_none());
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[allow(clippy::too_many_lines)]
+    async fn typed_message_references_survive_renames_versions_and_restart()
+    -> Result<(), StorageError> {
+        let directory = tempfile::tempdir()?;
+        let database = directory.path().join("homebot.db");
+        let storage = Storage::open(&database).await?;
+        let owner = Uuid::now_v7();
+        let first = storage
+            .create_bot(owner, Bot::create("Nova", "Research")?, 1)
+            .await?;
+        let second = storage
+            .create_bot(owner, Bot::create("Patch", "Engineer")?, 2)
+            .await?;
+        let third = storage
+            .create_bot(owner, Bot::create("Orbit", "Design")?, 3)
+            .await?;
+        let direct = storage
+            .create_direct_chat(owner, first.id.0, Uuid::now_v7(), 4)
+            .await?;
+        let group = storage
+            .create_group_chat(
+                owner,
+                Uuid::now_v7(),
+                "Launch team",
+                &[first.id.0, second.id.0, third.id.0],
+                first.id.0,
+                12,
+                3,
+                5,
+            )
+            .await?;
+        let routine_id = Uuid::now_v7();
+        let routine_version = Uuid::now_v7();
+        storage
+            .create_routine(&RoutineRecord {
+                id: routine_id,
+                owner_id: owner,
+                bot_id: first.id.0,
+                name: "Launch review".to_owned(),
+                description: String::new(),
+                enabled: false,
+                draft: true,
+                active_version_id: routine_version,
+                version: 1,
+                definition: RoutineDefinition {
+                    inputs: Vec::new(),
+                    steps: vec![homebot_routines::RoutineStep::BotPrompt {
+                        bot_id: first.id.0,
+                        prompt_template: "Review".to_owned(),
+                        requires_approval: false,
+                    }],
+                    expected_outputs: Vec::new(),
+                },
+                created_at_ms: 6,
+                updated_at_ms: 6,
+            })
+            .await?;
+        let plugin_id = Uuid::now_v7();
+        storage
+            .create_plugin(&PluginRecord {
+                id: plugin_id,
+                owner_id: owner,
+                name: "Repository".to_owned(),
+                description: String::new(),
+                kind: "local_mcp".to_owned(),
+                configuration: json!({"program":"fixture","arguments":[]}),
+                enabled: false,
+                connection_id: Uuid::now_v7(),
+                transport: "stdio".to_owned(),
+                status: "connect".to_owned(),
+                auth_status: "not_required".to_owned(),
+                error_message: None,
+                updated_at_ms: 7,
+            })
+            .await?;
+        let message_id = Uuid::now_v7();
+        let requested_references = [
+            (MessageReferenceKind::Bot, first.id.0),
+            (MessageReferenceKind::Group, group.id),
+            (MessageReferenceKind::Routine, routine_id),
+            (MessageReferenceKind::Plugin, plugin_id),
+        ];
+        storage
+            .append_user_message(
+                owner,
+                direct.id,
+                message_id,
+                "@Nova ask @Launch team to run @Launch review with @Repository",
+                &[],
+                None,
+                Vec::new(),
+                &[],
+                &requested_references,
+                8,
+            )
+            .await?;
+        let expected = storage.message_references(owner, message_id).await?;
+        assert_eq!(expected[2].target_version_id, Some(routine_version));
+        sqlx::query("UPDATE bots SET name = 'Nova renamed' WHERE id = ?")
+            .bind(first.id.0.to_string())
+            .execute(storage.pool())
+            .await?;
+        sqlx::query("UPDATE chats SET title = 'Team renamed' WHERE id = ?")
+            .bind(group.id.to_string())
+            .execute(storage.pool())
+            .await?;
+        drop(storage);
+        let reopened = Storage::open(&database).await?;
+        assert_eq!(
+            reopened.message_references(owner, message_id).await?,
+            expected
+        );
+        assert_eq!(expected[0].label_snapshot, "Nova");
+        assert_eq!(expected[1].label_snapshot, "Launch team");
         Ok(())
     }
 
@@ -7456,6 +7799,7 @@ mod tests {
                 None,
                 Vec::new(),
                 &[],
+                &[],
                 3,
             )
             .await?;
@@ -7620,6 +7964,7 @@ mod tests {
                 None,
                 vec![bot.id.0],
                 &[],
+                &[],
                 4,
             )
             .await?;
@@ -7633,6 +7978,7 @@ mod tests {
                 &[],
                 Some(first_id),
                 Vec::new(),
+                &[],
                 &[],
                 5,
             )
@@ -7649,15 +7995,17 @@ mod tests {
             }]
         );
         storage.set_chat_running(owner, chat_id, true, 6).await?;
+        let queued_id = Uuid::now_v7();
         let queued = storage
             .enqueue_prompt(
                 owner,
                 chat_id,
-                Uuid::now_v7(),
+                queued_id,
                 QueuedPromptInput {
                     content: "Next",
                     attachment_ids: &[],
                     applied_skills: &[],
+                    references: &[(MessageReferenceKind::Bot, bot.id.0)],
                     kind: QueuedPromptKind::FollowUp,
                 },
                 7,
@@ -7725,9 +8073,28 @@ mod tests {
         assert_eq!(reopened.chat_activities(owner, chat_id).await?.len(), 1);
         assert_eq!(reopened.chat_approvals(owner, chat_id).await?.len(), 1);
         assert_eq!(reopened.message_reactions(owner, first_id).await?.len(), 1);
+        reopened.set_chat_running(owner, chat_id, false, 12).await?;
+        let Some(promoted) = reopened
+            .promote_next_queued_prompt(owner, chat_id, 13)
+            .await?
+        else {
+            return Err(StorageError::Integrity(
+                "queued message did not promote after restart".to_owned(),
+            ));
+        };
+        assert_eq!(promoted.message.id, queued_id);
+        assert_eq!(
+            reopened.message_references(owner, queued_id).await?,
+            vec![MessageReferenceRecord {
+                kind: MessageReferenceKind::Bot,
+                target_id: bot.id.0,
+                target_version_id: None,
+                label_snapshot: "Nova".to_owned(),
+            }]
+        );
         assert!(
             reopened
-                .set_message_reaction(owner, first_id, "👍", false, 12)
+                .set_message_reaction(owner, first_id, "👍", false, 14)
                 .await?
                 .is_empty()
         );

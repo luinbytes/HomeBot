@@ -2384,6 +2384,60 @@
         }
       ]
     },
+    "MessageReferenceInput": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/MessageReferenceKind"
+        },
+        "target_id": {
+          "type": "string",
+          "format": "uuid"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "target_id"
+      ]
+    },
+    "MessageReferenceKind": {
+      "type": "string",
+      "enum": [
+        "bot",
+        "group",
+        "routine",
+        "plugin"
+      ]
+    },
+    "MessageReferenceSummary": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/MessageReferenceKind"
+        },
+        "label": {
+          "type": "string"
+        },
+        "target_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "target_version_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "target_id",
+        "label"
+      ]
+    },
     "MessageStatus": {
       "type": "string",
       "enum": [
@@ -2461,6 +2515,13 @@
           "default": [],
           "items": {
             "$ref": "#/$defs/ReactionSummary"
+          }
+        },
+        "references": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/MessageReferenceSummary"
           }
         },
         "reply_to_message_id": {
@@ -4026,6 +4087,13 @@
           "items": {
             "type": "string",
             "format": "uuid"
+          }
+        },
+        "references": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/MessageReferenceInput"
           }
         },
         "reply_to_message_id": {

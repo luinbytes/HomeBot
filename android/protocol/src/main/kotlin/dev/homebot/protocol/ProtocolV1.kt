@@ -173,7 +173,7 @@ data class CreateGroupChatResponse(val group: GroupChatSummary, val participants
 data class GroupTimelineResponse(val group: GroupChatSummary, val participants: List<GroupParticipantSummary>, val messages: List<MessageSummary>, val handoffs: List<OwnershipHandoffSummary>, val boundary_sequence: Long)
 
 @Serializable
-data class SendGroupMessageRequest(val request_id: String, val idempotency_key: String, val content: String, val mentioned_bot_ids: List<String>, val shared_context_message_ids: List<String>, val reply_to_message_id: String? = null)
+data class SendGroupMessageRequest(val request_id: String, val idempotency_key: String, val content: String, val mentioned_bot_ids: List<String>, val shared_context_message_ids: List<String>, val reply_to_message_id: String? = null, val references: List<MessageReferenceInput> = emptyList())
 
 @Serializable
 data class HandoffGroupRequest(val request_id: String, val idempotency_key: String, val from_bot_id: String, val to_bot_id: String, val message_id: String? = null, val reason: String)
@@ -210,6 +210,7 @@ data class MessageSummary(
     val shared_context_message_ids: List<String>,
     val applied_skills: List<AppliedSkillSummary> = emptyList(),
     val reactions: List<ReactionSummary> = emptyList(),
+    val references: List<MessageReferenceSummary> = emptyList(),
     val created_at_ms: Long,
     val completed_at_ms: Long? = null,
     val error: ErrorEnvelope? = null,
@@ -217,6 +218,15 @@ data class MessageSummary(
 
 @Serializable
 data class ReactionSummary(val emoji: String, val count: Int, val reacted_by_user: Boolean)
+
+@Serializable
+enum class MessageReferenceKind { @SerialName("bot") BOT, @SerialName("group") GROUP, @SerialName("routine") ROUTINE, @SerialName("plugin") PLUGIN }
+
+@Serializable
+data class MessageReferenceInput(val kind: MessageReferenceKind, val target_id: String)
+
+@Serializable
+data class MessageReferenceSummary(val kind: MessageReferenceKind, val target_id: String, val target_version_id: String? = null, val label: String)
 
 @Serializable
 enum class SearchResultKind { @SerialName("message") MESSAGE, @SerialName("file") FILE, @SerialName("link") LINK, @SerialName("routine") ROUTINE }
@@ -466,7 +476,7 @@ data class CreateDirectChatRequest(val request_id: String, val idempotency_key: 
 data class CreateDirectChatResponse(val chat: ChatSummary)
 
 @Serializable
-data class SendMessageRequest(val request_id: String, val idempotency_key: String, val content: String, val attachment_ids: List<String>, val reply_to_message_id: String? = null, val mentioned_bot_ids: List<String>, val skill_ids: List<String> = emptyList())
+data class SendMessageRequest(val request_id: String, val idempotency_key: String, val content: String, val attachment_ids: List<String>, val reply_to_message_id: String? = null, val mentioned_bot_ids: List<String>, val skill_ids: List<String> = emptyList(), val references: List<MessageReferenceInput> = emptyList())
 
 @Serializable
 sealed interface SendMessageResponse {

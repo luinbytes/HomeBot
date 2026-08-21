@@ -859,6 +859,7 @@ impl HomeBotApp {
                     let identity = (item.author == homebot_protocol::MessageAuthor::Bot)
                         .then(|| identity(self.theme, bot));
                     message(ui, self.theme, identity, &text);
+                    message_reference_labels(ui, item);
                     ui.horizontal(|ui| {
                         for reaction in &item.reactions {
                             if ui
@@ -1442,6 +1443,23 @@ fn identity(theme: HomeBotTheme, bot: &BotSummary) -> BotIdentity<'_> {
             BotAttention::NeedsApproval => Some(AttentionIndicator::NeedsApproval),
             BotAttention::Failed => Some(AttentionIndicator::Failed),
         },
+    }
+}
+
+fn message_reference_labels(ui: &mut egui::Ui, message: &homebot_protocol::MessageSummary) {
+    let labels = message
+        .references
+        .iter()
+        .map(|reference| format!("@{}", reference.label))
+        .chain(
+            message
+                .applied_skills
+                .iter()
+                .map(|skill| format!("/{} v{}", skill.name, skill.version)),
+        )
+        .collect::<Vec<_>>();
+    if !labels.is_empty() {
+        ui.label(labels.join("  "));
     }
 }
 

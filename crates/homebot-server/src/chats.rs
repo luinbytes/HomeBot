@@ -14,12 +14,15 @@ use homebot_protocol::{
     ActivityDetail, ActivityKind, ActivityPresentation, ActivityStatus, ActivitySummary,
     ApprovalDecisionRequest, ApprovalStatus, ApprovalSummary, Attachment, BotMutationRequest,
     ChatSummary, ChatTimelineResponse, CreateDirectChatRequest, CreateDirectChatResponse,
-    MessageAuthor, MessagePart, MessageStatus, MessageSummary, QueuedPromptSummary,
+    MessageAuthor, MessagePart, MessageReferenceInput, MessageReferenceKind,
+    MessageReferenceSummary, MessageStatus, MessageSummary, QueuedPromptSummary,
     ReactionMutationRequest, ReactionSummary, SendMessageRequest, SendMessageResponse,
     ServerEventBody,
 };
 use homebot_skills::AppliedSkill;
-use homebot_storage::{IdempotencyClaim, QueuedPromptInput};
+use homebot_storage::{
+    IdempotencyClaim, MessageReferenceKind as StorageReferenceKind, QueuedPromptInput,
+};
 use uuid::Uuid;
 
 use crate::{
@@ -166,6 +169,7 @@ pub(super) async fn send_message(
                         content: &request.content,
                         attachment_ids: &request.attachment_ids,
                         applied_skills: &applied_skills,
+                        references: &storage_references(&request.references),
                         kind: DomainPromptKind::FollowUp,
                     },
                     unix_time_ms(),
@@ -202,6 +206,7 @@ pub(super) async fn send_message(
                 request.reply_to_message_id,
                 request.mentioned_bot_ids,
                 &applied_skills,
+                &storage_references(&request.references),
                 unix_time_ms(),
             )
             .await?
@@ -226,7 +231,9 @@ pub(super) async fn send_message(
         )
         .await?;
     }
-    Ok(Json(SendMessageResponse::Sent { message }))
+    Ok(Json(SendMessageResponse::Sent {
+        message: Box::new(message),
+    }))
 }
 
 pub(super) async fn steer(
@@ -280,6 +287,7 @@ pub(super) async fn steer(
                     content: &request.content,
                     attachment_ids: &request.attachment_ids,
                     applied_skills: &applied_skills,
+                    references: &storage_references(&request.references),
                     kind: DomainPromptKind::Steering,
                 },
                 unix_time_ms(),
@@ -616,6 +624,13 @@ pub(super) async fn message_summary(
             reacted_by_user: reaction.reacted_by_user,
         })
         .collect();
+    let references = state
+        .storage
+        .message_references(state.owner_id, message.id)
+        .await?
+        .into_iter()
+        .map(reference_summary)
+        .collect();
     let mut parts = Vec::with_capacity(message.parts.len());
     for part in message.parts {
         parts.push(match part {
@@ -667,6 +682,7 @@ pub(super) async fn message_summary(
         shared_context_message_ids: message.shared_context_message_ids,
         applied_skills,
         reactions,
+        references,
         created_at_ms: message.created_at_ms,
         completed_at_ms: message.completed_at_ms,
         error: message
@@ -675,6 +691,41 @@ pub(super) async fn message_summary(
             .transpose()
             .map_err(|_| ApiError::internal())?,
     })
+}
+
+fn reference_summary(
+    reference: homebot_storage::MessageReferenceRecord,
+) -> MessageReferenceSummary {
+    MessageReferenceSummary {
+        kind: match reference.kind {
+            StorageReferenceKind::Bot => MessageReferenceKind::Bot,
+            StorageReferenceKind::Group => MessageReferenceKind::Group,
+            StorageReferenceKind::Routine => MessageReferenceKind::Routine,
+            StorageReferenceKind::Plugin => MessageReferenceKind::Plugin,
+        },
+        target_id: reference.target_id,
+        target_version_id: reference.target_version_id,
+        label: reference.label_snapshot,
+    }
+}
+
+pub(super) fn storage_references(
+    references: &[MessageReferenceInput],
+) -> Vec<(StorageReferenceKind, Uuid)> {
+    references
+        .iter()
+        .map(|reference| {
+            (
+                match reference.kind {
+                    MessageReferenceKind::Bot => StorageReferenceKind::Bot,
+                    MessageReferenceKind::Group => StorageReferenceKind::Group,
+                    MessageReferenceKind::Routine => StorageReferenceKind::Routine,
+                    MessageReferenceKind::Plugin => StorageReferenceKind::Plugin,
+                },
+                reference.target_id,
+            )
+        })
+        .collect()
 }
 
 pub(super) fn prompt_summary(prompt: DomainPrompt) -> QueuedPromptSummary {

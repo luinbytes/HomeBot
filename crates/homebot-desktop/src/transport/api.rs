@@ -867,6 +867,7 @@ async fn post_message(
         reply_to_message_id: draft.reply_to_message_id,
         mentioned_bot_ids: draft.mentioned_bot_ids,
         skill_ids: draft.skill_ids,
+        references: draft.references,
     };
     let action = if steer { "steer" } else { "messages" };
     ensure_success(

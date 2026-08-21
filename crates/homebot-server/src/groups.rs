@@ -22,7 +22,7 @@ use uuid::Uuid;
 use crate::{
     AppState,
     bots::{ApiError, claim},
-    chats::{message_summary, publish},
+    chats::{message_summary, publish, storage_references},
     unix_time_ms,
 };
 
@@ -165,6 +165,7 @@ pub(super) async fn send_message(
                 &request.mentioned_bot_ids,
                 &request.shared_context_message_ids,
                 request.reply_to_message_id,
+                &storage_references(&request.references),
                 unix_time_ms(),
             )
             .await?

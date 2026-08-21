@@ -24,6 +24,11 @@ pub enum TimelineCommand {
     Steer(ComposerDraft),
     Stop,
     Retry(Uuid),
+    SetReaction {
+        message_id: Uuid,
+        emoji: String,
+        active: bool,
+    },
     DecideApproval {
         approval_id: Uuid,
         allow: bool,
@@ -97,6 +102,14 @@ impl Default for TimelineModel {
 }
 
 impl TimelineModel {
+    pub fn set_reaction(&mut self, message_id: Uuid, emoji: impl Into<String>, active: bool) {
+        self.commands.push(TimelineCommand::SetReaction {
+            message_id,
+            emoji: emoji.into(),
+            active,
+        });
+    }
+
     pub fn hydrate(&mut self, timeline: ChatTimelineResponse) {
         self.chat = Some(timeline.chat);
         self.messages = timeline.messages;
@@ -398,6 +411,7 @@ mod tests {
             mentioned_bot_ids: Vec::new(),
             shared_context_message_ids: Vec::new(),
             applied_skills: Vec::new(),
+            reactions: Vec::new(),
             created_at_ms: 1,
             completed_at_ms: None,
             error: None,

@@ -218,6 +218,7 @@ private fun DirectChatScreen(viewModel: MainViewModel, timeline: ChatTimelineRes
         onRetry = viewModel::retry,
         onDecision = viewModel::decide,
         onAttachment = viewModel::sendAttachment,
+        onReaction = viewModel::setReaction,
         extras = {
             OutlinedButton(onClick = viewModel::loadCodingWorkspace) { Text("Workspace & diff") }
             if (timeline.checkpoints.size >= 2) {
@@ -246,6 +247,7 @@ private fun GroupChatScreen(viewModel: MainViewModel, timeline: GroupTimelineRes
         onSend = { text, _ -> viewModel.send(text, mentions = mentions) },
         onStop = viewModel::stopWorking, onRetry = {}, onDecision = { _, _ -> },
         onAttachment = {},
+        onReaction = viewModel::setReaction,
         extras = {
             TextButton(onClick = { mentionAll = !mentionAll }) { Text(if (mentionAll) "@All Bots selected" else "Mention all Bots") }
             val owner = timeline.group.ownership_bot_id
@@ -270,6 +272,7 @@ private fun ChatLayout(
     onRetry: (MessageSummary) -> Unit,
     onDecision: (ApprovalSummary, Boolean) -> Unit,
     onAttachment: (android.net.Uri) -> Unit,
+    onReaction: (String, String, Boolean) -> Unit,
     extras: @Composable () -> Unit,
 ) {
     var composer by remember { mutableStateOf("") }
@@ -286,7 +289,7 @@ private fun ChatLayout(
             if (running) OutlinedButton(onClick = onStop) { Text("Stop") }
         }
         LazyColumn(Modifier.weight(1f).padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            items(messages, key = { it.id }) { MessageCard(it, onRetry) }
+            items(messages, key = { it.id }) { MessageCard(it, onRetry, onReaction) }
             items(activities, key = { it.id }) {
                 HomeBotCard(it.title, "${it.detail}\n${it.status}", if (it.id == highlightedActivityId) Violet else Color.Unspecified)
             }
@@ -315,7 +318,11 @@ private fun ChatLayout(
 }
 
 @Composable
-private fun MessageCard(message: MessageSummary, onRetry: (MessageSummary) -> Unit) {
+private fun MessageCard(
+    message: MessageSummary,
+    onRetry: (MessageSummary) -> Unit,
+    onReaction: (String, String, Boolean) -> Unit,
+) {
     Row(Modifier.fillMaxWidth(), horizontalArrangement = if (message.author == "user") Arrangement.End else Arrangement.Start) {
         Card(shape = RoundedCornerShape(18.dp), modifier = Modifier.fillMaxWidth(if (message.author == "user") .84f else .96f)) {
             Column(Modifier.padding(14.dp)) {
@@ -329,6 +336,16 @@ private fun MessageCard(message: MessageSummary, onRetry: (MessageSummary) -> Un
                 }
                 if (message.status == "failed") TextButton(onClick = { onRetry(message) }) { Text("Retry") }
                 message.error?.let { Text(it.message, color = Danger, fontSize = 12.sp) }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    message.reactions.forEach { reaction ->
+                        TextButton(onClick = { onReaction(message.id, reaction.emoji, !reaction.reacted_by_user) }) {
+                            Text("${reaction.emoji} ${reaction.count}")
+                        }
+                    }
+                    if (message.reactions.none { it.emoji == "👍" }) {
+                        TextButton(onClick = { onReaction(message.id, "👍", true) }) { Text("React") }
+                    }
+                }
             }
         }
     }

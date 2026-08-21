@@ -23,14 +23,14 @@ use homebot_protocol::{
     ImportSkillRequest, InteractionMode, MissedRunPolicy, OverlapPolicy, PairingEndpointKind,
     PairingExchangeResponse, PairingOffer, PluginConnectionState, PluginMutationRequest,
     PluginSummary, PullRequestMetadata, PullRequestMutationResponse, QueuedPromptKind,
-    RecordedAction, RecordedActor, RepositoryWorkspaceSummary, RestoreCheckpointRequest,
-    RetryPolicy, RevokeDeviceSessionRequest, RoutineDefinition, RoutineInput, RoutineInputKind,
-    RoutineJobSummary, RoutineRecordingSummary, RoutineRunSummary, RoutineSchedule, RoutineStep,
-    RoutineStepStatus, RoutineSummary, RoutineTriggerDefinition, RoutineTriggerSource,
-    RunRoutineRequest, SecretSummary, SendGroupMessageRequest, SendMessageRequest,
-    SendMessageResponse, SetInteractionModeRequest, SkillAssignmentRequest, SkillBundle,
-    SkillContext, SkillDefinition, SkillImportConflictPolicy, SkillSummary, SkillToolReference,
-    StartRoutineRecordingRequest, TurnCheckpointSummary, UpdateBotRequest,
+    ReactionMutationRequest, RecordedAction, RecordedActor, RepositoryWorkspaceSummary,
+    RestoreCheckpointRequest, RetryPolicy, RevokeDeviceSessionRequest, RoutineDefinition,
+    RoutineInput, RoutineInputKind, RoutineJobSummary, RoutineRecordingSummary, RoutineRunSummary,
+    RoutineSchedule, RoutineStep, RoutineStepStatus, RoutineSummary, RoutineTriggerDefinition,
+    RoutineTriggerSource, RunRoutineRequest, SecretSummary, SendGroupMessageRequest,
+    SendMessageRequest, SendMessageResponse, SetInteractionModeRequest, SkillAssignmentRequest,
+    SkillBundle, SkillContext, SkillDefinition, SkillImportConflictPolicy, SkillSummary,
+    SkillToolReference, StartRoutineRecordingRequest, TurnCheckpointSummary, UpdateBotRequest,
     UpdateGroupParticipantRequest, UpdateRoutineRequest, UpdateSkillRequest, VcsCommitRequest,
     VcsCommitResult, VcsCreateBranchRequest, VcsMutationStatus, VcsPushRequest,
     VcsRemoteMutationResponse, VcsStatus, WorkingContextSummary, WorkingTreeCondition,
@@ -1421,6 +1421,41 @@ async fn direct_chat_send_queue_replay_and_timeline_are_server_authoritative()
         response_json::<SendMessageResponse>(replay).await?,
         SendMessageResponse::Sent { message } if message.id == message_key
     ));
+
+    let reaction = ReactionMutationRequest {
+        request_id: Uuid::now_v7(),
+        idempotency_key: Uuid::now_v7(),
+        emoji: "👍".to_owned(),
+    };
+    let response = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            &format!("/api/v1/messages/{message_key}/reactions"),
+            &reaction,
+        ))
+        .await?;
+    let reacted = response_json::<homebot_protocol::MessageSummary>(response).await?;
+    assert_eq!(reacted.reactions[0].count, 1);
+    assert!(reacted.reactions[0].reacted_by_user);
+    let response = app
+        .clone()
+        .oneshot(json_request(
+            "DELETE",
+            &format!("/api/v1/messages/{message_key}/reactions"),
+            &ReactionMutationRequest {
+                request_id: Uuid::now_v7(),
+                idempotency_key: Uuid::now_v7(),
+                emoji: "👍".to_owned(),
+            },
+        ))
+        .await?;
+    assert!(
+        response_json::<homebot_protocol::MessageSummary>(response)
+            .await?
+            .reactions
+            .is_empty()
+    );
 
     storage
         .set_chat_running(Uuid::nil(), chat_key, true, 100)

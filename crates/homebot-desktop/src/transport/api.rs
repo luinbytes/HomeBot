@@ -3,8 +3,9 @@ use super::{
     Client, ComposerDraft, CreateAttachmentRequest, CreateAttachmentResponse, CreateBotRequest,
     CreateDirectChatRequest, CreateDirectChatResponse, DeleteBotRequest, DesktopCommand,
     DesktopEvent, Digest, ErrorEnvelope, FinalizeAttachmentRequest, MessageMutationRequest, Method,
-    RuntimeConfig, SendMessageRequest, Sender, Sha256, StatusCode, TimelineCommand,
-    TransportFailure, UpdateBotRequest, Uuid, WorkspaceCommand, protocol_error, request_error,
+    ReactionMutationRequest, RuntimeConfig, SendMessageRequest, Sender, Sha256, StatusCode,
+    TimelineCommand, TransportFailure, UpdateBotRequest, Uuid, WorkspaceCommand, protocol_error,
+    request_error,
 };
 
 pub(super) async fn execute_command(
@@ -647,15 +648,13 @@ async fn execute_timeline(
             post_empty_mutation(client, config, &format!("/api/v1/chats/{chat_id}/stop")).await
         }
         TimelineCommand::Retry(message_id) => {
-            let chat_id =
-                chat_id.ok_or_else(|| TransportFailure::Protocol("No active chat".to_owned()))?;
-            post_empty_mutation(
-                client,
-                config,
-                &format!("/api/v1/chats/{chat_id}/messages/{message_id}/retry"),
-            )
-            .await
+            retry_message(client, config, chat_id, message_id).await
         }
+        TimelineCommand::SetReaction {
+            message_id,
+            emoji,
+            active,
+        } => set_reaction(client, config, message_id, emoji, active).await,
         TimelineCommand::DecideApproval { approval_id, allow } => {
             let body = ApprovalDecisionRequest {
                 request_id: Uuid::now_v7(),
@@ -723,6 +722,48 @@ async fn execute_timeline(
             execute_context_command(client, config, chat_id, command, events).await
         }
     }
+}
+
+async fn set_reaction(
+    client: &Client,
+    config: &RuntimeConfig,
+    message_id: Uuid,
+    emoji: String,
+    active: bool,
+) -> Result<(), TransportFailure> {
+    let body = ReactionMutationRequest {
+        request_id: Uuid::now_v7(),
+        idempotency_key: Uuid::now_v7(),
+        emoji,
+    };
+    ensure_success(
+        authenticated(
+            client,
+            config,
+            if active { Method::POST } else { Method::DELETE },
+            &format!("/api/v1/messages/{message_id}/reactions"),
+        )
+        .json(&body)
+        .send()
+        .await
+        .map_err(request_error)?,
+    )
+    .await
+}
+
+async fn retry_message(
+    client: &Client,
+    config: &RuntimeConfig,
+    chat_id: Option<Uuid>,
+    message_id: Uuid,
+) -> Result<(), TransportFailure> {
+    let chat_id = chat_id.ok_or_else(|| TransportFailure::Protocol("No active chat".to_owned()))?;
+    post_empty_mutation(
+        client,
+        config,
+        &format!("/api/v1/chats/{chat_id}/messages/{message_id}/retry"),
+    )
+    .await
 }
 
 async fn execute_context_command(

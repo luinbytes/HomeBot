@@ -242,6 +242,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         refreshSelection(showLoading = false)
     }
 
+    fun setReaction(messageId: String, emoji: String, active: Boolean) = perform {
+        homeBot.client.setReaction(messageId, emoji, active).getOrThrow()
+        refreshSelection(showLoading = false)
+    }
+
     fun compareRecentCheckpoints() = perform {
         val timeline = mutableProduct.value.directTimeline ?: error("Open a direct chat first")
         require(timeline.checkpoints.size >= 2) { "At least two checkpoints are required for an exact diff" }

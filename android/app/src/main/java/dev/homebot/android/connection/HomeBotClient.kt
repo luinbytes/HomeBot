@@ -25,6 +25,7 @@ import dev.homebot.protocol.PROTOCOL_VERSION
 import dev.homebot.protocol.PairingExchangeResponse
 import dev.homebot.protocol.ProtocolRange
 import dev.homebot.protocol.RepositoryWorkspaceSummary
+import dev.homebot.protocol.ReactionMutationRequest
 import dev.homebot.protocol.RestoreCheckpointRequest
 import dev.homebot.protocol.SendGroupMessageRequest
 import dev.homebot.protocol.SendMessageRequest
@@ -237,6 +238,15 @@ class HomeBotClient(
 
     suspend fun directTimeline(chatId: String): Result<ChatTimelineResponse> = authenticated {
         get("api/v1/chats/$chatId/timeline", ChatTimelineResponse.serializer())
+    }
+
+    suspend fun setReaction(messageId: String, emoji: String, active: Boolean): Result<MessageSummary> = authenticated {
+        val request = ReactionMutationRequest(ids(), ids(), emoji)
+        if (active) {
+            post("api/v1/messages/$messageId/reactions", request, ReactionMutationRequest.serializer(), MessageSummary.serializer())
+        } else {
+            delete("api/v1/messages/$messageId/reactions", request, ReactionMutationRequest.serializer(), MessageSummary.serializer())
+        }
     }
 
     suspend fun groupTimeline(chatId: String): Result<GroupTimelineResponse> = authenticated {
@@ -790,6 +800,13 @@ class HomeBotClient(
             responseSerializer: kotlinx.serialization.KSerializer<ResponseType>,
         ): ResponseType = request("PUT", path, json.encodeToString(requestSerializer, payload), responseSerializer)
 
+        suspend fun <RequestType, ResponseType> delete(
+            path: String,
+            payload: RequestType,
+            requestSerializer: kotlinx.serialization.KSerializer<RequestType>,
+            responseSerializer: kotlinx.serialization.KSerializer<ResponseType>,
+        ): ResponseType = request("DELETE", path, json.encodeToString(requestSerializer, payload), responseSerializer)
+
         suspend fun <ResponseType> get(
             path: String,
             responseSerializer: kotlinx.serialization.KSerializer<ResponseType>,
@@ -834,6 +851,7 @@ class HomeBotClient(
                 "GET" -> builder.get()
                 "POST" -> builder.post(requireNotNull(payload).jsonBody())
                 "PUT" -> builder.put(requireNotNull(payload).jsonBody())
+                "DELETE" -> builder.delete(requireNotNull(payload).jsonBody())
             }
             return executeJson(builder.build(), serializer)
         }

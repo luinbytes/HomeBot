@@ -2429,6 +2429,13 @@
             "$ref": "#/$defs/MessagePart"
           }
         },
+        "reactions": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ReactionSummary"
+          }
+        },
         "reply_to_message_id": {
           "type": [
             "string",
@@ -2985,6 +2992,28 @@
         "attachment_ids",
         "position",
         "created_at_ms"
+      ]
+    },
+    "ReactionSummary": {
+      "type": "object",
+      "properties": {
+        "count": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "emoji": {
+          "type": "string"
+        },
+        "reacted_by_user": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "emoji",
+        "count",
+        "reacted_by_user"
       ]
     },
     "RecordedAction": {

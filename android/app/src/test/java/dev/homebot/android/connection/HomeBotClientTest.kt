@@ -84,10 +84,14 @@ class HomeBotClientTest {
                     val socketNumber = sockets.incrementAndGet()
                     MockResponse().withWebSocketUpgrade(object : WebSocketListener() {
                         override fun onMessage(webSocket: WebSocket, text: String) {
-                            hellos += text
-                            webSocket.send(hello("snapshot_required"))
-                            webSocket.send(snapshot(if (socketNumber == 1) 5 else 9))
-                            if (socketNumber == 1) webSocket.close(1001, "fixture restart")
+                            if (socketNumber == 1 && text.contains("\"kind\":\"pong\"")) {
+                                webSocket.close(1001, "fixture restart")
+                            } else if (text.contains("\"kind\":\"hello\"")) {
+                                hellos += text
+                                webSocket.send(hello("snapshot_required"))
+                                webSocket.send(snapshot(if (socketNumber == 1) 5 else 9))
+                                if (socketNumber == 1) webSocket.send(ping())
+                            }
                         }
 
                         override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
@@ -221,6 +225,7 @@ class HomeBotClientTest {
 
         fun hello(resume: String) = """{"protocol_version":1,"sequence":0,"event_id":"00000000-0000-0000-0000-000000000001","kind":"hello","server_version":"0.1.0","supported_protocols":{"minimum":1,"maximum":1},"resume":"$resume","heartbeat_interval_ms":30000,"heartbeat_timeout_ms":60000}"""
         fun snapshot(sequence: Int) = """{"protocol_version":1,"sequence":$sequence,"event_id":"00000000-0000-0000-0000-000000000002","kind":"snapshot","boundary_sequence":$sequence,"snapshot":{"bots":[],"chats":[]}}"""
+        fun ping() = """{"protocol_version":1,"sequence":5,"event_id":"00000000-0000-0000-0000-000000000004","kind":"ping","nonce":"00000000-0000-0000-0000-000000000005"}"""
         fun botChanged(sequence: Int, name: String) = """{"protocol_version":1,"sequence":$sequence,"event_id":"00000000-0000-0000-0000-000000000003","kind":"bot_changed","bot":{"id":"00000000-0000-0000-0000-000000000010","name":"$name","title":"Helper","description":"","shape":"circle","color":"violet","archived":false,"unread_count":0,"attention":"none","provider":"not_configured","advanced":{"provider_profile_id":null,"permission_profile":"ask_before_changes"}}}"""
     }
 }

@@ -68,6 +68,8 @@ Coding-chat timelines include opaque turn-checkpoint summaries. Authenticated en
 
 Authenticated chat-scoped VCS endpoints return normalized porcelain status, staged/unstaged binary-capable diffs, exact commit results, clean branch transitions, push outcomes and pull-request metadata/actions. `vcs_status_changed` is durable and sequenced. Push and pull-request creation return `approval_required` until the server capability engine consumes an allowed, exact-request approval. Mutation responses are durably idempotent; remote URLs, credentials and raw Git/GitHub output never cross the contract.
 
+Owner-authenticated capability-rule endpoints list, upsert, delete, and audit narrow allow/require-approval/deny policy. Current safe rule summaries are included in reconnect snapshots and reconciled through sequenced `capability_rule_changed` and `capability_rule_removed` events. Android treats this projection as read-only because a paired device session cannot grant itself authority; the owner desktop performs administration through the same server contract.
+
 ## Attachments
 
 Attachments are uploaded over authenticated HTTP with size/type limits, streaming digest verification, an idempotency key, and an explicit finalise step. WebSocket messages refer to completed attachment IDs. Partial uploads expire and cannot be consumed.

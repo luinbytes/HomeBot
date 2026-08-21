@@ -68,6 +68,7 @@ pub struct HomeBotApp {
     pub checkpoint_diff: Option<homebot_protocol::CheckpointDiffResponse>,
     pub devices: Vec<homebot_protocol::DeviceSessionSummary>,
     pub pairing_offer: Option<homebot_protocol::PairingOffer>,
+    pub capability_rules: Vec<homebot_protocol::CapabilityRuleSummary>,
     pairing_endpoint: String,
     pairing_insecure_private_acknowledged: bool,
     vcs_commit_message: String,
@@ -107,6 +108,7 @@ impl Default for HomeBotApp {
             checkpoint_diff: None,
             devices: Vec::new(),
             pairing_offer: None,
+            capability_rules: Vec::new(),
             pairing_endpoint: "http://127.0.0.1:7123".to_owned(),
             pairing_insecure_private_acknowledged: false,
             vcs_commit_message: String::new(),
@@ -191,6 +193,7 @@ impl HomeBotApp {
                 }
                 if self.settings.section == SettingsSection::Devices {
                     self.device_pairing_controls(ui);
+                    self.capability_policy_controls(ui);
                 }
             } else if self.search.is_some() {
                 self.search_content(ui);
@@ -302,6 +305,9 @@ impl HomeBotApp {
             let Some(event) = self.apply_vcs_transport_event(event) else {
                 continue;
             };
+            let Some(event) = self.apply_policy_transport_event(event) else {
+                continue;
+            };
             match event {
                 DesktopEvent::Connecting => self.roster.connection = ConnectionState::Connecting,
                 DesktopEvent::Connected => {
@@ -314,11 +320,7 @@ impl HomeBotApp {
                     self.transport_error = Some(error.to_string());
                 }
                 DesktopEvent::Snapshot { snapshot, .. } => {
-                    self.roster.apply_snapshot(snapshot.bots);
-                    self.chats = snapshot.chats;
-                    self.skills.hydrate(snapshot.skills);
-                    self.workspaces
-                        .hydrate(snapshot.repository_workspaces, snapshot.chat_workspaces);
+                    self.apply_snapshot(snapshot);
                     self.load_selected_timeline();
                 }
                 DesktopEvent::Server(event) => {
@@ -414,6 +416,15 @@ impl HomeBotApp {
         self.update_device_count();
     }
 
+    fn apply_snapshot(&mut self, snapshot: homebot_protocol::Snapshot) {
+        self.roster.apply_snapshot(snapshot.bots);
+        self.chats = snapshot.chats;
+        self.skills.hydrate(snapshot.skills);
+        self.workspaces
+            .hydrate(snapshot.repository_workspaces, snapshot.chat_workspaces);
+        self.capability_rules = snapshot.capability_rules;
+    }
+
     fn apply_device_revoked(&mut self, device: homebot_protocol::DeviceSessionSummary) {
         if let Some(existing) = self.devices.iter_mut().find(|item| item.id == device.id) {
             *existing = device;
@@ -473,6 +484,31 @@ impl HomeBotApp {
             other => return Some(other),
         }
         None
+    }
+
+    fn apply_policy_transport_event(&mut self, event: DesktopEvent) -> Option<DesktopEvent> {
+        let DesktopEvent::Server(server_event) = &event else {
+            return Some(event);
+        };
+        match &server_event.body {
+            ServerEventBody::CapabilityRuleChanged { rule } => {
+                if let Some(existing) = self
+                    .capability_rules
+                    .iter_mut()
+                    .find(|item| item.id == rule.id)
+                {
+                    *existing = rule.clone();
+                } else {
+                    self.capability_rules.push(rule.clone());
+                }
+                None
+            }
+            ServerEventBody::CapabilityRuleRemoved { rule_id } => {
+                self.capability_rules.retain(|rule| rule.id != *rule_id);
+                None
+            }
+            _ => Some(event),
+        }
     }
 
     fn flush_transport(&mut self) {
@@ -574,6 +610,24 @@ impl HomeBotApp {
         }
         if let Some(device_id) = revoke {
             self.send_transport(DesktopCommand::RevokeDevice(device_id));
+        }
+    }
+
+    fn capability_policy_controls(&self, ui: &mut egui::Ui) {
+        ui.separator();
+        ui.strong("Computer access policy");
+        ui.label("These durable rules are evaluated by the HomeBot server. Deny rules always win; audit history never contains secret values.");
+        if self.capability_rules.is_empty() {
+            ui.label("No custom rules. Server defaults remain in effect.");
+        }
+        for rule in &self.capability_rules {
+            ui.horizontal_wrapped(|ui| {
+                ui.monospace(format!("{:?}", rule.capability));
+                ui.strong(format!("{:?}", rule.effect));
+                if let Some(prefix) = &rule.action_prefix {
+                    ui.label(prefix);
+                }
+            });
         }
     }
 

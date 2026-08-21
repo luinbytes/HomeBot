@@ -64,6 +64,7 @@ data class Snapshot(
     val skills: List<SkillSummary> = emptyList(),
     val repository_workspaces: List<RepositoryWorkspaceSummary> = emptyList(),
     val chat_workspaces: List<ChatWorkspaceSummary> = emptyList(),
+    val capability_rules: List<CapabilityRuleSummary> = emptyList(),
 )
 
 @Serializable
@@ -259,6 +260,21 @@ data class ApprovalSummary(val id: String, val chat_id: String, val message_id: 
 
 @Serializable
 data class ApprovalDecisionRequest(val request_id: String, val idempotency_key: String, val allow: Boolean)
+
+@Serializable
+enum class CapabilityClass { @SerialName("filesystem_read") FILESYSTEM_READ, @SerialName("filesystem_write") FILESYSTEM_WRITE, @SerialName("process_execute") PROCESS_EXECUTE, @SerialName("browser_observe") BROWSER_OBSERVE, @SerialName("browser_act") BROWSER_ACT, @SerialName("git_read") GIT_READ, @SerialName("git_write") GIT_WRITE, @SerialName("git_remote") GIT_REMOTE, @SerialName("plugin_read") PLUGIN_READ, @SerialName("plugin_write") PLUGIN_WRITE, @SerialName("external_communication") EXTERNAL_COMMUNICATION, @SerialName("external_mutation") EXTERNAL_MUTATION, @SerialName("secret_use") SECRET_USE, @SerialName("device_administration") DEVICE_ADMINISTRATION }
+
+@Serializable
+enum class CapabilityRuleEffect { @SerialName("allow") ALLOW, @SerialName("require_approval") REQUIRE_APPROVAL, @SerialName("deny") DENY }
+
+@Serializable
+data class CapabilityRuleSummary(val id: String, val capability: CapabilityClass, val effect: CapabilityRuleEffect, val device_id: String? = null, val bot_id: String? = null, val chat_id: String? = null, val workspace_id: String? = null, val action_prefix: String? = null, val created_at_ms: Long, val updated_at_ms: Long)
+
+@Serializable
+data class UpsertCapabilityRuleRequest(val request_id: String, val idempotency_key: String, val capability: CapabilityClass, val effect: CapabilityRuleEffect, val device_id: String? = null, val bot_id: String? = null, val chat_id: String? = null, val workspace_id: String? = null, val action_prefix: String? = null)
+
+@Serializable
+data class CapabilityRuleAuditSummary(val id: String, val rule_id: String, val action: String, val snapshot: JsonElement, val created_at_ms: Long)
 
 @Serializable
 enum class QueuedPromptKind { @SerialName("follow_up") FOLLOW_UP, @SerialName("steering") STEERING }

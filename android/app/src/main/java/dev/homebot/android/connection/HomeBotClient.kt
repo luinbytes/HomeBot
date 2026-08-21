@@ -795,6 +795,16 @@ class HomeBotClient(
                     json.decodeFromJsonElement<GroupChatSummary>(event.getValue("group")),
                 ) { it.id },
             )
+            "capability_rule_changed" -> projection.copy(
+                capability_rules = projection.capability_rules.upsert(
+                    json.decodeFromJsonElement<dev.homebot.protocol.CapabilityRuleSummary>(event.getValue("rule")),
+                ) { it.id },
+            )
+            "capability_rule_removed" -> projection.copy(
+                capability_rules = projection.capability_rules.filterNot {
+                    it.id == event.requiredString("rule_id")
+                },
+            )
             else -> projection
         }
         NotificationEventMapper.map(kind, event, json)?.let(mutableAlerts::tryEmit)

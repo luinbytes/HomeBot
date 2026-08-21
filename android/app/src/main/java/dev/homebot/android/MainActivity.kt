@@ -453,6 +453,19 @@ private fun ConnectedSettings(viewModel: MainViewModel, live: ConnectionState.Li
             endpointError?.let { Text(it, color = Danger) }
             Text("Sequence ${live.cursor} • authenticated device session", color = Muted, fontSize = 12.sp)
         }
+        item {
+            SectionTitle("Computer access policy")
+            Text(
+                "Rules are enforced by the HomeBot server. Paired devices can monitor them; only the owner desktop can change them.",
+                color = Muted,
+            )
+        }
+        items(live.snapshot.capability_rules, key = { it.id }) { rule ->
+            HomeBotCard(
+                rule.capability.name.lowercase().replace('_', ' '),
+                "${rule.effect.name.lowercase().replace('_', ' ')}${rule.action_prefix?.let { " • $it" } ?: ""}",
+            )
+        }
         item { SectionTitle("Routines") }
         items(state.routines, key = { it.id }) { routine ->
             Card(shape = CardShape) {

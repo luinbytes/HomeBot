@@ -20,6 +20,8 @@ Capabilities are evaluated server-side against authenticated owner/device, Bot, 
 
 Policy modes are deny, require approval, and allow. Deny wins over allow. High-risk operations such as deletion, credential access, external sending/publishing, payments, permission changes, remote Git mutation, arbitrary execution, and public-network exposure require a structured target-and-effect approval unless an equally specific persistent rule authorises them. Approval IDs are single-use, scoped, expiring, and bound to the canonical operation digest.
 
+Custom rules are durable SQLite metadata (never secret material), reload into the server policy engine after restart, and can be narrowed by paired device, Bot, chat, workspace, capability, and action prefix. Only the authenticated owner may create, update, delete, or read the immutable rule audit log; paired devices receive the current safe projection for monitoring but cannot administer policy. Every mutation appends a safe before-deletion/current-state snapshot to the audit history, and idempotent replay does not duplicate that history.
+
 The implemented `PolicyEngine` defaults unmatched requests to approval and evaluates authenticated owner/device, Bot, chat, workspace, capability and action scopes. Its private authorization proof cannot be supplied by a client. Approval records bind the full canonical request digest, expire, are consumed once, and become invalid after any policy revision. Filesystem write digests include the proposed content; terminal digests include executable, arguments, working directory and filtered environment; browser digests include the complete action. This prevents payload substitution after approval.
 
 ## Abuse cases and required mitigations

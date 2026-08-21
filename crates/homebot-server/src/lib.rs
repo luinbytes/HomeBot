@@ -3,6 +3,7 @@
 pub mod artifacts;
 mod attachments;
 mod bots;
+mod capability_rules;
 mod chats;
 mod checkpoints;
 mod groups;
@@ -104,6 +105,8 @@ pub struct AppState {
     trigger_events: broadcast::Sender<(String, Uuid)>,
     git_runtime: Option<Arc<GitRuntime>>,
     policy_engine: Arc<PolicyEngine>,
+    policy_loaded: Arc<AtomicBool>,
+    policy_hydration: Arc<Mutex<()>>,
     worktree_root: PathBuf,
 }
 
@@ -137,6 +140,8 @@ impl AppState {
                 std::time::Duration::from_secs(300),
                 Arc::new(NoopActivitySink),
             )),
+            policy_loaded: Arc::new(AtomicBool::new(false)),
+            policy_hydration: Arc::new(Mutex::new(())),
             worktree_root: std::env::temp_dir().join("homebot-worktrees"),
         }
     }
@@ -198,7 +203,19 @@ impl AppState {
     #[must_use]
     pub fn with_policy_engine(mut self, policy_engine: Arc<PolicyEngine>) -> Self {
         self.policy_engine = policy_engine;
+        self.policy_loaded.store(true, Ordering::Release);
         self
+    }
+
+    async fn ensure_policy_loaded(&self) -> Result<(), homebot_storage::StorageError> {
+        if self.policy_loaded.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        let _guard = self.policy_hydration.lock().await;
+        if !self.policy_loaded.load(Ordering::Acquire) {
+            capability_rules::reload_policy(self).await?;
+        }
+        Ok(())
     }
 }
 
@@ -211,6 +228,15 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/version", get(version))
         .route("/api/v1/pairing", post(pairing::create))
         .route("/api/v1/devices", get(pairing::list_devices))
+        .route("/api/v1/capability-rules", get(capability_rules::list))
+        .route(
+            "/api/v1/capability-rules/audit",
+            get(capability_rules::audit),
+        )
+        .route(
+            "/api/v1/capability-rules/{rule_id}",
+            put(capability_rules::upsert).delete(capability_rules::delete),
+        )
         .route("/api/v1/device", get(pairing::current_device))
         .route(
             "/api/v1/device/revoke",
@@ -801,6 +827,14 @@ async fn current_snapshot(state: &AppState) -> Snapshot {
         .await
         .unwrap_or_default();
     let chat_workspaces = workspaces::chat_summaries(state).await.unwrap_or_default();
+    let capability_rules = state
+        .storage
+        .capability_rules(state.owner_id)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|rule| capability_rules::summary(rule).ok())
+        .collect();
     Snapshot {
         bots: summaries,
         chats,
@@ -808,6 +842,7 @@ async fn current_snapshot(state: &AppState) -> Snapshot {
         skills,
         repository_workspaces,
         chat_workspaces,
+        capability_rules,
     }
 }
 

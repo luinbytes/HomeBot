@@ -8,9 +8,9 @@ This file is operational state for coding agents. It is not user-facing product 
 
 - Current milestone: M6, packaging, hardening and the v1 parity gate. M0 through M5 are verified complete.
 - Current Linear issue: 6C7-75, physical-platform, assistive-technology and live-provider release acceptance (`In Progress`, externally blocked).
-- Current Git branch: `feat/6c7-76-group-shared-policy`; its implementation tree is merged to public `main` and only this state handoff remains local.
-- Latest public and verified implementation commit: `7391c36207fe87024542c1fb7e194febe45e8197` (completed 6C7-76 on public `main`, exact tree `ad451acede6713456801f35532cf0a22df41b3b1`).
-- Latest verified GitHub Actions run: `32478602118`, all sixteen jobs passed, including Rust quality, Android, dependency gates, Linux and Arch packaging, both macOS architectures' builds/goldens/packages, and all resource probes.
+- Current Git branch: public `main`; local continuity branch `feat/6c7-76-group-shared-policy` has the same verified code/state tree.
+- Latest public and verified code commit before this handoff: `c0a4aec287a36f157ab33a9435d9dc1a2fc1be1f` (exact tree `389b8c140fb5341c53c5ec4d266c9872c04f18a1`). It includes completed 6C7-76 plus deterministic provider-queue test isolation discovered during the final handoff gate.
+- Latest verified GitHub Actions run: `32480288326`, all sixteen jobs passed, including Rust quality, Android, dependency gates, Linux and Arch packaging, both macOS architectures' builds/goldens/packages, and all resource probes.
 - Public repository: `https://github.com/luinbytes/HomeBot`.
 - Required commit identity: `luinbytes <42706009+luinbytes@users.noreply.github.com>`.
 
@@ -79,6 +79,7 @@ Current blockers:
 
 Verified at the latest remote baseline:
 
+- GitHub Actions run `32480288326` passed all sixteen jobs for public code tree `389b8c140fb5341c53c5ec4d266c9872c04f18a1`. It confirms the provider queue/context lifecycle fixtures no longer starve each other under the full concurrent server suite; PR #19 also synchronizes this handoff to 6C7-75.
 - GitHub Actions run `32478602118` passed all sixteen jobs for exact 6C7-76 tree `ad451acede6713456801f35532cf0a22df41b3b1`, merged as public `main` commit `7391c362`. It verifies 39 server tests, 36 storage tests, Android lint/tests/APK, Rust/schema/generated-Kotlin/security gates, Linux and both macOS builds/goldens/packages/resources, and the fresh Arch install/update/uninstall lifecycle. PRs #15 through #17 cover the group, policy and shared-computer slices.
 - GitHub Actions run `32471204374` passed all sixteen jobs for exact tree `e190fdebde97e97919fb01c4f8693b3aa7a4ff7c`, merged as public `main` commit `92c78fc`. It verifies 6C7-74's typed-reference migration and server/client contract alongside Android, Rust, packaging, visual, dependency and resource gates. PRs #11 through #14 collectively close every 6C7-74 acceptance row.
 - GitHub Actions run `32461879059` passed all sixteen jobs for public 6C7-70 commit `bf1a613`. Android lint/tests/APK, the five-cycle rejected-event cleanup stress test, strict Rust/workspace gates, fresh Arch package lifecycle and Linux/macOS Intel/macOS Apple Silicon process-resource budgets all passed.

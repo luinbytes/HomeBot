@@ -89,6 +89,10 @@ class HomeBotClientTest {
                             webSocket.send(snapshot(if (socketNumber == 1) 5 else 9))
                             if (socketNumber == 1) webSocket.close(1001, "fixture restart")
                         }
+
+                        override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
+                            webSocket.close(code, reason)
+                        }
                     })
                 }
                 else -> MockResponse().setResponseCode(404)
@@ -128,6 +132,10 @@ class HomeBotClientTest {
                                 webSocket.send(botChanged(5, "Nova"))
                                 webSocket.send(botChanged(5, "Duplicate must be ignored"))
                             }
+                        }
+
+                        override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
+                            webSocket.close(code, reason)
                         }
                     })
                 }

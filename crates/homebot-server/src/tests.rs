@@ -53,13 +53,22 @@ use sha2::{Digest, Sha256};
 use std::os::unix::fs::PermissionsExt;
 use std::{
     collections::HashMap,
-    sync::Arc,
+    sync::{Arc, OnceLock},
     time::{Duration, Instant},
 };
 use tokio::sync::{Mutex, mpsc, watch};
 use tokio::task::JoinHandle;
 use tokio_tungstenite::{connect_async, tungstenite::client::IntoClientRequest};
 use tower::ServiceExt;
+
+static PROVIDER_QUEUE_TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+async fn provider_queue_test_guard() -> tokio::sync::MutexGuard<'static, ()> {
+    PROVIDER_QUEUE_TEST_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .await
+}
 
 #[derive(Debug)]
 struct ChatFakeAdapter {
@@ -2219,6 +2228,7 @@ async fn provider_turn_streams_persists_approves_resumes_and_cancels()
 #[allow(clippy::too_many_lines)]
 async fn queued_followups_and_steering_are_idempotent_restart_durable_and_cancel_stable()
 -> Result<(), Box<dyn std::error::Error>> {
+    let _provider_queue_guard = provider_queue_test_guard().await;
     let directory = tempfile::tempdir()?;
     let database = directory.path().join("homebot.db");
     let storage = Storage::open(&database).await?;
@@ -2413,6 +2423,7 @@ async fn queued_followups_and_steering_are_idempotent_restart_durable_and_cancel
 #[allow(clippy::too_many_lines)]
 async fn queued_turns_plan_mode_compaction_and_reset_preserve_homebot_history()
 -> Result<(), Box<dyn std::error::Error>> {
+    let _provider_queue_guard = provider_queue_test_guard().await;
     let directory = tempfile::tempdir()?;
     let database = directory.path().join("homebot.db");
     let storage = Storage::open(&database).await?;

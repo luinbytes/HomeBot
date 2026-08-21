@@ -339,6 +339,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/skills/{skill_id}/export", get(skills::export))
         .route("/api/v1/skills/import", post(skills::import))
         .route("/api/v1/skills/{skill_id}/assignment", put(skills::assign))
+        .route("/api/v1/skills/{skill_id}/test", post(skills::test))
         .route(
             "/api/v1/workspaces",
             get(workspaces::list).post(workspaces::create),
@@ -452,6 +453,10 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/v1/routine-recordings/{recording_id}/finish",
             post(routines::finish_recording),
+        )
+        .route(
+            "/api/v1/routine-recordings/{recording_id}/finish-skill",
+            post(skills::finish_recording),
         )
         .route(
             "/api/v1/routine-recordings/{recording_id}/cancel",

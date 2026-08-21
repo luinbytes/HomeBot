@@ -315,6 +315,9 @@ data class DuplicateSkillRequest(val request_id: String, val idempotency_key: St
 data class SkillAssignmentRequest(val request_id: String, val idempotency_key: String, val bot_id: String, val enabled: Boolean)
 
 @Serializable
+data class SkillTestSummary(val skill_id: String, val skill_version_id: String, val version: Int, val prompt_preview: String, val capability_policy_enforced: Boolean)
+
+@Serializable
 data class SkillBundle(val format_version: Int, val name: String, val description: String, val definition: SkillDefinition)
 
 @Serializable

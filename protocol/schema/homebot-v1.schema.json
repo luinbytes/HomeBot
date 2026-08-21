@@ -190,6 +190,9 @@
     "skill_bundle": {
       "$ref": "#/$defs/SkillBundle"
     },
+    "skill_test": {
+      "$ref": "#/$defs/SkillTestSummary"
+    },
     "start_routine_recording_request": {
       "$ref": "#/$defs/StartRoutineRecordingRequest"
     },
@@ -260,6 +263,7 @@
     "import_skill_request",
     "skill_bundle",
     "skill",
+    "skill_test",
     "applied_skill",
     "create_repository_workspace_request",
     "attach_chat_workspace_request",
@@ -5027,6 +5031,38 @@
         "bot_ids",
         "created_at_unix_ms",
         "updated_at_unix_ms"
+      ]
+    },
+    "SkillTestSummary": {
+      "type": "object",
+      "properties": {
+        "capability_policy_enforced": {
+          "type": "boolean"
+        },
+        "prompt_preview": {
+          "type": "string"
+        },
+        "skill_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "skill_version_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "version": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "skill_id",
+        "skill_version_id",
+        "version",
+        "prompt_preview",
+        "capability_policy_enforced"
       ]
     },
     "SkillToolReference": {

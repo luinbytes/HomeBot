@@ -471,8 +471,12 @@ private fun ConnectedSettings(viewModel: MainViewModel, live: ConnectionState.Li
                             Text(if (assigned) "Unassign" else "Assign to ${bot.name}")
                         }
                     }
+                    TextButton(onClick = { viewModel.testSkill(skill.id) }) { Text("Test safely") }
                 }
             }
+        }
+        state.skillTestPreview?.let { preview ->
+            item { HomeBotCard("Skill test preview", preview) }
         }
         item { SectionTitle("Plugins & MCP") }
         items(state.plugins, key = { it.id }) { plugin ->

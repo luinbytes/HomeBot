@@ -43,6 +43,7 @@ data class AndroidProductState(
     val highlightedMessageId: String? = null,
     val searchQuery: String = "",
     val searchResults: List<SearchResultSummary> = emptyList(),
+    val skillTestPreview: String? = null,
     val loading: Boolean = false,
     val error: String? = null,
 )

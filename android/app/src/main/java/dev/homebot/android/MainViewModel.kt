@@ -134,6 +134,23 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         )
     }
 
+    fun takeOverBrowser(sessionId: String, approvalId: String? = null) = perform {
+        homeBot.client.takeOverBrowser(sessionId, approvalId).getOrThrow()
+    }
+
+    fun returnBrowserToBot(sessionId: String) = perform {
+        homeBot.client.returnBrowserToBot(sessionId).getOrThrow()
+    }
+
+    fun watchBrowser(sessionId: String) = perform {
+        val result = homeBot.client.watchBrowser(sessionId).getOrThrow()
+        result.artifact?.let { artifact ->
+            mutableProduct.value = mutableProduct.value.copy(
+                highlightedActivityId = artifact.activity_id,
+            )
+        }
+    }
+
     fun selectRoutine(routineId: String) = perform {
         val runs = homeBot.client.routineRuns(routineId).getOrThrow()
         val triggers = homeBot.client.routineTriggers(routineId).getOrThrow()

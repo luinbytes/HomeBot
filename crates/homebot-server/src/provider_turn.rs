@@ -186,7 +186,9 @@ pub(super) async fn resolve_approval(
         .storage
         .chat_approval(state.owner_id, approval_id)
         .await?;
-    if approval.capability.starts_with("homebot.git.") {
+    if approval.capability.starts_with("homebot.git.")
+        || approval.capability.starts_with("homebot.browser.")
+    {
         state.ensure_policy_loaded().await?;
         state
             .policy_engine
@@ -199,7 +201,7 @@ pub(super) async fn resolve_approval(
                 },
             )
             .await
-            .map_err(|_| ApiError::conflict("The Git approval is no longer active"))?;
+            .map_err(|_| ApiError::conflict("The capability approval is no longer active"))?;
         return Ok(());
     }
     let operation = state

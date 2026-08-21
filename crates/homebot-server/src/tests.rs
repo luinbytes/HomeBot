@@ -9,15 +9,17 @@ use futures_util::{SinkExt, StreamExt};
 use homebot_protocol::{
     AddGroupParticipantRequest, AppendRoutineRecordingRequest, ApprovalDecisionRequest,
     ArtifactSummary, AttachChatWorkspaceRequest, Attachment, BotColor, BotMutationRequest,
-    BotPermissionProfile, BotProviderStatus, BotResponse, BotShape, CapabilityClass,
-    CapabilityRuleAuditSummary, CapabilityRuleEffect, CapabilityRuleSummary, ChatTimelineResponse,
-    ChatWorkspaceSummary, CheckpointDiffResponse, CheckpointPhase, CheckpointRestoreSummary,
-    CompactWorkingContextRequest, ContextCompactionStatus, ContextCompactionStrategy,
-    ConversationReconciliation, CreateAttachmentRequest, CreateAttachmentResponse,
-    CreateBotRequest, CreateDirectChatRequest, CreateDirectChatResponse, CreateGroupChatRequest,
-    CreateGroupChatResponse, CreateLocalMcpPluginRequest, CreatePairingRequest,
-    CreatePullRequestRequest, CreateRepositoryWorkspaceRequest, CreateRoutineRequest,
-    CreateRoutineTriggerRequest, CreateSkillRequest, DeleteBotRequest,
+    BotPermissionProfile, BotProviderStatus, BotResponse, BotShape, BrowserActionRequest,
+    BrowserActionResponse, BrowserCommand, BrowserController, BrowserMutationRequest,
+    BrowserSessionStatus, CapabilityClass, CapabilityRuleAuditSummary, CapabilityRuleEffect,
+    CapabilityRuleSummary, ChatTimelineResponse, ChatWorkspaceSummary, CheckpointDiffResponse,
+    CheckpointPhase, CheckpointRestoreSummary, CompactWorkingContextRequest,
+    ContextCompactionStatus, ContextCompactionStrategy, ConversationReconciliation,
+    CreateAttachmentRequest, CreateAttachmentResponse, CreateBotRequest,
+    CreateBrowserSessionRequest, CreateDirectChatRequest, CreateDirectChatResponse,
+    CreateGroupChatRequest, CreateGroupChatResponse, CreateLocalMcpPluginRequest,
+    CreatePairingRequest, CreatePullRequestRequest, CreateRepositoryWorkspaceRequest,
+    CreateRoutineRequest, CreateRoutineTriggerRequest, CreateSkillRequest, DeleteBotRequest,
     DeliverRoutineTriggerRequest, DetachChatWorkspaceRequest, DeviceSessionSummary,
     DuplicateRoutineRequest, DuplicateSkillRequest, ExchangePairingRequest,
     FinalizeAttachmentRequest, GlobalSearchResponse, GroupBotStatus, GroupTimelineResponse,
@@ -246,6 +248,113 @@ impl ProviderAdapter for ChatFakeAdapter {
 
     async fn recover(&self) -> Result<Vec<ProviderRun>, ProviderError> {
         Ok(Vec::new())
+    }
+}
+
+#[derive(Debug)]
+struct BrowserFakeRuntime {
+    policy: Arc<homebot_tools::PolicyEngine>,
+    sessions: Mutex<HashMap<Uuid, String>>,
+}
+
+#[async_trait::async_trait]
+impl browser_sessions::BrowserRuntime for BrowserFakeRuntime {
+    async fn create(
+        &self,
+        context: homebot_tools::OperationContext,
+        profile: &homebot_tools::BrowserSessionProfile,
+        approval_id: Option<Uuid>,
+    ) -> Result<Uuid, homebot_tools::ToolError> {
+        let request = homebot_tools::CapabilityRequest {
+            context,
+            capability: homebot_tools::CapabilityClass::BrowserAct,
+            action: "browser.session.create".to_owned(),
+            canonical_resource: format!("profile:{}", profile.profile_id),
+            summary: "Open browser profile".to_owned(),
+            destructive: false,
+        };
+        let _authorization = self.policy.authorize(&request, approval_id).await?;
+        let id = Uuid::now_v7();
+        self.sessions
+            .lock()
+            .await
+            .insert(id, "about:blank".to_owned());
+        Ok(id)
+    }
+
+    async fn execute(
+        &self,
+        context: homebot_tools::OperationContext,
+        session_id: Uuid,
+        action: homebot_tools::BrowserAction,
+        approval_id: Option<Uuid>,
+    ) -> Result<homebot_tools::BrowserResult, homebot_tools::ToolError> {
+        let action_name = match action {
+            homebot_tools::BrowserAction::Navigate { .. } => "browser.navigate",
+            homebot_tools::BrowserAction::CurrentUrl => "browser.current_url",
+            homebot_tools::BrowserAction::CaptureScreenshot => "browser.screenshot",
+            homebot_tools::BrowserAction::Evaluate { .. } => "browser.evaluate",
+        };
+        let capability = if matches!(
+            &action,
+            homebot_tools::BrowserAction::CurrentUrl
+                | homebot_tools::BrowserAction::CaptureScreenshot
+        ) {
+            homebot_tools::CapabilityClass::BrowserObserve
+        } else {
+            homebot_tools::CapabilityClass::BrowserAct
+        };
+        let request = homebot_tools::CapabilityRequest {
+            context,
+            capability,
+            action: action_name.to_owned(),
+            canonical_resource: format!("browser-session:{session_id}:{action_name}"),
+            summary: "Run browser action".to_owned(),
+            destructive: capability == homebot_tools::CapabilityClass::BrowserAct,
+        };
+        let _authorization = self.policy.authorize(&request, approval_id).await?;
+        let mut sessions = self.sessions.lock().await;
+        let url = sessions
+            .get_mut(&session_id)
+            .ok_or(homebot_tools::ToolError::Unavailable)?;
+        match action {
+            homebot_tools::BrowserAction::Navigate { url: next } => {
+                *url = next;
+                Ok(homebot_tools::BrowserResult::NavigationAccepted)
+            }
+            homebot_tools::BrowserAction::CurrentUrl => {
+                Ok(homebot_tools::BrowserResult::Url { url: url.clone() })
+            }
+            homebot_tools::BrowserAction::CaptureScreenshot => {
+                Ok(homebot_tools::BrowserResult::ScreenshotPng {
+                    bytes: b"png".to_vec(),
+                })
+            }
+            homebot_tools::BrowserAction::Evaluate { .. } => {
+                Err(homebot_tools::ToolError::InvalidRequest(
+                    "evaluation disabled in fixture".to_owned(),
+                ))
+            }
+        }
+    }
+
+    async fn close(
+        &self,
+        context: homebot_tools::OperationContext,
+        session_id: Uuid,
+        approval_id: Option<Uuid>,
+    ) -> Result<(), homebot_tools::ToolError> {
+        let request = homebot_tools::CapabilityRequest {
+            context,
+            capability: homebot_tools::CapabilityClass::BrowserAct,
+            action: "browser.session.close".to_owned(),
+            canonical_resource: format!("browser-session:{session_id}"),
+            summary: "Close browser".to_owned(),
+            destructive: false,
+        };
+        let _authorization = self.policy.authorize(&request, approval_id).await?;
+        self.sessions.lock().await.remove(&session_id);
+        Ok(())
     }
 }
 
@@ -5627,5 +5736,291 @@ async fn capability_rules_are_owner_managed_idempotent_audited_and_restart_enfor
     assert_eq!(audit.len(), 2);
     assert_eq!(audit[1].action, "deleted");
     assert_eq!(audit[1].snapshot["action_prefix"], "git.push");
+    Ok(())
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn browser_session_watch_takeover_approval_return_and_restart_are_server_owned()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let database = directory.path().join("homebot.db");
+    let storage = Storage::open(&database).await?;
+    let bot = storage
+        .create_bot(
+            Uuid::nil(),
+            homebot_domain::Bot::create("Scout", "Browser")?,
+            1,
+        )
+        .await?;
+    let second_bot = storage
+        .create_bot(
+            Uuid::nil(),
+            homebot_domain::Bot::create("Nova", "Handoff")?,
+            2,
+        )
+        .await?;
+    let chat = storage
+        .create_group_chat(
+            Uuid::nil(),
+            Uuid::now_v7(),
+            "Shared computer",
+            &[bot.id.0, second_bot.id.0],
+            bot.id.0,
+            12,
+            2,
+            3,
+        )
+        .await?;
+    let policy = Arc::new(homebot_tools::PolicyEngine::new(
+        Duration::from_secs(60),
+        Arc::new(homebot_tools::NoopActivitySink),
+    ));
+    policy
+        .replace_rules(vec![
+            homebot_tools::PolicyRule::new(
+                homebot_tools::CapabilityClass::BrowserAct,
+                homebot_tools::PolicyEffect::Allow,
+            )
+            .action_prefix("browser.session.create"),
+            homebot_tools::PolicyRule::new(
+                homebot_tools::CapabilityClass::BrowserAct,
+                homebot_tools::PolicyEffect::Allow,
+            )
+            .action_prefix("browser.session.close"),
+            homebot_tools::PolicyRule::new(
+                homebot_tools::CapabilityClass::BrowserAct,
+                homebot_tools::PolicyEffect::RequireApproval,
+            )
+            .action_prefix("browser.navigate"),
+            homebot_tools::PolicyRule::new(
+                homebot_tools::CapabilityClass::BrowserAct,
+                homebot_tools::PolicyEffect::RequireApproval,
+            )
+            .action_prefix("browser.takeover"),
+            homebot_tools::PolicyRule::new(
+                homebot_tools::CapabilityClass::BrowserObserve,
+                homebot_tools::PolicyEffect::Allow,
+            ),
+        ])
+        .await;
+    let browser = Arc::new(BrowserFakeRuntime {
+        policy: Arc::clone(&policy),
+        sessions: Mutex::new(HashMap::new()),
+    });
+    let app = router(
+        AppState::new(storage.clone(), "correct-token")
+            .with_policy_engine(policy)
+            .with_browser_runtime(browser.clone()),
+    );
+    let create = CreateBrowserSessionRequest {
+        request_id: Uuid::now_v7(),
+        idempotency_key: Uuid::now_v7(),
+        chat_id: chat.id,
+        bot_id: bot.id.0,
+        profile_id: Uuid::now_v7(),
+        profile_name: "Shared login".to_owned(),
+        approval_id: None,
+    };
+    let created = app
+        .clone()
+        .oneshot(json_request("POST", "/api/v1/browser-sessions", &create))
+        .await?;
+    assert_eq!(created.status(), StatusCode::CREATED);
+    let created: BrowserActionResponse = response_json(created).await?;
+    let session_id = created.session.id;
+    assert_eq!(created.session.controller, BrowserController::Bot);
+    let replay = app
+        .clone()
+        .oneshot(json_request("POST", "/api/v1/browser-sessions", &create))
+        .await?;
+    assert_eq!(replay.status(), StatusCode::OK);
+    assert_eq!(browser.sessions.lock().await.len(), 1);
+    storage
+        .handoff_group_ownership(
+            Uuid::nil(),
+            chat.id,
+            Uuid::now_v7(),
+            bot.id.0,
+            second_bot.id.0,
+            None,
+            "Continue the browser task",
+            4,
+        )
+        .await?;
+    assert_eq!(
+        storage
+            .browser_session(Uuid::nil(), session_id)
+            .await?
+            .profile_name,
+        "Shared login"
+    );
+
+    let mut navigate = BrowserActionRequest {
+        request_id: Uuid::now_v7(),
+        idempotency_key: Uuid::now_v7(),
+        command: BrowserCommand::Navigate {
+            url: "https://example.test/private".to_owned(),
+        },
+        approval_id: None,
+    };
+    let pending = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            &format!("/api/v1/browser-sessions/{session_id}/actions"),
+            &navigate,
+        ))
+        .await?;
+    assert_eq!(pending.status(), StatusCode::ACCEPTED);
+    let pending: BrowserActionResponse = response_json(pending).await?;
+    assert_eq!(
+        pending.session.status,
+        BrowserSessionStatus::AwaitingApproval
+    );
+    let approval = pending.approval.ok_or("missing browser approval")?;
+    let decision = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            &format!("/api/v1/approvals/{}/decision", approval.id),
+            &ApprovalDecisionRequest {
+                request_id: Uuid::now_v7(),
+                idempotency_key: Uuid::now_v7(),
+                allow: true,
+            },
+        ))
+        .await?;
+    assert_eq!(decision.status(), StatusCode::OK);
+    navigate.approval_id = Some(approval.id);
+    let navigated = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            &format!("/api/v1/browser-sessions/{session_id}/actions"),
+            &navigate,
+        ))
+        .await?;
+    assert_eq!(navigated.status(), StatusCode::OK);
+
+    let current = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            &format!("/api/v1/browser-sessions/{session_id}/actions"),
+            &BrowserActionRequest {
+                request_id: Uuid::now_v7(),
+                idempotency_key: Uuid::now_v7(),
+                command: BrowserCommand::CurrentUrl,
+                approval_id: None,
+            },
+        ))
+        .await?;
+    assert_eq!(current.status(), StatusCode::OK);
+    let current: BrowserActionResponse = response_json(current).await?;
+    assert_eq!(
+        current.session.current_url.as_deref(),
+        Some("https://example.test/private")
+    );
+
+    let screenshot = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            &format!("/api/v1/browser-sessions/{session_id}/actions"),
+            &BrowserActionRequest {
+                request_id: Uuid::now_v7(),
+                idempotency_key: Uuid::now_v7(),
+                command: BrowserCommand::CaptureScreenshot,
+                approval_id: None,
+            },
+        ))
+        .await?;
+    assert_eq!(screenshot.status(), StatusCode::OK);
+    assert!(
+        response_json::<BrowserActionResponse>(screenshot)
+            .await?
+            .artifact
+            .is_some()
+    );
+
+    let mut takeover = BrowserMutationRequest {
+        request_id: Uuid::now_v7(),
+        idempotency_key: Uuid::now_v7(),
+        approval_id: None,
+    };
+    let pending = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            &format!("/api/v1/browser-sessions/{session_id}/takeover"),
+            &takeover,
+        ))
+        .await?;
+    assert_eq!(pending.status(), StatusCode::ACCEPTED);
+    let pending: BrowserActionResponse = response_json(pending).await?;
+    let approval = pending.approval.ok_or("missing takeover approval")?;
+    let decision = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            &format!("/api/v1/approvals/{}/decision", approval.id),
+            &ApprovalDecisionRequest {
+                request_id: Uuid::now_v7(),
+                idempotency_key: Uuid::now_v7(),
+                allow: true,
+            },
+        ))
+        .await?;
+    assert_eq!(decision.status(), StatusCode::OK);
+    takeover.approval_id = Some(approval.id);
+    let controlled = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            &format!("/api/v1/browser-sessions/{session_id}/takeover"),
+            &takeover,
+        ))
+        .await?;
+    assert_eq!(controlled.status(), StatusCode::OK);
+    assert_eq!(
+        response_json::<BrowserActionResponse>(controlled)
+            .await?
+            .session
+            .controller,
+        BrowserController::User
+    );
+    let returned = app
+        .oneshot(json_request(
+            "POST",
+            &format!("/api/v1/browser-sessions/{session_id}/return"),
+            &BrowserMutationRequest {
+                request_id: Uuid::now_v7(),
+                idempotency_key: Uuid::now_v7(),
+                approval_id: None,
+            },
+        ))
+        .await?;
+    assert_eq!(returned.status(), StatusCode::OK);
+    assert_eq!(
+        response_json::<BrowserActionResponse>(returned)
+            .await?
+            .session
+            .controller,
+        BrowserController::Bot
+    );
+
+    let reopened = Storage::open(&database).await?;
+    let durable = reopened.browser_session(Uuid::nil(), session_id).await?;
+    assert_eq!(durable.profile_name, "Shared login");
+    assert_eq!(
+        durable.current_url.as_deref(),
+        Some("https://example.test/private")
+    );
+    let persisted: Vec<String> =
+        sqlx::query_scalar("SELECT display_name || directory_ref FROM browser_profiles")
+            .fetch_all(reopened.pool())
+            .await?;
+    assert!(persisted.iter().all(|value| !value.contains("private")));
     Ok(())
 }

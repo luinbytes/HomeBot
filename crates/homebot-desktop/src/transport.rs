@@ -12,6 +12,7 @@ use std::{
 use futures_util::{SinkExt, StreamExt};
 use homebot_protocol::{
     ApprovalDecisionRequest, AttachChatWorkspaceRequest, BotMutationRequest, BotResponse,
+    BrowserActionRequest, BrowserActionResponse, BrowserCommand, BrowserMutationRequest,
     ChatTimelineResponse, ChatWorkspaceSummary, CheckpointDiffResponse, ClientMessage,
     CompactWorkingContextRequest, CreateAttachmentRequest, CreateAttachmentResponse,
     CreateBotRequest, CreateDirectChatRequest, CreateDirectChatResponse, CreatePairingRequest,
@@ -157,6 +158,7 @@ pub enum DesktopEvent {
     Devices(Vec<DeviceSessionSummary>),
     PairingOffer(PairingOffer),
     DeviceRevoked(DeviceSessionSummary),
+    BrowserAction(BrowserActionResponse),
     CheckpointDiff(CheckpointDiffResponse),
     Search(GlobalSearchResponse),
     MutationFailed(TransportFailure),
@@ -183,6 +185,12 @@ pub enum DesktopCommand {
         allow_insecure_private_network: bool,
     },
     RevokeDevice(Uuid),
+    BrowserTakeover {
+        session_id: Uuid,
+        approval_id: Option<Uuid>,
+    },
+    BrowserReturn(Uuid),
+    BrowserWatch(Uuid),
     Search(String),
     Shutdown,
 }

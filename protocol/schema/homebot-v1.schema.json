@@ -31,6 +31,18 @@
     "bot_response": {
       "$ref": "#/$defs/BotResponse"
     },
+    "browser_action_request": {
+      "$ref": "#/$defs/BrowserActionRequest"
+    },
+    "browser_action_response": {
+      "$ref": "#/$defs/BrowserActionResponse"
+    },
+    "browser_mutation_request": {
+      "$ref": "#/$defs/BrowserMutationRequest"
+    },
+    "browser_session": {
+      "$ref": "#/$defs/BrowserSessionSummary"
+    },
     "capability_rule": {
       "$ref": "#/$defs/CapabilityRuleSummary"
     },
@@ -63,6 +75,9 @@
     },
     "create_bot_request": {
       "$ref": "#/$defs/CreateBotRequest"
+    },
+    "create_browser_session_request": {
+      "$ref": "#/$defs/CreateBrowserSessionRequest"
     },
     "create_direct_chat_request": {
       "$ref": "#/$defs/CreateDirectChatRequest"
@@ -361,7 +376,12 @@
     "approval_decision_request",
     "capability_rule",
     "upsert_capability_rule_request",
-    "capability_rule_audit"
+    "capability_rule_audit",
+    "browser_session",
+    "create_browser_session_request",
+    "browser_mutation_request",
+    "browser_action_request",
+    "browser_action_response"
   ],
   "$defs": {
     "ActivityDetail": {
@@ -1067,6 +1087,218 @@
         "advanced"
       ]
     },
+    "BrowserActionRequest": {
+      "type": "object",
+      "properties": {
+        "approval_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid"
+        },
+        "command": {
+          "$ref": "#/$defs/BrowserCommand"
+        },
+        "idempotency_key": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "request_id": {
+          "type": "string",
+          "format": "uuid"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "request_id",
+        "idempotency_key",
+        "command"
+      ]
+    },
+    "BrowserActionResponse": {
+      "type": "object",
+      "properties": {
+        "approval": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ApprovalSummary"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "artifact": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactSummary"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "session": {
+          "$ref": "#/$defs/BrowserSessionSummary"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "session"
+      ]
+    },
+    "BrowserCommand": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "navigate"
+            },
+            "url": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "url"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "current_url"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "capture_screenshot"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ]
+        }
+      ]
+    },
+    "BrowserController": {
+      "type": "string",
+      "enum": [
+        "bot",
+        "user"
+      ]
+    },
+    "BrowserMutationRequest": {
+      "type": "object",
+      "properties": {
+        "approval_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid"
+        },
+        "idempotency_key": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "request_id": {
+          "type": "string",
+          "format": "uuid"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "request_id",
+        "idempotency_key"
+      ]
+    },
+    "BrowserSessionStatus": {
+      "type": "string",
+      "enum": [
+        "active",
+        "awaiting_approval",
+        "closed",
+        "failed"
+      ]
+    },
+    "BrowserSessionSummary": {
+      "type": "object",
+      "properties": {
+        "bot_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "chat_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "controller": {
+          "$ref": "#/$defs/BrowserController"
+        },
+        "created_at_ms": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "current_url": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "pending_approval_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid"
+        },
+        "profile_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "profile_name": {
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/$defs/BrowserSessionStatus"
+        },
+        "updated_at_ms": {
+          "type": "integer",
+          "format": "int64"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "chat_id",
+        "bot_id",
+        "profile_id",
+        "profile_name",
+        "controller",
+        "status",
+        "created_at_ms",
+        "updated_at_ms"
+      ]
+    },
     "CapabilityClass": {
       "type": "string",
       "enum": [
@@ -1727,6 +1959,50 @@
         "shape",
         "color",
         "permission_profile"
+      ]
+    },
+    "CreateBrowserSessionRequest": {
+      "type": "object",
+      "properties": {
+        "approval_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid"
+        },
+        "bot_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "chat_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "idempotency_key": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "profile_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "profile_name": {
+          "type": "string"
+        },
+        "request_id": {
+          "type": "string",
+          "format": "uuid"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "request_id",
+        "idempotency_key",
+        "chat_id",
+        "bot_id",
+        "profile_id",
+        "profile_name"
       ]
     },
     "CreateDirectChatRequest": {
@@ -4877,6 +5153,22 @@
           "properties": {
             "kind": {
               "type": "string",
+              "const": "browser_session_changed"
+            },
+            "session": {
+              "$ref": "#/$defs/BrowserSessionSummary"
+            }
+          },
+          "required": [
+            "kind",
+            "session"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
               "const": "queued_prompt_changed"
             },
             "prompt": {
@@ -5596,6 +5888,13 @@
           "type": "array",
           "items": {
             "$ref": "#/$defs/BotSummary"
+          }
+        },
+        "browser_sessions": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/BrowserSessionSummary"
           }
         },
         "capability_rules": {

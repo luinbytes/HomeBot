@@ -121,6 +121,9 @@ pub enum ServerEventBody {
     CapabilityRuleRemoved {
         rule_id: Uuid,
     },
+    BrowserSessionChanged {
+        session: BrowserSessionSummary,
+    },
     QueuedPromptChanged {
         prompt: QueuedPromptSummary,
     },
@@ -234,6 +237,8 @@ pub struct Snapshot {
     pub chat_workspaces: Vec<ChatWorkspaceSummary>,
     #[serde(default)]
     pub capability_rules: Vec<CapabilityRuleSummary>,
+    #[serde(default)]
+    pub browser_sessions: Vec<BrowserSessionSummary>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
@@ -913,6 +918,83 @@ pub struct CapabilityRuleAuditSummary {
     pub action: String,
     pub snapshot: serde_json::Value,
     pub created_at_ms: i64,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BrowserController {
+    Bot,
+    User,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BrowserSessionStatus {
+    Active,
+    AwaitingApproval,
+    Closed,
+    Failed,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct BrowserSessionSummary {
+    pub id: Uuid,
+    pub chat_id: Uuid,
+    pub bot_id: Uuid,
+    pub profile_id: Uuid,
+    pub profile_name: String,
+    pub current_url: Option<String>,
+    pub controller: BrowserController,
+    pub status: BrowserSessionStatus,
+    pub pending_approval_id: Option<Uuid>,
+    pub created_at_ms: i64,
+    pub updated_at_ms: i64,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CreateBrowserSessionRequest {
+    pub request_id: Uuid,
+    pub idempotency_key: Uuid,
+    pub chat_id: Uuid,
+    pub bot_id: Uuid,
+    pub profile_id: Uuid,
+    pub profile_name: String,
+    pub approval_id: Option<Uuid>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct BrowserMutationRequest {
+    pub request_id: Uuid,
+    pub idempotency_key: Uuid,
+    pub approval_id: Option<Uuid>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum BrowserCommand {
+    Navigate { url: String },
+    CurrentUrl,
+    CaptureScreenshot,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct BrowserActionRequest {
+    pub request_id: Uuid,
+    pub idempotency_key: Uuid,
+    pub command: BrowserCommand,
+    pub approval_id: Option<Uuid>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct BrowserActionResponse {
+    pub session: BrowserSessionSummary,
+    pub approval: Option<ApprovalSummary>,
+    pub artifact: Option<ArtifactSummary>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
@@ -1774,6 +1856,11 @@ pub struct ProtocolV1Schema {
     pub capability_rule: CapabilityRuleSummary,
     pub upsert_capability_rule_request: UpsertCapabilityRuleRequest,
     pub capability_rule_audit: CapabilityRuleAuditSummary,
+    pub browser_session: BrowserSessionSummary,
+    pub create_browser_session_request: CreateBrowserSessionRequest,
+    pub browser_mutation_request: BrowserMutationRequest,
+    pub browser_action_request: BrowserActionRequest,
+    pub browser_action_response: BrowserActionResponse,
 }
 
 /// Checks whether a client protocol is in the supported inclusive range.

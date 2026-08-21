@@ -66,6 +66,30 @@ pub(super) async fn execute_command(
         DesktopCommand::RevokeDevice(device_id) => {
             revoke_device(client, config, events, device_id).await
         }
+        DesktopCommand::BrowserTakeover {
+            session_id,
+            approval_id,
+        } => browser_mutation(client, config, events, session_id, "takeover", approval_id).await,
+        DesktopCommand::BrowserReturn(session_id) => {
+            browser_mutation(client, config, events, session_id, "return", None).await
+        }
+        DesktopCommand::BrowserWatch(session_id) => {
+            let body = super::BrowserActionRequest {
+                request_id: Uuid::now_v7(),
+                idempotency_key: Uuid::now_v7(),
+                command: super::BrowserCommand::CaptureScreenshot,
+                approval_id: None,
+            };
+            let response = post_json(
+                client,
+                config,
+                &format!("/api/v1/browser-sessions/{session_id}/actions"),
+                &body,
+            )
+            .await?;
+            let _ = events.send(DesktopEvent::BrowserAction(response));
+            Ok(())
+        }
         DesktopCommand::Search(query) => {
             let response = response_json(
                 authenticated(client, config, Method::GET, "/api/v1/search")
@@ -80,6 +104,30 @@ pub(super) async fn execute_command(
         }
         DesktopCommand::Shutdown => Ok(()),
     }
+}
+
+async fn browser_mutation(
+    client: &Client,
+    config: &RuntimeConfig,
+    events: &Sender<DesktopEvent>,
+    session_id: Uuid,
+    action: &str,
+    approval_id: Option<Uuid>,
+) -> Result<(), TransportFailure> {
+    let body = super::BrowserMutationRequest {
+        request_id: Uuid::now_v7(),
+        idempotency_key: Uuid::now_v7(),
+        approval_id,
+    };
+    let response = post_json(
+        client,
+        config,
+        &format!("/api/v1/browser-sessions/{session_id}/{action}"),
+        &body,
+    )
+    .await?;
+    let _ = events.send(DesktopEvent::BrowserAction(response));
+    Ok(())
 }
 
 async fn load_devices(

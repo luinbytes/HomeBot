@@ -68,7 +68,7 @@ test ! -e "$temporary/rejected.json"
 
 cat > "$temporary/bin/apksigner" <<'SH'
 #!/bin/sh
-printf '%s\n' 'Verifies' 'Signer #1 certificate SHA-256 digest: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef'
+printf '%s\n' 'Verifies' 'Signer #1 certificate sha-256 digest: 01:23:45:67:89:ab:cd:ef:01:23:45:67:89:ab:cd:ef:01:23:45:67:89:ab:cd:ef:01:23:45:67:89:ab:cd:ef'
 SH
 cat > "$temporary/bin/aapt" <<'SH'
 #!/bin/sh

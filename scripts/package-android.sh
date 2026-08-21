@@ -25,7 +25,13 @@ trap 'rm -rf "$temporary"' EXIT HUP INT TERM
 verification="$temporary/apksigner.txt"
 "$apksigner" verify --verbose --print-certs "$input" > "$verification"
 grep -q '^Verifies$' "$verification"
-certificate_sha256=$(sed -n 's/^Signer #1 certificate SHA-256 digest: //p' "$verification" | head -1)
+certificate_sha256=$(
+  awk 'tolower($0) ~ /certificate sha-256 digest:/ {
+    sub(/^.*[Dd][Ii][Gg][Ee][Ss][Tt]:[[:space:]]*/, "")
+    print
+    exit
+  }' "$verification" | tr -d ':[:space:]'
+)
 case "$certificate_sha256" in
   ''|*[!0-9a-fA-F]*) echo "APK certificate digest is unavailable" >&2; exit 2;;
 esac

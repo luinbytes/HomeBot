@@ -255,6 +255,27 @@ class HomeBotClientTest {
         assertTrue(finalize.body.readUtf8().contains("sha256"))
     }
 
+    @Test
+    fun servicesProjectionReadsOnlyServerOwnedStatusesAndOpaqueSecretReferences() = runBlocking {
+        server.enqueue(jsonResponse(PLUGINS_RESPONSE))
+        server.enqueue(jsonResponse(SECRETS_RESPONSE))
+        server.enqueue(jsonResponse(CURRENT_DEVICE_RESPONSE))
+        server.start()
+        sessions.save(credentials())
+
+        val plugins = client().plugins().getOrThrow()
+        val secrets = client().secrets().getOrThrow()
+        val device = client().currentDevice().getOrThrow()
+
+        assertEquals("Repository MCP", plugins.single().name)
+        assertEquals("ready", secrets.single().status)
+        assertFalse(secrets.single().toString().contains("secret-value"))
+        assertEquals("Pixel 9", device.name)
+        repeat(3) {
+            assertEquals("Bearer hbds_fixture_session", server.takeRequest().getHeader("Authorization"))
+        }
+    }
+
     private fun client(reconnectDelayMs: (Int) -> Long = { 1 }) = HomeBotClient(
         http = OkHttpClient.Builder().build(),
         sessions = sessions,
@@ -290,6 +311,9 @@ class HomeBotClientTest {
         const val QUEUED_RESPONSE = """{"kind":"queued","prompt":{"id":"00000000-0000-0000-0000-000000000040","chat_id":"$CHAT_ID","content":"Follow up","attachment_ids":[],"skill_ids":[],"kind":"steering","position":0,"created_at_ms":1}}"""
         const val ATTACHMENT_OFFER = """{"attachment_id":"$ATTACHMENT_ID","upload_url":"/api/v1/attachments/$ATTACHMENT_ID/content","expires_at_unix_ms":9999999999999}"""
         const val ATTACHMENT_RESPONSE = """{"id":"$ATTACHMENT_ID","filename":"notes.txt","media_type":"text/plain","size_bytes":4,"sha256":"4740ae6347b0172c98f8364c3e4b3e45a69e2afc6f6f6f24913a24f2c8472a8"}"""
+        const val PLUGINS_RESPONSE = """[{"id":"00000000-0000-0000-0000-000000000060","name":"Repository MCP","description":"Repository tools","kind":"local_mcp","enabled":true,"connection_state":"connected","auth_state":"ready","tools":[],"bot_ids":[],"updated_at_unix_ms":1}]"""
+        const val SECRETS_RESPONSE = """[{"id":"00000000-0000-0000-0000-000000000070","label":"OpenAI work","status":"ready","created_at_unix_ms":1,"updated_at_unix_ms":1}]"""
+        const val CURRENT_DEVICE_RESPONSE = """{"id":"$DEVICE_ID","name":"Pixel 9","endpoint_kind":"loopback","created_at_unix_ms":1,"last_seen_at_unix_ms":2,"revoked_at_unix_ms":null}"""
 
         fun hello(resume: String) = """{"protocol_version":1,"sequence":0,"event_id":"00000000-0000-0000-0000-000000000001","kind":"hello","server_version":"0.1.0","supported_protocols":{"minimum":1,"maximum":1},"resume":"$resume","heartbeat_interval_ms":30000,"heartbeat_timeout_ms":60000}"""
         fun snapshot(sequence: Int) = """{"protocol_version":1,"sequence":$sequence,"event_id":"00000000-0000-0000-0000-000000000002","kind":"snapshot","boundary_sequence":$sequence,"snapshot":{"bots":[],"chats":[]}}"""

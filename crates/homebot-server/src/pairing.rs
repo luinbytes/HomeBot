@@ -113,6 +113,49 @@ pub(super) async fn list_devices(
     Ok(Json(devices))
 }
 
+pub(super) async fn current_device(
+    State(state): State<AppState>,
+    Extension(identity): Extension<AuthenticatedIdentity>,
+) -> Result<Json<DeviceSessionSummary>, ApiError> {
+    let AuthenticatedIdentity::Device { id } = identity else {
+        return Err(ApiError::forbidden(
+            "This endpoint describes the authenticated paired device",
+        ));
+    };
+    let device = state
+        .storage
+        .device_sessions(state.owner_id)
+        .await?
+        .into_iter()
+        .find(|device| device.id == id)
+        .ok_or_else(ApiError::internal)?;
+    Ok(Json(device_summary(device)?))
+}
+
+pub(super) async fn revoke_current_device(
+    State(state): State<AppState>,
+    Extension(identity): Extension<AuthenticatedIdentity>,
+    Json(request): Json<RevokeDeviceSessionRequest>,
+) -> Result<Json<DeviceSessionSummary>, ApiError> {
+    let AuthenticatedIdentity::Device { id } = identity else {
+        return Err(ApiError::forbidden(
+            "This endpoint revokes only the authenticated paired device",
+        ));
+    };
+    let _claim = claim(
+        &state,
+        request.idempotency_key,
+        &format!("revoke_current_device_session:{id}"),
+        &request,
+    )
+    .await?;
+    let device = state
+        .storage
+        .revoke_device_session(state.owner_id, id, unix_time_ms())
+        .await?;
+    Ok(Json(device_summary(device)?))
+}
+
 pub(super) async fn revoke_device(
     State(state): State<AppState>,
     Extension(identity): Extension<AuthenticatedIdentity>,

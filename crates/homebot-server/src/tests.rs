@@ -2724,6 +2724,31 @@ async fn pairing_is_single_use_restart_durable_revocable_and_owner_managed()
         )
         .await?;
     assert_eq!(device_cannot_pair.status(), StatusCode::FORBIDDEN);
+    let current = restarted
+        .clone()
+        .oneshot(
+            Request::get("/api/v1/device")
+                .header(
+                    "authorization",
+                    format!("Bearer {}", exchanged.device_session),
+                )
+                .body(Body::empty())?,
+        )
+        .await?;
+    let current = response_json::<DeviceSessionSummary>(current).await?;
+    assert_eq!(current.id, exchanged.device.id);
+    let device_cannot_list_others = restarted
+        .clone()
+        .oneshot(
+            Request::get("/api/v1/devices")
+                .header(
+                    "authorization",
+                    format!("Bearer {}", exchanged.device_session),
+                )
+                .body(Body::empty())?,
+        )
+        .await?;
+    assert_eq!(device_cannot_list_others.status(), StatusCode::FORBIDDEN);
 
     let listed = restarted
         .clone()

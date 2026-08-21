@@ -37,6 +37,18 @@ import dev.homebot.protocol.Attachment
 import dev.homebot.protocol.CreateAttachmentRequest
 import dev.homebot.protocol.CreateAttachmentResponse
 import dev.homebot.protocol.FinalizeAttachmentRequest
+import dev.homebot.protocol.DeviceSessionSummary
+import dev.homebot.protocol.PluginAssignmentRequest
+import dev.homebot.protocol.PluginMutationRequest
+import dev.homebot.protocol.PluginSummary
+import dev.homebot.protocol.RevokeDeviceSessionRequest
+import dev.homebot.protocol.RoutineRunSummary
+import dev.homebot.protocol.RoutineSummary
+import dev.homebot.protocol.RoutineTriggerSummary
+import dev.homebot.protocol.RunRoutineRequest
+import dev.homebot.protocol.SecretSummary
+import dev.homebot.protocol.SkillAssignmentRequest
+import dev.homebot.protocol.SkillSummary
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -50,6 +62,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.serialization.encodeToString
+import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.SerializationException
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
@@ -58,6 +71,8 @@ import kotlinx.serialization.json.int
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.long
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.buildJsonObject
 import okhttp3.HttpUrl
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
@@ -295,6 +310,88 @@ class HomeBotClient(
             RestoreCheckpointRequest.serializer(),
             CheckpointRestoreSummary.serializer(),
         )
+    }
+
+    suspend fun skills(): Result<List<SkillSummary>> = authenticated {
+        get("api/v1/skills", ListSerializer(SkillSummary.serializer()))
+    }
+
+    suspend fun setSkillAssigned(skillId: String, botId: String, enabled: Boolean): Result<SkillSummary> = authenticated {
+        val request = SkillAssignmentRequest(ids(), ids(), botId, enabled)
+        put(
+            "api/v1/skills/$skillId/assignment",
+            request,
+            SkillAssignmentRequest.serializer(),
+            SkillSummary.serializer(),
+        )
+    }
+
+    suspend fun plugins(): Result<List<PluginSummary>> = authenticated {
+        get("api/v1/plugins", ListSerializer(PluginSummary.serializer()))
+    }
+
+    suspend fun mutatePlugin(pluginId: String, action: String): Result<PluginSummary> = authenticated {
+        require(action in setOf("connect", "enable", "disable", "health")) { "Unsupported plugin action" }
+        val request = PluginMutationRequest(ids(), ids())
+        post(
+            "api/v1/plugins/$pluginId/$action",
+            request,
+            PluginMutationRequest.serializer(),
+            PluginSummary.serializer(),
+        )
+    }
+
+    suspend fun setPluginAssigned(pluginId: String, botId: String, enabled: Boolean): Result<PluginSummary> = authenticated {
+        val request = PluginAssignmentRequest(ids(), ids(), botId, enabled)
+        put(
+            "api/v1/plugins/$pluginId/assignment",
+            request,
+            PluginAssignmentRequest.serializer(),
+            PluginSummary.serializer(),
+        )
+    }
+
+    suspend fun routines(): Result<List<RoutineSummary>> = authenticated {
+        get("api/v1/routines", ListSerializer(RoutineSummary.serializer()))
+    }
+
+    suspend fun routineRuns(routineId: String): Result<List<RoutineRunSummary>> = authenticated {
+        get("api/v1/routines/$routineId/runs", ListSerializer(RoutineRunSummary.serializer()))
+    }
+
+    suspend fun routineTriggers(routineId: String): Result<List<RoutineTriggerSummary>> = authenticated {
+        get("api/v1/routines/$routineId/triggers", ListSerializer(RoutineTriggerSummary.serializer()))
+    }
+
+    suspend fun runRoutine(routineId: String, inputs: JsonElement = buildJsonObject {}): Result<RoutineRunSummary> = authenticated {
+        val request = RunRoutineRequest(ids(), ids(), inputs)
+        post(
+            "api/v1/routines/$routineId/run",
+            request,
+            RunRoutineRequest.serializer(),
+            RoutineRunSummary.serializer(),
+        )
+    }
+
+    suspend fun secrets(): Result<List<SecretSummary>> = authenticated {
+        get("api/v1/secrets", ListSerializer(SecretSummary.serializer()))
+    }
+
+    suspend fun currentDevice(): Result<DeviceSessionSummary> = authenticated {
+        get("api/v1/device", DeviceSessionSummary.serializer())
+    }
+
+    suspend fun revokeCurrentDevice(): Result<DeviceSessionSummary> = authenticated {
+        val request = RevokeDeviceSessionRequest(ids(), ids())
+        val device = post(
+            "api/v1/device/revoke",
+            request,
+            RevokeDeviceSessionRequest.serializer(),
+            DeviceSessionSummary.serializer(),
+        )
+        sessions.clear()
+        mutableState.value = ConnectionState.Revoked
+        device
     }
 
     internal suspend fun connectOnce(): DisconnectReason {

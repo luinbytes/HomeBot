@@ -7,10 +7,10 @@ This file is operational state for coding agents. It is not user-facing product 
 ## Current state
 
 - Current milestone: M5, Android and secure remote parity. M0 through M4 are verified complete.
-- Current Linear issue: 6C7-60, owner pairing, device sessions and Tailscale/LAN endpoint discovery (`In Progress`).
+- Current Linear issue: 6C7-61, native Android architecture and generated protocol client (`In Progress`).
 - Current Git branch: `main`.
-- Latest verified implementation commit: `0856e56b01bfb551792081a53971c5fb79bf1831` (6C7-58; exact tree `d1feb6a9e0c3fe522b63b1953a69bc1020b79ea9`).
-- Latest verified GitHub Actions run: `32435023890`, all nine jobs passed.
+- Latest verified implementation commit: `a684abb4ecc6310a7537ef559e9315e5ae31adf8` (6C7-60; exact tree `1d1eb73101e04c286b9447c92faa70d43e1becd0`).
+- Latest verified GitHub Actions run: `32442039471`, all nine jobs passed.
 - Public repository: `https://github.com/luinbytes/HomeBot`.
 - Required commit identity: `luinbytes <42706009+luinbytes@users.noreply.github.com>`.
 
@@ -30,6 +30,7 @@ Architecture decisions currently frozen:
 - Source-control reads and mutations are server-owned and normalized. Commit/branch/push use a fixed shell-free Git executable with repository hooks suppressed; remote push and PR creation require digest-bound server approval, and exact idempotent results persist independently from remote side effects.
 - Queued prompts are durable server state with typed `steering` and `follow_up` semantics. Steering retains FIFO priority ahead of ordinary follow-ups, stop/failure preserves remaining order, and SQLite write reservations prevent provider-event races during insert/promotion.
 - Provider interaction mode and working-context generation/status/usage are server-owned. Capability-gated native compaction preserves provider mapping; reset removes only that mapping. Neither operation deletes HomeBot identity, transcript, attachments, Skills, checkpoints or app memory.
+- Pairing offers are five-minute, single-use, endpoint-bound credentials stored only as digests. Named device sessions use the same authenticated versioned protocol as desktop, are owner-listable/revocable, and cannot administer devices. Remote binding is explicit and loopback remains the safe default.
 
 Current blockers:
 
@@ -53,18 +54,21 @@ Current blockers:
 - 6C7-57, normalized status/staged and unstaged diff/commit/branch/push/PR workflows, server-side capability approvals, durable exact replay, hostile-repository hook denial, authenticated desktop projection and Android/schema parity.
 - 6C7-58, durable typed queued steering/follow-ups, deterministic restart-safe promotion, provider-neutral plan/default modes, capability-gated compaction/reset, persistent working-context boundaries, desktop projection and Android/schema parity.
 - M4 epic 6C7-54: all coding workspace, checkpoint/diff/restore, source-control and context workflow children verified complete.
-- Most recent completed issue: 6C7-58.
+- 6C7-60, short-lived owner pairing, restart-durable named/revocable device sessions, server-enforced device administration, LAN/Tailscale/custom-HTTPS classification, explicit remote bind controls and desktop projection.
+- Most recent completed issue: 6C7-60.
 
 ## Immediate next work
 
-1. Implement 6C7-60's short-lived single-use pairing credential and named, revocable persistent device-session model without placing permanent credentials in QR/deep links.
-2. Add expiry, consumption, rate limiting, origin/endpoint validation, loopback-safe defaults and explicit LAN/Tailscale/custom-HTTPS endpoint classification.
-3. Add authenticated owner list/revoke and pairing create APIs, unauthenticated bounded exchange, durable migration/restart fixtures, server permission-negative tests, desktop/headless projections and Rust-owned Android/schema models.
+1. Scaffold the real Gradle Android application and Compose shell with Kotlin, Coroutines/Flow, OkHttp, DataStore and Keystore-backed device-session storage.
+2. Implement endpoint configuration, pairing exchange, authentication, protocol negotiation, snapshot hydration, sequenced WebSocket resume/reconnect, stale-cursor fallback, version/revocation failures and generated Rust-owned models.
+3. Add deterministic fake-server integration tests and Android lint/unit/build jobs to CI; do not mark 6C7-61 Done until remote Android compilation passes.
 
 ## Verification state
 
 Verified at the latest remote baseline:
 
+- GitHub Actions run `32442039471` passed all nine jobs for public commit `a684abb`: Rust quality, dependency audit/policy, Linux, macOS Intel, macOS Apple Silicon and all three visual-golden platforms. Remote tree `1d1eb73101e04c286b9447c92faa70d43e1becd0` exactly matches the locally verified 6C7-60 tree; author and committer resolve to `luinbytes`.
+- 6C7-60 fixtures prove short-lived single-use digest-only pairing, endpoint/origin validation, durable rate limits, restart authentication, named list/revoke, administration denial, post-revocation HTTP/WebSocket denial, desktop server-authoritative projection and explicit remote-listener controls. Rust schema and generated Kotlin remain mechanically identical.
 - GitHub Actions run `32435023890` passed all nine jobs for commit `0856e56`: formatting/strict clippy/workspace tests, dependency audit/policy, Linux, macOS Intel, macOS Apple Silicon, and all three visual-golden platforms.
 - Remote tree `d1feb6a9e0c3fe522b63b1953a69bc1020b79ea9` exactly matches the locally verified 6C7-58 implementation tree. GitHub resolves both author and committer to account `luinbytes`.
 
@@ -95,11 +99,11 @@ Verified locally at the current baseline:
 - 6C7-58's complete local gate passes: strict all-target clippy, every workspace test suite, all 15 visual fixtures, schema drift, generated Android binding drift and cargo-deny advisories/bans/licenses/sources.
 - Its server fixtures prove typed steering priority/FIFO follow-ups, duplicate replay, cancel-order stability, restart durability, three automatic queued turns, default/plan/default capability routing, unsupported-mode denial, compaction/reset concurrency exclusion, transcript preservation, fresh provider-context isolation and restart recovery. The 32-test server suite passed three consecutive 16-thread stress runs after the SQLite write-reservation fix.
 
-6C7-73 and reopened M2 epic 6C7-41 completion evidence is recorded in Linear; both are Done. M3 epic 6C7-48, M4 issues 6C7-55 through 6C7-58, and M4 epic 6C7-54 are verified Done. M5 epic 6C7-59 and first child 6C7-60 are In Progress.
+6C7-73 and reopened M2 epic 6C7-41 completion evidence is recorded in Linear; both are Done. M3 epic 6C7-48, M4 issues 6C7-55 through 6C7-58, M4 epic 6C7-54 and M5 child 6C7-60 are verified Done. M5 epic 6C7-59 and 6C7-61 are In Progress.
 
 ## Known failures and incomplete implementation
 
-- Native Android app, device pairing/Tailscale, packaging, and release artifacts remain incomplete roadmap work.
+- Native Android app, packaging, and release artifacts remain incomplete roadmap work.
 - Real authenticated Codex/Claude round trips are unavailable in this environment. OpenAI-compatible and CDP behavior use protocol-faithful local fixtures.
 - No release artifact exists. Do not describe HomeBot as installable or v1-ready.
 

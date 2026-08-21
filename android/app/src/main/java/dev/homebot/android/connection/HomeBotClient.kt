@@ -398,8 +398,8 @@ class HomeBotClient(
                 val values = uri.rawQuery.orEmpty().split('&').mapNotNull { item ->
                     val parts = item.split('=', limit = 2)
                     if (parts.size == 2) {
-                        URLDecoder.decode(parts[0], Charsets.UTF_8) to
-                            URLDecoder.decode(parts[1], Charsets.UTF_8)
+                        URLDecoder.decode(parts[0], Charsets.UTF_8.name()) to
+                            URLDecoder.decode(parts[1], Charsets.UTF_8.name())
                     } else {
                         null
                     }

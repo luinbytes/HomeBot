@@ -282,11 +282,12 @@ pub(super) async fn delete(
         return Err(ApiError::validation("Bot name confirmation did not match"));
     }
     if matches!(existing, Err(StorageError::BotNotFound)) {
-        let prior: i64 = sqlx::query_scalar("SELECT count(*) FROM idempotency_records WHERE key = ?")
-            .bind(request.idempotency_key.to_string())
-            .fetch_one(state.storage.pool())
-            .await
-            .map_err(|_| ApiError::internal())?;
+        let prior: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM idempotency_records WHERE key = ?")
+                .bind(request.idempotency_key.to_string())
+                .fetch_one(state.storage.pool())
+                .await
+                .map_err(|_| ApiError::internal())?;
         if prior == 0 {
             return Err(StorageError::BotNotFound.into());
         }

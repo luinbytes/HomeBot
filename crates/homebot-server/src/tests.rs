@@ -1260,6 +1260,22 @@ async fn bot_lifecycle_validates_persists_streams_and_reports_provider_health()
         ))
         .await?;
     assert_eq!(replay.status(), StatusCode::NO_CONTENT);
+    let unknown_delete = DeleteBotRequest {
+        request_id: Uuid::now_v7(),
+        idempotency_key: Uuid::now_v7(),
+        confirm_name: "Missing".to_owned(),
+    };
+    for _ in 0..2 {
+        let response = app
+            .clone()
+            .oneshot(json_request(
+                "DELETE",
+                &format!("/api/v1/bots/{}", Uuid::nil()),
+                &unknown_delete,
+            ))
+            .await?;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
 
     storage
         .set_bot_attention(

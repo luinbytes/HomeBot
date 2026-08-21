@@ -64,3 +64,10 @@ coverage/
 **/tests/snapshots/**/*.new.png
 **/tests/snapshots/**/*.old.png
 **/test-results/
+
+# Rendered Arch packaging workspace (the template and installed assets are tracked).
+packaging/arch/PKGBUILD
+packaging/arch/HomeBot-*.tar.gz
+packaging/arch/*.pkg.tar.*
+packaging/arch/pkg/
+packaging/arch/src/

@@ -7,8 +7,8 @@ This file is operational state for coding agents. It is not user-facing product 
 ## Current state
 
 - Current milestone: M6, packaging, hardening and the v1 parity gate. M0 through M5 are verified complete.
-- Current Linear issue: 6C7-66, macOS Intel and Apple Silicon packaging (`In Progress`).
-- Current Git branch: `feat/6c7-66-macos-packaging`.
+- Current Linear issue: 6C7-67, Arch/Omarchy desktop and headless-service packaging (`In Progress`). 6C7-66 remains In Progress pending external release-signing and clean-machine evidence.
+- Current Git branch: `feat/6c7-67-arch-packaging`.
 - Latest public and verified implementation commit: `5adeeab99abaa54b83717e79b2741b0a2d38803d` (6C7-64 on public `main`).
 - Latest verified GitHub Actions run: `32449482551`, all ten jobs passed, including Android lint/tests/APK, Rust quality, dependency gates, both macOS builds, Linux and visual goldens.
 - Public repository: `https://github.com/luinbytes/HomeBot`.
@@ -65,9 +65,9 @@ Current blockers:
 
 ## Immediate next work
 
-1. Finish 6C7-66's reproducible Intel/Apple Silicon bundle pipeline and verify its remote CI artifacts.
-2. Complete Developer ID signing, notarisation and clean-machine first-run checks when the required Apple credentials/machines are available; keep those facts explicit if unavailable.
-3. Continue immediately through 6C7-67 packaging and the remaining M6 release gates without treating a signing blocker as a blocker for unrelated work.
+1. Finish 6C7-67's AUR-ready PKGBUILD, current-Arch package CI, encrypted systemd credential route, and clean install/update/uninstall verification.
+2. Confirm the corrected 6C7-66 Intel/Apple Silicon artifact jobs pass; complete Developer ID signing, notarisation and physical clean-machine checks when Apple credentials/machines are available.
+3. Continue immediately through 6C7-68 and the remaining M6 gates without treating platform-signing credentials as a blocker for unrelated work.
 
 ## Verification state
 
@@ -120,6 +120,7 @@ Verified locally at the current baseline:
 ## Known failures and incomplete implementation
 
 - macOS Developer ID signing/notarisation credentials and clean Intel/Apple Silicon test machines are unavailable in this environment. CI can verify reproducible ad-hoc-signed bundles, but those checks do not satisfy final release signing acceptance.
+- 6C7-66 PR #5 is published. Its first Apple Silicon artifact run exposed a BSD `sh` parsing incompatibility after successful bundle verification; fix commit `c979f8d82c971db7420e26e984986539d7bc0442` is published and awaiting the replacement CI run.
 - Arch/Omarchy packaging, updater/migration recovery, release hardening, performance/accessibility, and final parity/release artifacts remain incomplete roadmap work.
 - Real authenticated Codex/Claude round trips are unavailable in this environment. OpenAI-compatible and CDP behavior use protocol-faithful local fixtures.
 - No release artifact exists. Do not describe HomeBot as installable or v1-ready.

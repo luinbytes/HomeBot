@@ -1,5 +1,7 @@
 package dev.homebot.android.connection
 
+import dev.homebot.protocol.CreateBotRequest
+import dev.homebot.protocol.SendMessageResponse
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -193,6 +195,42 @@ class HomeBotClientTest {
         assertTrue(EndpointPolicy.normalize("https://homebot.example.com/path").isFailure)
     }
 
+    @Test
+    fun productMutationsUseAuthenticatedServerApisAndPreserveQueueSemantics() = runBlocking {
+        server.enqueue(jsonResponse(BOT_RESPONSE))
+        server.enqueue(jsonResponse(QUEUED_RESPONSE))
+        server.start()
+        sessions.save(credentials())
+        val client = client()
+
+        val bot = client.createBot(
+            CreateBotRequest(
+                request_id = "00000000-0000-0000-0000-000000000020",
+                idempotency_key = "00000000-0000-0000-0000-000000000021",
+                name = "Nova",
+                title = "Researcher",
+                shape = "circle",
+                color = "violet",
+                permission_profile = "ask_before_changes",
+            ),
+        ).getOrThrow()
+        val queued = client.sendMessage(CHAT_ID, "Follow up", steering = true).getOrThrow()
+
+        assertEquals("Nova", bot.name)
+        assertTrue(queued is SendMessageResponse.Queued)
+        val create = server.takeRequest()
+        assertEquals("/api/v1/bots", create.path)
+        assertEquals("Bearer hbds_fixture_session", create.getHeader("Authorization"))
+        assertEquals("1", create.getHeader("X-HomeBot-Protocol"))
+        assertTrue(create.body.readUtf8().contains("00000000-0000-0000-0000-000000000021"))
+        val steer = server.takeRequest()
+        assertEquals("/api/v1/chats/$CHAT_ID/steer", steer.path)
+        assertEquals("Bearer hbds_fixture_session", steer.getHeader("Authorization"))
+        val payload = steer.body.readUtf8()
+        assertTrue(payload.contains("Follow up"))
+        assertTrue(payload.contains("idempotency_key"))
+    }
+
     private fun client(reconnectDelayMs: (Int) -> Long = { 1 }) = HomeBotClient(
         http = OkHttpClient.Builder().build(),
         sessions = sessions,
@@ -219,9 +257,12 @@ class HomeBotClientTest {
 
     private companion object {
         const val DEVICE_ID = "018f47b8-c9aa-7c6f-b9e1-111111111111"
+        const val CHAT_ID = "00000000-0000-0000-0000-000000000030"
         const val VERSION_RESPONSE = """{"server_version":"0.1.0","protocol":{"minimum":1,"maximum":1}}"""
         const val ERROR_RESPONSE = """{"code":"unauthenticated","message":"Device session is invalid","retryable":false,"request_id":null}"""
         const val PAIRING_RESPONSE = """{"device":{"id":"$DEVICE_ID","name":"Pixel 9","endpoint_kind":"loopback","created_at_unix_ms":1,"last_seen_at_unix_ms":null,"revoked_at_unix_ms":null},"device_session":"hbds_fixture_session"}"""
+        const val BOT_RESPONSE = """{"bot":{"id":"00000000-0000-0000-0000-000000000010","name":"Nova","title":"Researcher","description":"","shape":"circle","color":"violet","archived":false,"unread_count":0,"attention":"none","provider":"not_configured","advanced":{"provider_profile_id":null,"permission_profile":"ask_before_changes"}}}"""
+        const val QUEUED_RESPONSE = """{"kind":"queued","prompt":{"id":"00000000-0000-0000-0000-000000000040","chat_id":"$CHAT_ID","content":"Follow up","attachment_ids":[],"skill_ids":[],"kind":"steering","position":0,"created_at_ms":1}}"""
 
         fun hello(resume: String) = """{"protocol_version":1,"sequence":0,"event_id":"00000000-0000-0000-0000-000000000001","kind":"hello","server_version":"0.1.0","supported_protocols":{"minimum":1,"maximum":1},"resume":"$resume","heartbeat_interval_ms":30000,"heartbeat_timeout_ms":60000}"""
         fun snapshot(sequence: Int) = """{"protocol_version":1,"sequence":$sequence,"event_id":"00000000-0000-0000-0000-000000000002","kind":"snapshot","boundary_sequence":$sequence,"snapshot":{"bots":[],"chats":[]}}"""

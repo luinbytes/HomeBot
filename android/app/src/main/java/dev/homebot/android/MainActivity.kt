@@ -7,30 +7,14 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
 import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.Card
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Surface
-import androidx.compose.material3.Text
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -38,6 +22,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.homebot.android.connection.ConnectionState
+import dev.homebot.protocol.*
 
 class MainActivity : ComponentActivity() {
     private val viewModel by viewModels<MainViewModel>()
@@ -47,11 +32,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         acceptIntent(intent)
-        setContent {
-            HomeBotTheme {
-                HomeBotRoot(viewModel, incomingPairing.value)
-            }
-        }
+        setContent { HomeBotTheme { HomeBotRoot(viewModel, incomingPairing.value) } }
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -61,114 +42,336 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun acceptIntent(intent: Intent?) {
-        incomingPairing.value = intent?.data?.takeIf {
-            it.scheme == "homebot" && it.host == "pair"
-        }?.toString()
+        incomingPairing.value = intent?.data?.takeIf { it.scheme == "homebot" && it.host == "pair" }?.toString()
     }
 }
 
 @Composable
 private fun HomeBotRoot(viewModel: MainViewModel, incomingPairing: String?) {
     val connection by viewModel.connection.collectAsState()
+    val product by viewModel.product.collectAsState()
+    val live = connection as? ConnectionState.Live
+    if (live == null) PairingScreen(viewModel, connection, incomingPairing)
+    else ProductShell(viewModel, live, product)
+}
+
+@Composable
+private fun ProductShell(viewModel: MainViewModel, live: ConnectionState.Live, state: AndroidProductState) {
+    Scaffold(
+        containerColor = Canvas,
+        topBar = {
+            Row(Modifier.fillMaxWidth().background(Color.White).padding(18.dp, 14.dp), verticalAlignment = Alignment.CenterVertically) {
+                HomeBotMark()
+                Text("HomeBot", fontWeight = FontWeight.Bold, fontSize = 20.sp, modifier = Modifier.padding(start = 10.dp))
+                Spacer(Modifier.weight(1f))
+                Text("Connected", color = Success, fontSize = 12.sp)
+            }
+        },
+        bottomBar = {
+            Row(Modifier.fillMaxWidth().background(Color.White).padding(12.dp, 8.dp), horizontalArrangement = Arrangement.SpaceAround) {
+                NavButton("Bots", state.destination is ProductDestination.Bots, viewModel::showBots)
+                NavButton("Chats", state.destination is ProductDestination.DirectChat || state.destination is ProductDestination.GroupChat) {
+                    live.snapshot.chats.firstOrNull()?.let { viewModel.openDirectChat(it.id) } ?: viewModel.showBots()
+                }
+                NavButton("Settings", state.destination is ProductDestination.Settings, viewModel::showSettings)
+            }
+        },
+    ) { padding ->
+        Box(Modifier.fillMaxSize().padding(padding)) {
+            when (state.destination) {
+                ProductDestination.Bots -> RosterScreen(viewModel, live)
+                is ProductDestination.DirectChat -> DirectChatScreen(viewModel, state.directTimeline, state)
+                is ProductDestination.GroupChat -> GroupChatScreen(viewModel, state.groupTimeline)
+                ProductDestination.Settings -> ConnectedSettings(live)
+            }
+            if (state.loading) CircularProgressIndicator(Modifier.align(Alignment.Center), color = Violet)
+            state.error?.let { ErrorBanner(it, viewModel::clearError) }
+        }
+    }
+}
+
+@Composable
+private fun RosterScreen(viewModel: MainViewModel, live: ConnectionState.Live) {
+    var create by remember { mutableStateOf(false) }
+    var archived by remember { mutableStateOf(false) }
+    var name by remember { mutableStateOf("") }
+    var title by remember { mutableStateOf("") }
+    LazyColumn(Modifier.fillMaxSize().padding(horizontal = 18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        item {
+            Row(Modifier.fillMaxWidth().padding(top = 18.dp), verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("Your Bots", fontSize = 28.sp, fontWeight = FontWeight.Bold)
+                    Text("Persistent teammates on your HomeBot server.", color = Muted)
+                }
+                Button(onClick = { create = !create }, colors = ButtonDefaults.buttonColors(containerColor = Violet)) {
+                    Text(if (create) "Cancel" else "New Bot")
+                }
+            }
+        }
+        if (create) item {
+            Card(shape = CardShape) {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedTextField(name, { name = it }, label = { Text("Name") }, modifier = Modifier.fillMaxWidth())
+                    OutlinedTextField(title, { title = it }, label = { Text("Role") }, modifier = Modifier.fillMaxWidth())
+                    Button(
+                        onClick = { viewModel.createBot(name, title); create = false },
+                        enabled = name.isNotBlank() && title.isNotBlank(),
+                    ) { Text("Create") }
+                }
+            }
+        }
+        items(live.snapshot.bots.filter { it.archived == archived }, key = { it.id }) { bot ->
+            BotRow(bot, { viewModel.openBot(bot.id) }, { viewModel.setBotArchived(bot.id, !bot.archived) })
+        }
+        item {
+            TextButton(onClick = { archived = !archived }) { Text(if (archived) "Show active Bots" else "Show archived Bots") }
+            HorizontalDivider()
+            Text("Group chats", fontSize = 20.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(vertical = 12.dp))
+        }
+        items(live.snapshot.group_chats, key = { it.id }) { group ->
+            HomeBotCard(group.title, "${group.coordination_turns_used}/${group.coordination_max_turns} coordination turns") {
+                viewModel.openGroupChat(group.id)
+            }
+        }
+        if (live.snapshot.group_chats.isEmpty() && live.snapshot.bots.count { !it.archived } >= 2) item {
+            OutlinedButton(onClick = {
+                viewModel.createGroup("Bot team", live.snapshot.bots.filterNot { it.archived }.take(3).map { it.id })
+            }) { Text("Start a group with your first Bots") }
+        }
+        item { Spacer(Modifier.height(20.dp)) }
+    }
+}
+
+@Composable
+private fun BotRow(bot: BotSummary, onOpen: () -> Unit, onArchive: () -> Unit) {
+    Card(shape = CardShape) {
+        Row(Modifier.fillMaxWidth().clickable(onClick = onOpen).padding(15.dp), verticalAlignment = Alignment.CenterVertically) {
+            Box(Modifier.background(Violet.copy(alpha = .14f), CircleShape).padding(12.dp)) {
+                Text(bot.name.take(1).uppercase(), color = Violet, fontWeight = FontWeight.Black)
+            }
+            Column(Modifier.weight(1f).padding(start = 12.dp)) {
+                Text(bot.name + if (bot.unread_count > 0) "  ${bot.unread_count}" else "", fontWeight = FontWeight.Bold)
+                Text(bot.title, color = Muted)
+                Text(bot.provider, color = Muted, fontSize = 12.sp)
+            }
+            TextButton(onClick = onArchive) { Text(if (bot.archived) "Restore" else "Archive") }
+        }
+    }
+}
+
+@Composable
+private fun DirectChatScreen(viewModel: MainViewModel, timeline: ChatTimelineResponse?, state: AndroidProductState) {
+    if (timeline == null) return EmptyLoading("Loading chat…")
+    ChatLayout(
+        title = timeline.chat.title,
+        running = timeline.chat.running,
+        messages = timeline.messages,
+        activities = timeline.activities,
+        approvals = timeline.approvals,
+        queue = timeline.queued_prompts.map { "${it.kind.name.lowercase()}: ${it.content}" },
+        onSend = { text, steer -> viewModel.send(text, steer) },
+        onStop = viewModel::stopWorking,
+        onRetry = viewModel::retry,
+        onDecision = viewModel::decide,
+        extras = {
+            OutlinedButton(onClick = viewModel::loadCodingWorkspace) { Text("Workspace & diff") }
+            state.coding.status?.let { Text("${it.branch ?: "detached"} • ${it.entries.size} changed files", color = Muted, fontSize = 12.sp) }
+            state.coding.diff?.let { Text(it.patch.take(1_200), fontSize = 11.sp) }
+        },
+    )
+}
+
+@Composable
+private fun GroupChatScreen(viewModel: MainViewModel, timeline: GroupTimelineResponse?) {
+    if (timeline == null) return EmptyLoading("Loading group…")
+    var mentionAll by remember { mutableStateOf(false) }
+    val mentions = if (mentionAll) timeline.participants.map { it.bot_id } else emptyList()
+    ChatLayout(
+        title = timeline.group.title,
+        running = !timeline.group.stop_requested,
+        messages = timeline.messages,
+        activities = emptyList(), approvals = emptyList(), queue = emptyList(),
+        onSend = { text, _ -> viewModel.send(text, mentions = mentions) },
+        onStop = viewModel::stopWorking, onRetry = {}, onDecision = { _, _ -> },
+        extras = {
+            TextButton(onClick = { mentionAll = !mentionAll }) { Text(if (mentionAll) "@All Bots selected" else "Mention all Bots") }
+            val owner = timeline.group.ownership_bot_id
+            timeline.participants.firstOrNull { it.bot_id != owner }?.let { next ->
+                OutlinedButton(onClick = { viewModel.handoff(owner, next.bot_id) }) { Text("Hand off ownership") }
+            }
+        },
+    )
+}
+
+@Composable
+private fun ChatLayout(
+    title: String,
+    running: Boolean,
+    messages: List<MessageSummary>,
+    activities: List<ActivitySummary>,
+    approvals: List<ApprovalSummary>,
+    queue: List<String>,
+    onSend: (String, Boolean) -> Unit,
+    onStop: () -> Unit,
+    onRetry: (MessageSummary) -> Unit,
+    onDecision: (ApprovalSummary, Boolean) -> Unit,
+    extras: @Composable () -> Unit,
+) {
+    var composer by remember { mutableStateOf("") }
+    var steering by remember { mutableStateOf(false) }
+    Column(Modifier.fillMaxSize()) {
+        Row(Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text(title, fontSize = 22.sp, fontWeight = FontWeight.Bold)
+                Text(if (running) "Bot is working" else "Ready", color = if (running) Violet else Success, fontSize = 12.sp)
+            }
+            if (running) OutlinedButton(onClick = onStop) { Text("Stop") }
+        }
+        LazyColumn(Modifier.weight(1f).padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            items(messages, key = { it.id }) { MessageCard(it, onRetry) }
+            items(activities, key = { it.id }) { HomeBotCard(it.title, "${it.detail}\n${it.status}") {} }
+            items(approvals.filter { it.status == "pending" }, key = { it.id }) { ApprovalCard(it, onDecision) }
+            items(queue) { HomeBotCard("Queued", it) {} }
+            item { extras(); Spacer(Modifier.height(8.dp)) }
+        }
+        Column(Modifier.background(Color.White).padding(12.dp)) {
+            OutlinedTextField(
+                composer, { composer = it }, modifier = Modifier.fillMaxWidth(), minLines = 2,
+                placeholder = { Text(if (steering) "Steer this Bot…" else "Message HomeBot…") },
+            )
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                TextButton(onClick = { steering = !steering }, enabled = running) {
+                    Text(if (steering) "Steering" else if (running) "Queue follow-up" else "Message")
+                }
+                Spacer(Modifier.weight(1f))
+                Button(
+                    onClick = { onSend(composer.trim(), steering); composer = "" }, enabled = composer.isNotBlank(),
+                    colors = ButtonDefaults.buttonColors(containerColor = Violet),
+                ) { Text("Send") }
+            }
+        }
+    }
+}
+
+@Composable
+private fun MessageCard(message: MessageSummary, onRetry: (MessageSummary) -> Unit) {
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = if (message.author == "user") Arrangement.End else Arrangement.Start) {
+        Card(shape = RoundedCornerShape(18.dp), modifier = Modifier.fillMaxWidth(if (message.author == "user") .84f else .96f)) {
+            Column(Modifier.padding(14.dp)) {
+                Text(if (message.author == "user") "You" else "Bot", color = Violet, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                message.parts.forEach { part ->
+                    when (part) {
+                        is MessagePart.Text -> Text(part.text, modifier = Modifier.padding(top = 5.dp))
+                        is MessagePart.Notice -> Text(part.text, color = Muted, modifier = Modifier.padding(top = 5.dp))
+                        is MessagePart.AttachmentPart -> Text("Attachment • ${part.attachment.filename}", color = Violet)
+                    }
+                }
+                if (message.status == "failed") TextButton(onClick = { onRetry(message) }) { Text("Retry") }
+                message.error?.let { Text(it.message, color = Danger, fontSize = 12.sp) }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ApprovalCard(approval: ApprovalSummary, onDecision: (ApprovalSummary, Boolean) -> Unit) {
+    Card(shape = CardShape) {
+        Column(Modifier.padding(14.dp)) {
+            Text("Approval required", color = Warning, fontWeight = FontWeight.Bold)
+            Text(approval.title, fontWeight = FontWeight.SemiBold)
+            Text(approval.detail, color = Muted)
+            Row {
+                OutlinedButton(onClick = { onDecision(approval, false) }) { Text("Deny") }
+                Button(onClick = { onDecision(approval, true) }, modifier = Modifier.padding(start = 8.dp)) { Text("Allow") }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ConnectedSettings(live: ConnectionState.Live) {
+    Column(Modifier.fillMaxSize().padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Text("Settings", fontSize = 28.sp, fontWeight = FontWeight.Bold)
+        HomeBotCard("Server endpoint", live.endpoint) {}
+        HomeBotCard("Protocol stream", "Sequence ${live.cursor} • authenticated device session") {}
+        Text("Providers, routines, Skills, plugins and device management remain server-authoritative.", color = Muted)
+    }
+}
+
+@Composable
+private fun PairingScreen(viewModel: MainViewModel, connection: ConnectionState, incomingPairing: String?) {
     val storedSettings by viewModel.settings.collectAsState()
     var pairingLink by remember { mutableStateOf("") }
     var endpoint by remember { mutableStateOf("") }
     var deviceName by remember { mutableStateOf("Android") }
     var error by remember { mutableStateOf<String?>(null) }
-
-    LaunchedEffect(incomingPairing) {
-        if (incomingPairing != null) pairingLink = incomingPairing
-    }
-    LaunchedEffect(storedSettings) {
-        if (endpoint.isBlank()) endpoint = storedSettings.endpoint
-        deviceName = storedSettings.deviceName
-    }
-
-    Surface(modifier = Modifier.fillMaxSize(), color = Color(0xFFF7F6F9)) {
-        Column(
-            modifier = Modifier.fillMaxSize().padding(horizontal = 24.dp, vertical = 48.dp),
-            verticalArrangement = Arrangement.spacedBy(18.dp),
-        ) {
+    LaunchedEffect(incomingPairing) { if (incomingPairing != null) pairingLink = incomingPairing }
+    LaunchedEffect(storedSettings) { if (endpoint.isBlank()) endpoint = storedSettings.endpoint; deviceName = storedSettings.deviceName }
+    Surface(Modifier.fillMaxSize(), color = Canvas) {
+        Column(Modifier.fillMaxSize().padding(24.dp, 48.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Box(
-                    Modifier.background(Color(0xFF7657FF), RoundedCornerShape(14.dp))
-                        .padding(horizontal = 13.dp, vertical = 9.dp),
-                ) {
-                    Text("H", color = Color.White, fontWeight = FontWeight.Black, fontSize = 20.sp)
-                }
+                HomeBotMark()
                 Column(Modifier.padding(start = 12.dp)) {
                     Text("HomeBot", fontSize = 25.sp, fontWeight = FontWeight.Bold)
-                    Text("Your AI team. On your computer.", color = Color(0xFF6E6978))
+                    Text("Your AI team. On your computer.", color = Muted)
                 }
             }
             ConnectionCard(connection)
             if (connection is ConnectionState.Unpaired || connection is ConnectionState.Pairing) {
                 Text("Pair this device", fontSize = 20.sp, fontWeight = FontWeight.SemiBold)
-                OutlinedTextField(
-                    value = pairingLink,
-                    onValueChange = { pairingLink = it },
-                    modifier = Modifier.fillMaxWidth(),
-                    label = { Text("HomeBot pairing link") },
-                    minLines = 2,
-                )
-                OutlinedTextField(
-                    value = deviceName,
-                    onValueChange = { deviceName = it },
-                    modifier = Modifier.fillMaxWidth(),
-                    label = { Text("Device name") },
-                )
+                OutlinedTextField(pairingLink, { pairingLink = it }, Modifier.fillMaxWidth(), label = { Text("HomeBot pairing link") }, minLines = 2)
+                OutlinedTextField(deviceName, { deviceName = it }, Modifier.fillMaxWidth(), label = { Text("Device name") })
                 Button(
                     onClick = { viewModel.pair(pairingLink, deviceName) { error = it } },
                     enabled = pairingLink.isNotBlank() && connection !is ConnectionState.Pairing,
-                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF7657FF)),
+                    colors = ButtonDefaults.buttonColors(containerColor = Violet),
                 ) { Text("Connect to HomeBot") }
-            } else {
-                Text("Server", fontSize = 20.sp, fontWeight = FontWeight.SemiBold)
-                OutlinedTextField(
-                    value = endpoint,
-                    onValueChange = { endpoint = it },
-                    modifier = Modifier.fillMaxWidth(),
-                    label = { Text("HomeBot endpoint") },
-                    singleLine = true,
-                )
-                Button(
-                    onClick = { viewModel.updateEndpoint(endpoint, deviceName) { error = it } },
-                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF302C38)),
-                ) { Text("Save and reconnect") }
+            } else if (endpoint.isNotBlank()) {
+                OutlinedTextField(endpoint, { endpoint = it }, Modifier.fillMaxWidth(), label = { Text("HomeBot endpoint") })
+                Button(onClick = { viewModel.updateEndpoint(endpoint, deviceName) { error = it } }) { Text("Save and reconnect") }
             }
-            error?.let { Text(it, color = Color(0xFFB3261E)) }
-            Spacer(Modifier.height(4.dp))
-            Text(
-                "Session credentials are encrypted with Android Keystore. HomeBot keeps product state on your server.",
-                color = Color(0xFF6E6978),
-                fontSize = 13.sp,
-            )
+            error?.let { Text(it, color = Danger) }
+            Text("Session credentials are encrypted with Android Keystore. Product state remains on your server.", color = Muted, fontSize = 13.sp)
         }
     }
 }
 
 @Composable
 private fun ConnectionCard(connection: ConnectionState) {
-    val (title, detail, color) = when (connection) {
-        ConnectionState.Unpaired -> Triple("Not paired", "Open a link from HomeBot desktop.", Color(0xFF6E6978))
-        ConnectionState.Pairing -> Triple("Pairing", "Exchanging the one-time credential…", Color(0xFF7657FF))
-        is ConnectionState.Connecting -> Triple("Connecting", connection.endpoint, Color(0xFF7657FF))
-        is ConnectionState.Hydrating -> Triple("Syncing", "Loading authoritative HomeBot state…", Color(0xFF7657FF))
-        is ConnectionState.Live -> Triple("Connected", "${connection.snapshot.bots.size} Bots • sequence ${connection.cursor}", Color(0xFF198754))
-        is ConnectionState.Reconnecting -> Triple("Reconnecting", "Attempt ${connection.attempt}; your last safe view is retained.", Color(0xFFE07A00))
-        is ConnectionState.VersionIncompatible -> Triple("Update required", "This client and server protocol do not overlap.", Color(0xFFB3261E))
-        ConnectionState.Revoked -> Triple("Device revoked", "Pair again from an owner device.", Color(0xFFB3261E))
-        is ConnectionState.Offline -> Triple("Offline", connection.failure.toString(), Color(0xFFE07A00))
+    val values = when (connection) {
+        ConnectionState.Unpaired -> Triple("Not paired", "Open a pairing link from HomeBot desktop.", Muted)
+        ConnectionState.Pairing -> Triple("Pairing", "Exchanging the one-time credential…", Violet)
+        is ConnectionState.Connecting -> Triple("Connecting", connection.endpoint, Violet)
+        is ConnectionState.Hydrating -> Triple("Syncing", "Loading authoritative HomeBot state…", Violet)
+        is ConnectionState.Live -> Triple("Connected", "${connection.snapshot.bots.size} Bots", Success)
+        is ConnectionState.Reconnecting -> Triple("Reconnecting", "Attempt ${connection.attempt}; retaining the last safe view.", Warning)
+        is ConnectionState.VersionIncompatible -> Triple("Update required", "Client and server protocols do not overlap.", Danger)
+        ConnectionState.Revoked -> Triple("Device revoked", "Pair again from an owner device.", Danger)
+        is ConnectionState.Offline -> Triple("Offline", connection.failure.toString(), Warning)
     }
-    Card(shape = RoundedCornerShape(18.dp), modifier = Modifier.fillMaxWidth()) {
-        Column(Modifier.padding(18.dp)) {
+    HomeBotCard(values.first, values.second, values.third) {}
+}
+
+@Composable
+private fun HomeBotCard(title: String, detail: String, color: Color = Color.Unspecified, onClick: () -> Unit) {
+    Card(shape = CardShape, modifier = Modifier.fillMaxWidth().clickable(onClick = onClick)) {
+        Column(Modifier.padding(16.dp)) {
             Text(title, color = color, fontWeight = FontWeight.Bold)
-            Text(detail, color = Color(0xFF6E6978), modifier = Modifier.padding(top = 4.dp))
+            Text(detail, color = Muted, modifier = Modifier.padding(top = 4.dp))
         }
     }
 }
 
-@Composable
-private fun HomeBotTheme(content: @Composable () -> Unit) {
-    MaterialTheme(content = content)
-}
+@Composable private fun EmptyLoading(message: String) { Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Text(message, color = Muted) } }
+@Composable private fun ErrorBanner(message: String, dismiss: () -> Unit) { Card(Modifier.fillMaxWidth().padding(12.dp), shape = CardShape) { Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) { Text(message, color = Danger, modifier = Modifier.weight(1f)); TextButton(onClick = dismiss) { Text("Dismiss") } } } }
+@Composable private fun HomeBotMark() { Box(Modifier.background(Violet, RoundedCornerShape(14.dp)).padding(13.dp, 9.dp)) { Text("H", color = Color.White, fontWeight = FontWeight.Black, fontSize = 20.sp) } }
+@Composable private fun NavButton(label: String, selected: Boolean, onClick: () -> Unit) { TextButton(onClick = onClick) { Text(label, color = if (selected) Violet else Muted, fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal) } }
+@Composable private fun HomeBotTheme(content: @Composable () -> Unit) { MaterialTheme(content = content) }
+
+private val Canvas = Color(0xFFF7F6F9)
+private val Violet = Color(0xFF7657FF)
+private val Muted = Color(0xFF6E6978)
+private val Success = Color(0xFF198754)
+private val Warning = Color(0xFFE07A00)
+private val Danger = Color(0xFFB3261E)
+private val CardShape = RoundedCornerShape(18.dp)

@@ -1,14 +1,38 @@
 package dev.homebot.android.connection
 
 import dev.homebot.protocol.BotSummary
+import dev.homebot.protocol.BotMutationRequest
+import dev.homebot.protocol.BotResponse
 import dev.homebot.protocol.ChatSummary
+import dev.homebot.protocol.ChatTimelineResponse
+import dev.homebot.protocol.CheckpointDiffResponse
+import dev.homebot.protocol.CheckpointRestoreSummary
 import dev.homebot.protocol.ClientMessage
+import dev.homebot.protocol.CreateBotRequest
+import dev.homebot.protocol.CreateDirectChatRequest
+import dev.homebot.protocol.CreateDirectChatResponse
+import dev.homebot.protocol.CreateGroupChatRequest
+import dev.homebot.protocol.CreateGroupChatResponse
 import dev.homebot.protocol.ErrorEnvelope
 import dev.homebot.protocol.ExchangePairingRequest
+import dev.homebot.protocol.GroupChatSummary
+import dev.homebot.protocol.GroupTimelineResponse
+import dev.homebot.protocol.HandoffGroupRequest
+import dev.homebot.protocol.MessageMutationRequest
+import dev.homebot.protocol.MessageSummary
 import dev.homebot.protocol.PROTOCOL_VERSION
 import dev.homebot.protocol.PairingExchangeResponse
 import dev.homebot.protocol.ProtocolRange
+import dev.homebot.protocol.RepositoryWorkspaceSummary
+import dev.homebot.protocol.RestoreCheckpointRequest
+import dev.homebot.protocol.SendGroupMessageRequest
+import dev.homebot.protocol.SendMessageRequest
+import dev.homebot.protocol.SendMessageResponse
 import dev.homebot.protocol.Snapshot
+import dev.homebot.protocol.UpdateBotRequest
+import dev.homebot.protocol.VcsStatus
+import dev.homebot.protocol.WorkingTreeDiffResponse
+import dev.homebot.protocol.ApprovalDecisionRequest
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -120,6 +144,127 @@ class HomeBotClient(
         }.onFailure { failure ->
             mutableState.value = ConnectionState.Offline(failure.toClientFailure(), cursor)
         }
+    }
+
+    suspend fun createBot(request: CreateBotRequest): Result<BotSummary> = authenticated {
+        post("api/v1/bots", request, CreateBotRequest.serializer(), BotResponse.serializer()).bot
+    }
+
+    suspend fun updateBot(botId: String, request: UpdateBotRequest): Result<BotSummary> = authenticated {
+        put("api/v1/bots/$botId", request, UpdateBotRequest.serializer(), BotResponse.serializer()).bot
+    }
+
+    suspend fun setBotArchived(botId: String, archived: Boolean): Result<BotSummary> = authenticated {
+        val request = mutation()
+        post(
+            "api/v1/bots/$botId/${if (archived) "archive" else "restore"}",
+            request,
+            BotMutationRequest.serializer(),
+            BotResponse.serializer(),
+        ).bot
+    }
+
+    suspend fun createDirectChat(botId: String): Result<ChatSummary> = authenticated {
+        val request = CreateDirectChatRequest(ids(), ids(), botId)
+        post(
+            "api/v1/chats/direct",
+            request,
+            CreateDirectChatRequest.serializer(),
+            CreateDirectChatResponse.serializer(),
+        ).chat
+    }
+
+    suspend fun directTimeline(chatId: String): Result<ChatTimelineResponse> = authenticated {
+        get("api/v1/chats/$chatId/timeline", ChatTimelineResponse.serializer())
+    }
+
+    suspend fun groupTimeline(chatId: String): Result<GroupTimelineResponse> = authenticated {
+        get("api/v1/groups/$chatId/timeline", GroupTimelineResponse.serializer())
+    }
+
+    suspend fun createGroup(request: CreateGroupChatRequest): Result<CreateGroupChatResponse> = authenticated {
+        post("api/v1/groups", request, CreateGroupChatRequest.serializer(), CreateGroupChatResponse.serializer())
+    }
+
+    suspend fun sendMessage(chatId: String, content: String, steering: Boolean = false): Result<SendMessageResponse> = authenticated {
+        val request = SendMessageRequest(ids(), ids(), content, emptyList(), null, emptyList())
+        post(
+            "api/v1/chats/$chatId/${if (steering) "steer" else "messages"}",
+            request,
+            SendMessageRequest.serializer(),
+            SendMessageResponse.serializer(),
+        )
+    }
+
+    suspend fun sendGroupMessage(
+        chatId: String,
+        content: String,
+        mentionedBotIds: List<String>,
+    ): Result<MessageSummary> = authenticated {
+        val request = SendGroupMessageRequest(ids(), ids(), content, mentionedBotIds, emptyList())
+        post(
+            "api/v1/groups/$chatId/messages",
+            request,
+            SendGroupMessageRequest.serializer(),
+            MessageSummary.serializer(),
+        )
+    }
+
+    suspend fun stop(chatId: String, group: Boolean): Result<Unit> = authenticated {
+        val path = if (group) "api/v1/groups/$chatId/stop" else "api/v1/chats/$chatId/stop"
+        postDiscarding(path, mutation(), BotMutationRequest.serializer())
+    }
+
+    suspend fun retry(chatId: String, messageId: String): Result<Unit> = authenticated {
+        val request = MessageMutationRequest(ids(), ids())
+        postDiscarding(
+            "api/v1/chats/$chatId/messages/$messageId/retry",
+            request,
+            MessageMutationRequest.serializer(),
+        )
+    }
+
+    suspend fun decideApproval(approvalId: String, allow: Boolean): Result<Unit> = authenticated {
+        val request = ApprovalDecisionRequest(ids(), ids(), allow)
+        postDiscarding(
+            "api/v1/approvals/$approvalId/decision",
+            request,
+            ApprovalDecisionRequest.serializer(),
+        )
+    }
+
+    suspend fun handoff(chatId: String, fromBotId: String, toBotId: String): Result<Unit> = authenticated {
+        val request = HandoffGroupRequest(ids(), ids(), fromBotId, toBotId, null, "Android ownership handoff")
+        postDiscarding("api/v1/groups/$chatId/handoff", request, HandoffGroupRequest.serializer())
+    }
+
+    suspend fun markChatRead(chatId: String): Result<Unit> = authenticated {
+        postDiscarding("api/v1/chats/$chatId/read", mutation(), BotMutationRequest.serializer())
+    }
+
+    suspend fun vcsStatus(chatId: String): Result<VcsStatus> = authenticated {
+        get("api/v1/chats/$chatId/vcs/status", VcsStatus.serializer())
+    }
+
+    suspend fun workingTreeDiff(chatId: String, staged: Boolean = false): Result<WorkingTreeDiffResponse> = authenticated {
+        get("api/v1/chats/$chatId/vcs/diff?staged=$staged", WorkingTreeDiffResponse.serializer())
+    }
+
+    suspend fun checkpointDiff(chatId: String, from: String, to: String): Result<CheckpointDiffResponse> = authenticated {
+        get(
+            "api/v1/chats/$chatId/checkpoints/diff?from_checkpoint_id=$from&to_checkpoint_id=$to",
+            CheckpointDiffResponse.serializer(),
+        )
+    }
+
+    suspend fun restoreCheckpoint(checkpointId: String): Result<CheckpointRestoreSummary> = authenticated {
+        val request = RestoreCheckpointRequest(ids(), ids())
+        post(
+            "api/v1/checkpoints/$checkpointId/restore",
+            request,
+            RestoreCheckpointRequest.serializer(),
+            CheckpointRestoreSummary.serializer(),
+        )
     }
 
     internal suspend fun connectOnce(): DisconnectReason {
@@ -345,6 +490,11 @@ class HomeBotClient(
                     json.decodeFromJsonElement<ChatSummary>(event.getValue("chat")),
                 ) { it.id },
             )
+            "group_chat_changed" -> projection.copy(
+                group_chats = projection.group_chats.upsert(
+                    json.decodeFromJsonElement<GroupChatSummary>(event.getValue("group")),
+                ) { it.id },
+            )
             else -> projection
         }
         cursor = sequence
@@ -365,6 +515,82 @@ class HomeBotClient(
         }
     }
 
+    private suspend fun <T> authenticated(block: suspend AuthenticatedApi.() -> T): Result<T> = runCatching {
+        val session = sessions.load() ?: throw ClientException(
+            ClientFailure.Structured(401, ErrorEnvelope("unauthenticated", "Pair this device first", false)),
+        )
+        val endpoint = EndpointPolicy.normalize(session.endpoint).getOrThrow()
+        AuthenticatedApi(endpoint, session).block()
+    }.onFailure { failure ->
+        if (failure is ClientException && failure.failure is ClientFailure.Structured && failure.failure.status == 401) {
+            sessions.clear()
+            mutableState.value = ConnectionState.Revoked
+        }
+    }
+
+    private inner class AuthenticatedApi(
+        private val endpoint: HttpUrl,
+        private val session: SessionCredentials,
+    ) {
+        suspend fun <RequestType, ResponseType> post(
+            path: String,
+            payload: RequestType,
+            requestSerializer: kotlinx.serialization.KSerializer<RequestType>,
+            responseSerializer: kotlinx.serialization.KSerializer<ResponseType>,
+        ): ResponseType = request("POST", path, json.encodeToString(requestSerializer, payload), responseSerializer)
+
+        suspend fun <RequestType, ResponseType> put(
+            path: String,
+            payload: RequestType,
+            requestSerializer: kotlinx.serialization.KSerializer<RequestType>,
+            responseSerializer: kotlinx.serialization.KSerializer<ResponseType>,
+        ): ResponseType = request("PUT", path, json.encodeToString(requestSerializer, payload), responseSerializer)
+
+        suspend fun <ResponseType> get(
+            path: String,
+            responseSerializer: kotlinx.serialization.KSerializer<ResponseType>,
+        ): ResponseType = request("GET", path, null, responseSerializer)
+
+        suspend fun <RequestType> postDiscarding(
+            path: String,
+            payload: RequestType,
+            requestSerializer: kotlinx.serialization.KSerializer<RequestType>,
+        ) {
+            val request = requestBuilder(path).post(json.encodeToString(requestSerializer, payload).jsonBody()).build()
+            executeDiscarding(request)
+        }
+
+        private suspend fun <ResponseType> request(
+            method: String,
+            path: String,
+            payload: String?,
+            serializer: kotlinx.serialization.KSerializer<ResponseType>,
+        ): ResponseType {
+            val builder = requestBuilder(path)
+            when (method) {
+                "GET" -> builder.get()
+                "POST" -> builder.post(requireNotNull(payload).jsonBody())
+                "PUT" -> builder.put(requireNotNull(payload).jsonBody())
+            }
+            return executeJson(builder.build(), serializer)
+        }
+
+        private fun requestBuilder(path: String): Request.Builder = Request.Builder()
+            .url(endpoint.api(path))
+            .header("Authorization", "Bearer ${session.deviceSession}")
+            .header("X-HomeBot-Protocol", PROTOCOL_VERSION.toString())
+            .header("Cache-Control", "no-store")
+    }
+
+    private suspend fun executeDiscarding(request: Request) = withContext(Dispatchers.IO) {
+        http.newCall(request).execute().use { response ->
+            if (!response.isSuccessful) throw ClientException(response.structuredFailure())
+        }
+    }
+
+    private fun ids(): String = UUID.randomUUID().toString()
+    private fun mutation(): BotMutationRequest = BotMutationRequest(ids(), ids())
+
     private fun Response.structuredFailure(): ClientFailure.Structured {
         val payload = runCatching { json.decodeFromString<ErrorEnvelope>(body.string()) }.getOrElse {
             ErrorEnvelope("http_error", "HomeBot request failed", code >= 500)
@@ -372,10 +598,25 @@ class HomeBotClient(
         return ClientFailure.Structured(code, payload)
     }
 
-    private fun HttpUrl.api(path: String): HttpUrl = newBuilder().addPathSegments(path).build()
+    private fun HttpUrl.api(path: String): HttpUrl {
+        val components = path.split('?', limit = 2)
+        val builder = newBuilder().addPathSegments(components[0])
+        components.getOrNull(1)?.split('&')?.forEach { parameter ->
+            val pair = parameter.split('=', limit = 2)
+            builder.addQueryParameter(pair[0], pair.getOrNull(1))
+        }
+        return builder.build()
+    }
     private fun String.jsonBody() = toRequestBody(JSON_MEDIA_TYPE)
 
-    private class ClientException(val failure: ClientFailure) : Exception()
+    private class ClientException(val failure: ClientFailure) : Exception(
+        when (failure) {
+            is ClientFailure.Structured -> failure.error.message
+            is ClientFailure.InvalidEndpoint -> failure.message
+            is ClientFailure.Protocol -> failure.message
+            is ClientFailure.Network -> failure.message
+        },
+    )
     private fun Throwable.toClientFailure(): ClientFailure = when (this) {
         is ClientException -> failure
         is IllegalArgumentException -> ClientFailure.InvalidEndpoint(message ?: "Invalid value")

@@ -6,7 +6,7 @@ pkgdesc='Your self-hosted AI team'
 arch=('x86_64')
 url='https://github.com/luinbytes/HomeBot'
 license=('MIT')
-depends=('dbus' 'fontconfig' 'gcc-libs' 'glibc' 'libx11' 'libxcursor' 'libxi' 'libxkbcommon' 'libxrandr' 'mesa' 'wayland')
+depends=('dbus' 'fontconfig' 'gcc-libs' 'glibc' 'libx11' 'libxcursor' 'libxi' 'libxkbcommon' 'libxrandr' 'mesa' 'sqlite' 'wayland')
 makedepends=('cargo')
 source=("HomeBot-${pkgver}.tar.gz::https://github.com/luinbytes/HomeBot/archive/refs/tags/v${pkgver}.tar.gz")
 sha256sums=('@SOURCE_SHA256@')
@@ -18,12 +18,14 @@ prepare() {
 
 build() {
   cd "HomeBot-${pkgver}"
-  CARGO_TARGET_DIR=target cargo build --frozen --release -p homebot-desktop -p homebot-server
+  LIBSQLITE3_SYS_USE_PKG_CONFIG=1 CARGO_TARGET_DIR=target \
+    cargo build --frozen --release -p homebot-desktop -p homebot-server
 }
 
 check() {
   cd "HomeBot-${pkgver}"
-  CARGO_TARGET_DIR=target cargo test --frozen --release -p homebot-server --bin homebot-server
+  LIBSQLITE3_SYS_USE_PKG_CONFIG=1 CARGO_TARGET_DIR=target \
+    cargo test --frozen --release -p homebot-server --bin homebot-server
 }
 
 package() {

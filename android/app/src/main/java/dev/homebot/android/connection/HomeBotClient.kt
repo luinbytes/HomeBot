@@ -89,6 +89,7 @@ import okhttp3.WebSocketListener
 import java.net.URI
 import java.net.URLDecoder
 import java.util.UUID
+import java.util.concurrent.atomic.AtomicReference
 import java.security.MessageDigest
 import kotlin.coroutines.cancellation.CancellationException
 
@@ -559,6 +560,7 @@ class HomeBotClient(
         private val disconnected: CompletableDeferred<DisconnectReason>,
     ) : WebSocketListener() {
         private val events = Channel<Pair<WebSocket, String>>(EVENT_BUFFER_CAPACITY)
+        private val terminalFailure = AtomicReference<ClientFailure?>(null)
         private val processor = scope.launch {
             for ((webSocket, text) in events) {
                 runCatching { handleEvent(webSocket, endpoint, text) }
@@ -586,20 +588,22 @@ class HomeBotClient(
 
         override fun onMessage(webSocket: WebSocket, text: String) {
             if (text.toByteArray(Charsets.UTF_8).size > MAX_EVENT_BYTES) {
+                terminalFailure.compareAndSet(
+                    null,
+                    ClientFailure.Protocol("HomeBot event exceeded the size limit"),
+                )
                 webSocket.close(1009, "HomeBot event exceeded the size limit")
                 webSocket.cancel()
-                disconnected.complete(
-                    DisconnectReason.Retry(ClientFailure.Protocol("HomeBot event exceeded the size limit")),
-                )
                 events.cancel()
                 return
             }
             if (events.trySend(webSocket to text).isFailure) {
+                terminalFailure.compareAndSet(
+                    null,
+                    ClientFailure.Protocol("HomeBot event processor is backpressured"),
+                )
                 webSocket.close(1013, "HomeBot event processor is backpressured")
                 webSocket.cancel()
-                disconnected.complete(
-                    DisconnectReason.Retry(ClientFailure.Protocol("HomeBot event processor is backpressured")),
-                )
             }
         }
 
@@ -624,7 +628,9 @@ class HomeBotClient(
                 mutableState.value = ConnectionState.Revoked
                 disconnected.complete(DisconnectReason.Revoked)
             } else {
-                disconnected.complete(DisconnectReason.Retry(throwable.toClientFailure()))
+                disconnected.complete(
+                    DisconnectReason.Retry(terminalFailure.get() ?: throwable.toClientFailure()),
+                )
             }
         }
     }

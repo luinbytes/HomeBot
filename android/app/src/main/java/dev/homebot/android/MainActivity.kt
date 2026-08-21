@@ -351,6 +351,14 @@ private fun ConnectedSettings(viewModel: MainViewModel, live: ConnectionState.Li
                         TextButton(onClick = { viewModel.selectRoutine(routine.id) }) { Text("Details & history") }
                         Button(onClick = { viewModel.runRoutine(routine.id) }, enabled = !routine.draft) { Text("Run now") }
                     }
+                    Row {
+                        TextButton(onClick = { viewModel.toggleRoutine(routine.id, !routine.enabled) }) {
+                            Text(if (routine.enabled) "Disable" else "Enable")
+                        }
+                        TextButton(onClick = { viewModel.scheduleRoutine(routine.id) }, enabled = !routine.draft) {
+                            Text("Schedule in 5 minutes")
+                        }
+                    }
                 }
             }
         }

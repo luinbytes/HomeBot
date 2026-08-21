@@ -4343,6 +4343,17 @@ impl Storage {
         proposed: &AttachmentRecord,
     ) -> Result<AttachmentClaim, StorageError> {
         let mut transaction = self.pool.begin().await?;
+        // Reserve the SQLite writer before taking the idempotency snapshot.
+        // Without this harmless write, a concurrent scheduler commit can turn
+        // the later insert into SQLITE_BUSY_SNAPSHOT instead of honoring the
+        // configured busy timeout.
+        sqlx::query(
+            "UPDATE attachment_create_requests SET request_hash = request_hash
+             WHERE idempotency_key = ?",
+        )
+        .bind(idempotency_key.to_string())
+        .execute(&mut *transaction)
+        .await?;
         let existing = sqlx::query(
             "SELECT request_hash, attachment_id FROM attachment_create_requests WHERE idempotency_key = ?",
         )

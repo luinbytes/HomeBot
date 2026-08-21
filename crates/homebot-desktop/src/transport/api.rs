@@ -66,6 +66,18 @@ pub(super) async fn execute_command(
         DesktopCommand::RevokeDevice(device_id) => {
             revoke_device(client, config, events, device_id).await
         }
+        DesktopCommand::Search(query) => {
+            let response = response_json(
+                authenticated(client, config, Method::GET, "/api/v1/search")
+                    .query(&[("q", query)])
+                    .send()
+                    .await
+                    .map_err(request_error)?,
+            )
+            .await?;
+            let _ = events.send(DesktopEvent::Search(response));
+            Ok(())
+        }
         DesktopCommand::Shutdown => Ok(()),
     }
 }

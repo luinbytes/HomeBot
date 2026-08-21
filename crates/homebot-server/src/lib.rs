@@ -11,6 +11,7 @@ mod plugins;
 mod provider_turn;
 mod routines;
 mod scheduler;
+mod search;
 mod secrets;
 mod skills;
 mod source_control;
@@ -233,6 +234,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/bots/{bot_id}/hide", post(bots::hide))
         .route("/api/v1/bots/{bot_id}/unhide", post(bots::unhide))
         .route("/api/v1/bots/{bot_id}/duplicate", post(bots::duplicate))
+        .route("/api/v1/search", get(search::global))
         .route("/api/v1/chats/direct", post(chats::create_direct))
         .route("/api/v1/chats/{chat_id}/timeline", get(chats::timeline))
         .route(

@@ -20,6 +20,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -98,6 +99,7 @@ private fun ProductShell(viewModel: MainViewModel, live: ConnectionState.Live, s
                 NavButton("Chats", state.destination is ProductDestination.DirectChat || state.destination is ProductDestination.GroupChat) {
                     live.snapshot.chats.firstOrNull()?.let { viewModel.openDirectChat(it.id) } ?: viewModel.showBots()
                 }
+                NavButton("Search", state.destination is ProductDestination.Search, viewModel::showSearch)
                 NavButton("Settings", state.destination is ProductDestination.Settings, viewModel::showSettings)
             }
         },
@@ -107,10 +109,37 @@ private fun ProductShell(viewModel: MainViewModel, live: ConnectionState.Live, s
                 ProductDestination.Bots -> RosterScreen(viewModel, live)
                 is ProductDestination.DirectChat -> DirectChatScreen(viewModel, state.directTimeline, state)
                 is ProductDestination.GroupChat -> GroupChatScreen(viewModel, state.groupTimeline)
+                ProductDestination.Search -> SearchScreen(viewModel, state)
                 ProductDestination.Settings -> ConnectedSettings(viewModel, live, state)
             }
             if (state.loading) CircularProgressIndicator(Modifier.align(Alignment.Center), color = Violet)
             state.error?.let { ErrorBanner(it, viewModel::clearError) }
+        }
+    }
+}
+
+@Composable
+private fun SearchScreen(viewModel: MainViewModel, state: AndroidProductState) {
+    var query by rememberSaveable { mutableStateOf(state.searchQuery) }
+    Column(Modifier.fillMaxSize().padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Text("Search HomeBot", fontSize = 28.sp, fontWeight = FontWeight.Bold, modifier = Modifier.semantics { heading() })
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedTextField(query, { query = it }, label = { Text("Messages, files, links and routines") }, modifier = Modifier.weight(1f))
+            Button(onClick = { viewModel.search(query) }, enabled = query.isNotBlank()) { Text("Search") }
+        }
+        if (state.searchQuery.isNotBlank() && state.searchResults.isEmpty() && !state.loading) {
+            Text("No results for “${state.searchQuery}”.", color = Muted)
+        }
+        LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            items(state.searchResults, key = { "${it.kind}:${it.deep_link}" }) { result ->
+                Card(Modifier.fillMaxWidth().clickable { viewModel.openSearchResult(result) }, shape = CardShape) {
+                    Column(Modifier.padding(14.dp)) {
+                        Text(result.title, fontWeight = FontWeight.SemiBold)
+                        Text(result.kind.name.lowercase(), color = Violet, fontSize = 12.sp)
+                        if (result.snippet.isNotBlank()) Text(result.snippet, color = Muted, maxLines = 3)
+                    }
+                }
+            }
         }
     }
 }

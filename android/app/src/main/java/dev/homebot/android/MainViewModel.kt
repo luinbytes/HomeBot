@@ -81,7 +81,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         when (uri.host) {
             "chat" -> uri.pathSegments.firstOrNull()?.let { chatId ->
                 val activity = uri.getQueryParameter("activity")
-                mutableProduct.value = mutableProduct.value.copy(highlightedActivityId = activity)
+                val message = uri.getQueryParameter("message")
+                mutableProduct.value = mutableProduct.value.copy(
+                    highlightedActivityId = activity,
+                    highlightedMessageId = message,
+                )
                 if (liveSnapshot()?.group_chats?.any { it.id == chatId } == true) openGroupChat(chatId)
                 else openDirectChat(chatId)
             }
@@ -91,6 +95,23 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
             "settings" -> showSettings()
         }
+    }
+
+    fun showSearch() {
+        mutableProduct.value = mutableProduct.value.copy(destination = ProductDestination.Search, error = null)
+    }
+
+    fun search(query: String) = perform {
+        val response = homeBot.client.search(query).getOrThrow()
+        mutableProduct.value = mutableProduct.value.copy(
+            destination = ProductDestination.Search,
+            searchQuery = response.query,
+            searchResults = response.results,
+        )
+    }
+
+    fun openSearchResult(result: dev.homebot.protocol.SearchResultSummary) {
+        handleDeepLink(Uri.parse(result.deep_link))
     }
 
     fun showSettings() {

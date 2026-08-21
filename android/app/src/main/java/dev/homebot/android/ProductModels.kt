@@ -11,11 +11,13 @@ import dev.homebot.protocol.RoutineSummary
 import dev.homebot.protocol.RoutineTriggerSummary
 import dev.homebot.protocol.SecretSummary
 import dev.homebot.protocol.SkillSummary
+import dev.homebot.protocol.SearchResultSummary
 
 sealed interface ProductDestination {
     data object Bots : ProductDestination
     data class DirectChat(val chatId: String) : ProductDestination
     data class GroupChat(val chatId: String) : ProductDestination
+    data object Search : ProductDestination
     data object Settings : ProductDestination
 }
 
@@ -38,6 +40,9 @@ data class AndroidProductState(
     val currentDevice: DeviceSessionSummary? = null,
     val selectedRoutineId: String? = null,
     val highlightedActivityId: String? = null,
+    val highlightedMessageId: String? = null,
+    val searchQuery: String = "",
+    val searchResults: List<SearchResultSummary> = emptyList(),
     val loading: Boolean = false,
     val error: String? = null,
 )

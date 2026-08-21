@@ -19,20 +19,20 @@ use homebot_protocol::{
     CreateRoutineTriggerRequest, CreateSkillRequest, DeleteBotRequest,
     DeliverRoutineTriggerRequest, DetachChatWorkspaceRequest, DeviceSessionSummary,
     DuplicateRoutineRequest, DuplicateSkillRequest, ExchangePairingRequest,
-    FinalizeAttachmentRequest, GroupBotStatus, GroupTimelineResponse, HandoffGroupRequest,
-    ImportSkillRequest, InteractionMode, MissedRunPolicy, OverlapPolicy, PairingEndpointKind,
-    PairingExchangeResponse, PairingOffer, PluginConnectionState, PluginMutationRequest,
-    PluginSummary, PullRequestMetadata, PullRequestMutationResponse, QueuedPromptKind,
-    ReactionMutationRequest, RecordedAction, RecordedActor, RepositoryWorkspaceSummary,
-    RestoreCheckpointRequest, RetryPolicy, RevokeDeviceSessionRequest, RoutineDefinition,
-    RoutineInput, RoutineInputKind, RoutineJobSummary, RoutineRecordingSummary, RoutineRunSummary,
-    RoutineSchedule, RoutineStep, RoutineStepStatus, RoutineSummary, RoutineTriggerDefinition,
-    RoutineTriggerSource, RunRoutineRequest, SecretSummary, SendGroupMessageRequest,
-    SendMessageRequest, SendMessageResponse, SetInteractionModeRequest, SkillAssignmentRequest,
-    SkillBundle, SkillContext, SkillDefinition, SkillImportConflictPolicy, SkillSummary,
-    SkillToolReference, StartRoutineRecordingRequest, TurnCheckpointSummary, UpdateBotRequest,
-    UpdateGroupParticipantRequest, UpdateRoutineRequest, UpdateSkillRequest, VcsCommitRequest,
-    VcsCommitResult, VcsCreateBranchRequest, VcsMutationStatus, VcsPushRequest,
+    FinalizeAttachmentRequest, GlobalSearchResponse, GroupBotStatus, GroupTimelineResponse,
+    HandoffGroupRequest, ImportSkillRequest, InteractionMode, MissedRunPolicy, OverlapPolicy,
+    PairingEndpointKind, PairingExchangeResponse, PairingOffer, PluginConnectionState,
+    PluginMutationRequest, PluginSummary, PullRequestMetadata, PullRequestMutationResponse,
+    QueuedPromptKind, ReactionMutationRequest, RecordedAction, RecordedActor,
+    RepositoryWorkspaceSummary, RestoreCheckpointRequest, RetryPolicy, RevokeDeviceSessionRequest,
+    RoutineDefinition, RoutineInput, RoutineInputKind, RoutineJobSummary, RoutineRecordingSummary,
+    RoutineRunSummary, RoutineSchedule, RoutineStep, RoutineStepStatus, RoutineSummary,
+    RoutineTriggerDefinition, RoutineTriggerSource, RunRoutineRequest, SecretSummary,
+    SendGroupMessageRequest, SendMessageRequest, SendMessageResponse, SetInteractionModeRequest,
+    SkillAssignmentRequest, SkillBundle, SkillContext, SkillDefinition, SkillImportConflictPolicy,
+    SkillSummary, SkillToolReference, StartRoutineRecordingRequest, TurnCheckpointSummary,
+    UpdateBotRequest, UpdateGroupParticipantRequest, UpdateRoutineRequest, UpdateSkillRequest,
+    VcsCommitRequest, VcsCommitResult, VcsCreateBranchRequest, VcsMutationStatus, VcsPushRequest,
     VcsRemoteMutationResponse, VcsStatus, WorkingContextSummary, WorkingTreeCondition,
     WorkingTreeDiffResponse, WorkspaceBranchesResponse, WorkspaceMode,
 };
@@ -258,6 +258,133 @@ async fn test_app() -> Result<TestApp, homebot_storage::StorageError> {
         router: router(AppState::new(storage, "correct-token")),
         _directory: directory,
     })
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn global_search_is_owner_scoped_and_returns_exact_targets()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let storage = Storage::open(&directory.path().join("homebot.db")).await?;
+    let owner = Uuid::nil();
+    let other_owner = Uuid::now_v7();
+    let bot = storage
+        .create_bot(owner, homebot_domain::Bot::create("Nova", "Research")?, 1)
+        .await?;
+    let chat = storage
+        .create_direct_chat(owner, bot.id.0, Uuid::now_v7(), 2)
+        .await?;
+    let message_id = Uuid::now_v7();
+    storage
+        .append_user_message(
+            owner,
+            chat.id,
+            message_id,
+            "Review the launch brief at https://example.test/launch.",
+            &[],
+            None,
+            Vec::new(),
+            &[],
+            3,
+        )
+        .await?;
+    let artifact_id = Uuid::now_v7();
+    storage
+        .insert_artifact(&homebot_storage::ArtifactRecord {
+            id: artifact_id,
+            owner_id: owner,
+            chat_id: chat.id,
+            message_id: Some(message_id),
+            activity_id: None,
+            name: "launch-brief.pdf".to_owned(),
+            kind: "document".to_owned(),
+            media_type: "application/pdf".to_owned(),
+            size_bytes: 12,
+            sha256: "0".repeat(64),
+            storage_path: "fixture/launch-brief.pdf".to_owned(),
+            created_at_ms: 4,
+        })
+        .await?;
+    let routine_id = Uuid::now_v7();
+    storage
+        .create_routine(&homebot_storage::RoutineRecord {
+            id: routine_id,
+            owner_id: owner,
+            bot_id: bot.id.0,
+            name: "Launch review".to_owned(),
+            description: "Review the launch brief".to_owned(),
+            enabled: false,
+            draft: true,
+            active_version_id: Uuid::now_v7(),
+            version: 1,
+            definition: RoutineDefinition {
+                inputs: Vec::new(),
+                steps: Vec::new(),
+                expected_outputs: Vec::new(),
+            },
+            created_at_ms: 5,
+            updated_at_ms: 5,
+        })
+        .await?;
+    let foreign_bot = storage
+        .create_bot(
+            other_owner,
+            homebot_domain::Bot::create("Foreign", "Private")?,
+            6,
+        )
+        .await?;
+    let foreign_chat = storage
+        .create_direct_chat(other_owner, foreign_bot.id.0, Uuid::now_v7(), 7)
+        .await?;
+    storage
+        .append_user_message(
+            other_owner,
+            foreign_chat.id,
+            Uuid::now_v7(),
+            "launch secret",
+            &[],
+            None,
+            Vec::new(),
+            &[],
+            8,
+        )
+        .await?;
+
+    let app = router(AppState::new(storage, "correct-token"));
+    let unauthorized = app
+        .clone()
+        .oneshot(Request::get("/api/v1/search?q=launch").body(Body::empty())?)
+        .await?;
+    assert_eq!(unauthorized.status(), StatusCode::UNAUTHORIZED);
+    let response = app
+        .oneshot(
+            Request::get("/api/v1/search?q=launch")
+                .header("authorization", "Bearer correct-token")
+                .body(Body::empty())?,
+        )
+        .await?;
+    let response = response_json::<GlobalSearchResponse>(response).await?;
+    assert!(response.results.iter().any(|result| {
+        result.message_id == Some(message_id)
+            && result.deep_link == format!("homebot://chat/{}?message={message_id}", chat.id)
+    }));
+    assert!(response.results.iter().any(|result| {
+        result.artifact_id == Some(artifact_id)
+            && result
+                .deep_link
+                .contains(&format!("artifact={artifact_id}"))
+    }));
+    assert!(response.results.iter().any(|result| {
+        result.routine_id == Some(routine_id)
+            && result.deep_link == format!("homebot://routine/{routine_id}")
+    }));
+    assert!(
+        response
+            .results
+            .iter()
+            .all(|result| result.chat_id != Some(foreign_chat.id))
+    );
+    Ok(())
 }
 
 #[tokio::test]

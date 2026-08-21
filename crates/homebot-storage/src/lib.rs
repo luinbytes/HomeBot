@@ -20,7 +20,12 @@ use sqlx::{
     migrate::MigrateError,
     sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous},
 };
-use std::{collections::HashSet, path::Path, str::FromStr, time::Duration};
+use std::{
+    collections::HashSet,
+    path::{Path, PathBuf},
+    str::FromStr,
+    time::Duration,
+};
 use uuid::Uuid;
 
 pub const SCHEMA_VERSION: u32 = 17;
@@ -132,6 +137,8 @@ pub enum StorageError {
     Io(#[from] std::io::Error),
     #[error("database path is not valid UTF-8")]
     InvalidPath,
+    #[error("database schema version {found} is newer than supported version {supported}")]
+    SchemaTooNew { found: u32, supported: u32 },
     #[error("domain validation failed: {0}")]
     Domain(#[from] DomainError),
     #[error("Bot was not found")]
@@ -1846,6 +1853,7 @@ impl Storage {
     ///
     /// Fails closed if the database cannot be opened, migrated, or verified.
     pub async fn open(path: &Path) -> Result<Self, StorageError> {
+        let existing_database = path.metadata().is_ok_and(|metadata| metadata.len() > 0);
         let options =
             SqliteConnectOptions::from_str(path.to_str().ok_or(StorageError::InvalidPath)?)?
                 .create_if_missing(true)
@@ -1857,6 +1865,17 @@ impl Storage {
             .max_connections(8)
             .connect_with(options)
             .await?;
+        verify_pool_integrity(&pool).await?;
+        let applied_version = schema_version(&pool).await?;
+        if applied_version > SCHEMA_VERSION {
+            return Err(StorageError::SchemaTooNew {
+                found: applied_version,
+                supported: SCHEMA_VERSION,
+            });
+        }
+        if existing_database && applied_version < SCHEMA_VERSION {
+            create_verified_migration_backup(&pool, path, applied_version).await?;
+        }
         MIGRATOR.run(&pool).await?;
         let storage = Self { pool };
         sqlx::query(
@@ -4036,12 +4055,7 @@ impl Storage {
     ///
     /// Returns an integrity error when corruption or broken references are reported.
     pub async fn verify_integrity(&self) -> Result<(), StorageError> {
-        let result: String = sqlx::query_scalar("PRAGMA quick_check")
-            .fetch_one(&self.pool)
-            .await?;
-        if result != "ok" {
-            return Err(StorageError::Integrity(result));
-        }
+        verify_pool_integrity(&self.pool).await?;
         if sqlx::query("PRAGMA foreign_key_check")
             .fetch_optional(&self.pool)
             .await?
@@ -4727,6 +4741,90 @@ impl Storage {
         target.sync_all()?;
         Ok(())
     }
+}
+
+async fn schema_version(pool: &SqlitePool) -> Result<u32, StorageError> {
+    let has_migrations: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM sqlite_schema WHERE type = 'table' AND name = '_sqlx_migrations'",
+    )
+    .fetch_one(pool)
+    .await?;
+    if has_migrations == 0 {
+        return Ok(0);
+    }
+    let version: i64 = sqlx::query_scalar("SELECT coalesce(max(version), 0) FROM _sqlx_migrations")
+        .fetch_one(pool)
+        .await?;
+    u32::try_from(version)
+        .map_err(|_| StorageError::Integrity("invalid migration version".to_owned()))
+}
+
+async fn verify_pool_integrity(pool: &SqlitePool) -> Result<(), StorageError> {
+    let results: Vec<String> = sqlx::query_scalar("PRAGMA quick_check")
+        .fetch_all(pool)
+        .await?;
+    if results.as_slice() != ["ok"] {
+        return Err(StorageError::Integrity(results.join("; ")));
+    }
+    Ok(())
+}
+
+fn migration_backup_path(path: &Path, from_version: u32) -> Result<PathBuf, StorageError> {
+    let filename = path
+        .file_name()
+        .and_then(std::ffi::OsStr::to_str)
+        .ok_or(StorageError::InvalidPath)?;
+    Ok(path.with_file_name(format!(
+        "{filename}.pre-migration-v{from_version}-to-v{SCHEMA_VERSION}.db"
+    )))
+}
+
+async fn create_verified_migration_backup(
+    pool: &SqlitePool,
+    database: &Path,
+    from_version: u32,
+) -> Result<PathBuf, StorageError> {
+    let backup = migration_backup_path(database, from_version)?;
+    if let Ok(metadata) = backup.symlink_metadata()
+        && (!metadata.file_type().is_file() || metadata.file_type().is_symlink())
+    {
+        return Err(StorageError::Integrity(
+            "migration backup path is not a regular file".to_owned(),
+        ));
+    }
+    if !backup.exists() {
+        if let Err(error) = sqlx::query("VACUUM INTO ?")
+            .bind(backup.to_str().ok_or(StorageError::InvalidPath)?)
+            .execute(pool)
+            .await
+        {
+            let _ = std::fs::remove_file(&backup);
+            return Err(StorageError::Sql(error));
+        }
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&backup, std::fs::Permissions::from_mode(0o600))?;
+    }
+    let options =
+        SqliteConnectOptions::from_str(backup.to_str().ok_or(StorageError::InvalidPath)?)?
+            .read_only(true)
+            .create_if_missing(false)
+            .foreign_keys(true);
+    let verification = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(options)
+        .await?;
+    verify_pool_integrity(&verification).await?;
+    let backup_version = schema_version(&verification).await?;
+    verification.close().await;
+    if backup_version != from_version {
+        return Err(StorageError::Integrity(format!(
+            "migration backup schema version {backup_version} did not match source {from_version}"
+        )));
+    }
+    Ok(backup)
 }
 
 fn validated_device_name(device_name: &str) -> Result<&str, StorageError> {
@@ -5587,6 +5685,7 @@ mod tests {
     use super::*;
     use homebot_domain::chat::{ActivityStatus, ApprovalStatus};
     use serde_json::json;
+    use std::borrow::Cow;
 
     fn skill_definition(instructions: &str) -> SkillDefinition {
         SkillDefinition {
@@ -7224,6 +7323,157 @@ mod tests {
         let database = directory.path().join("homebot.db");
         std::fs::write(&database, b"not a sqlite database")?;
         assert!(Storage::open(&database).await.is_err());
+        Ok(())
+    }
+
+    async fn create_prior_schema(path: &Path, version: u32) -> Result<(), StorageError> {
+        let options =
+            SqliteConnectOptions::from_str(path.to_str().ok_or(StorageError::InvalidPath)?)?
+                .create_if_missing(true)
+                .foreign_keys(true);
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(options)
+            .await?;
+        let partial = sqlx::migrate::Migrator {
+            migrations: Cow::Owned(
+                MIGRATOR
+                    .iter()
+                    .filter(|migration| migration.version <= i64::from(version))
+                    .cloned()
+                    .collect(),
+            ),
+            ignore_missing: false,
+            locking: true,
+            no_tx: false,
+        };
+        partial.run(&pool).await?;
+        pool.close().await;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn every_prior_schema_is_backed_up_verified_and_upgraded() -> Result<(), StorageError> {
+        let directory = tempfile::tempdir()?;
+        for version in 1..SCHEMA_VERSION {
+            let database = directory.path().join(format!("homebot-v{version}.db"));
+            create_prior_schema(&database, version).await?;
+            let storage = Storage::open(&database).await?;
+            assert_eq!(schema_version(storage.pool()).await?, SCHEMA_VERSION);
+            storage.pool.close().await;
+
+            let backup = migration_backup_path(&database, version)?;
+            assert!(backup.is_file(), "missing backup for schema {version}");
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                assert_eq!(backup.metadata()?.permissions().mode() & 0o777, 0o600);
+            }
+            let options =
+                SqliteConnectOptions::from_str(backup.to_str().ok_or(StorageError::InvalidPath)?)?
+                    .read_only(true);
+            let backup_pool = SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect_with(options)
+                .await?;
+            verify_pool_integrity(&backup_pool).await?;
+            assert_eq!(schema_version(&backup_pool).await?, version);
+            backup_pool.close().await;
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn newer_schema_is_refused_without_mutation() -> Result<(), StorageError> {
+        let directory = tempfile::tempdir()?;
+        let database = directory.path().join("future.db");
+        let storage = Storage::open(&database).await?;
+        sqlx::query("UPDATE _sqlx_migrations SET version = ? WHERE version = ?")
+            .bind(i64::from(SCHEMA_VERSION + 1))
+            .bind(i64::from(SCHEMA_VERSION))
+            .execute(storage.pool())
+            .await?;
+        storage.pool.close().await;
+        assert!(matches!(
+            Storage::open(&database).await,
+            Err(StorageError::SchemaTooNew {
+                found,
+                supported
+            }) if found == SCHEMA_VERSION + 1 && supported == SCHEMA_VERSION
+        ));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn failed_backup_prevents_migration_and_retry_recovers() -> Result<(), StorageError> {
+        let directory = tempfile::tempdir()?;
+        let database = directory.path().join("interrupted.db");
+        let prior = SCHEMA_VERSION - 1;
+        create_prior_schema(&database, prior).await?;
+        let backup = migration_backup_path(&database, prior)?;
+        std::fs::create_dir(&backup)?;
+        assert!(Storage::open(&database).await.is_err());
+
+        let options =
+            SqliteConnectOptions::from_str(database.to_str().ok_or(StorageError::InvalidPath)?)?
+                .read_only(true);
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(options)
+            .await?;
+        assert_eq!(schema_version(&pool).await?, prior);
+        pool.close().await;
+
+        std::fs::remove_dir(backup)?;
+        let recovered = Storage::open(&database).await?;
+        assert_eq!(schema_version(recovered.pool()).await?, SCHEMA_VERSION);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn verified_backup_is_reused_after_interrupted_launch() -> Result<(), StorageError> {
+        let directory = tempfile::tempdir()?;
+        let database = directory.path().join("restart.db");
+        let prior = SCHEMA_VERSION - 1;
+        create_prior_schema(&database, prior).await?;
+        let options =
+            SqliteConnectOptions::from_str(database.to_str().ok_or(StorageError::InvalidPath)?)?;
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(options)
+            .await?;
+        let backup = create_verified_migration_backup(&pool, &database, prior).await?;
+        let original_backup = std::fs::read(&backup)?;
+        pool.close().await;
+
+        let storage = Storage::open(&database).await?;
+        assert_eq!(schema_version(storage.pool()).await?, SCHEMA_VERSION);
+        assert_eq!(std::fs::read(backup)?, original_backup);
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn migration_backup_symlink_is_rejected_before_schema_change() -> Result<(), StorageError>
+    {
+        use std::os::unix::fs::symlink;
+
+        let directory = tempfile::tempdir()?;
+        let database = directory.path().join("symlink.db");
+        let prior = SCHEMA_VERSION - 1;
+        create_prior_schema(&database, prior).await?;
+        let backup = migration_backup_path(&database, prior)?;
+        symlink(&database, &backup)?;
+        assert!(Storage::open(&database).await.is_err());
+
+        let options =
+            SqliteConnectOptions::from_str(database.to_str().ok_or(StorageError::InvalidPath)?)?
+                .read_only(true);
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(options)
+            .await?;
+        assert_eq!(schema_version(&pool).await?, prior);
         Ok(())
     }
 

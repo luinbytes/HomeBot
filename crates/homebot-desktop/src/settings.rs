@@ -51,7 +51,15 @@ pub enum UpdateState {
     Current,
     Checking,
     Available,
+    Staging,
+    Ready,
     Failed,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SettingsAction {
+    CheckForUpdate,
+    StageUpdate,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -115,6 +123,7 @@ impl NotificationPreferences {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(default)]
 pub struct DesktopSettings {
     pub section: SettingsSection,
     pub theme: ThemePreference,
@@ -124,6 +133,8 @@ pub struct DesktopSettings {
     pub provider_status: String,
     pub paired_devices: u32,
     pub update_state: UpdateState,
+    pub update_version: Option<String>,
+    pub update_message: Option<String>,
     pub plugins: Vec<PluginSettingsItem>,
 }
 
@@ -138,6 +149,8 @@ impl Default for DesktopSettings {
             provider_status: "Codex · Ready".to_owned(),
             paired_devices: 0,
             update_state: UpdateState::Current,
+            update_version: None,
+            update_message: None,
             plugins: Vec::new(),
         }
     }
@@ -154,7 +167,12 @@ impl DesktopSettings {
     }
 }
 
-pub fn settings_view(ui: &mut Ui, theme: HomeBotTheme, settings: &mut DesktopSettings) {
+pub fn settings_view(
+    ui: &mut Ui,
+    theme: HomeBotTheme,
+    settings: &mut DesktopSettings,
+) -> Option<SettingsAction> {
+    let mut action = None;
     ui.horizontal_top(|ui| {
         ui.set_min_width(150.0);
         ui.vertical(|ui| {
@@ -182,12 +200,13 @@ pub fn settings_view(ui: &mut Ui, theme: HomeBotTheme, settings: &mut DesktopSet
                 SettingsSection::General => general(ui, settings),
                 SettingsSection::Plugins => plugins(ui, theme, &settings.plugins),
                 SettingsSection::Appearance => appearance(ui, settings),
-                SettingsSection::Updates => updates(ui, theme, settings.update_state),
+                SettingsSection::Updates => action = updates(ui, theme, settings),
                 SettingsSection::Connection => connection(ui, theme, settings),
                 SettingsSection::Devices => devices(ui, theme, settings.paired_devices),
             }
         });
     });
+    action
 }
 
 fn general(ui: &mut Ui, settings: &mut DesktopSettings) {
@@ -264,15 +283,33 @@ fn appearance(ui: &mut Ui, settings: &mut DesktopSettings) {
     });
 }
 
-fn updates(ui: &mut Ui, theme: HomeBotTheme, state: UpdateState) {
-    let (label, color) = match state {
+fn updates(ui: &mut Ui, theme: HomeBotTheme, settings: &DesktopSettings) -> Option<SettingsAction> {
+    let (label, color) = match settings.update_state {
         UpdateState::Current => ("HomeBot is up to date", theme.palette.success),
         UpdateState::Checking => ("Checking for updates…", theme.palette.text_secondary),
         UpdateState::Available => ("An update is ready", theme.palette.accent),
+        UpdateState::Staging => (
+            "Downloading and verifying update…",
+            theme.palette.text_secondary,
+        ),
+        UpdateState::Ready => ("Verified update is ready to install", theme.palette.success),
         UpdateState::Failed => ("Update check failed", theme.palette.danger),
     };
     ui.colored_label(color, label);
-    let _ = ui.button("Check again");
+    if let Some(version) = &settings.update_version {
+        ui.label(format!("Version {version}"));
+    }
+    if let Some(message) = &settings.update_message {
+        ui.label(RichText::new(message).color(theme.palette.text_secondary));
+    }
+    match settings.update_state {
+        UpdateState::Available if ui.button("Download verified update").clicked() => {
+            Some(SettingsAction::StageUpdate)
+        }
+        UpdateState::Checking | UpdateState::Staging => None,
+        _ if ui.button("Check again").clicked() => Some(SettingsAction::CheckForUpdate),
+        _ => None,
+    }
 }
 
 fn connection(ui: &mut Ui, theme: HomeBotTheme, settings: &DesktopSettings) {

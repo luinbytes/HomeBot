@@ -14,11 +14,15 @@ use crate::{
         section_label,
     },
     notifications::{DeepLink, NotificationCenter, NotificationSink, SystemNotificationSink},
-    settings::{DesktopSettings, SettingsSection, settings_view},
+    settings::{DesktopSettings, SettingsAction, SettingsSection, UpdateState, settings_view},
     skills::SkillProjection,
     timeline::{ComposerError, TimelineModel},
     tokens::HomeBotTheme,
     transport::{DesktopCommand, DesktopEvent, DesktopTransport, RuntimeConfig},
+    updater::{
+        DEFAULT_MANIFEST_URL, UpdateCandidate, UpdateCommand, UpdateCoordinator, UpdateEvent,
+        default_staging_directory,
+    },
     workspaces::{WorkspaceCommand, WorkspaceProjection},
 };
 
@@ -74,6 +78,8 @@ pub struct HomeBotApp {
     transport_error: Option<String>,
     chats: Vec<ChatSummary>,
     transport: Option<DesktopTransport>,
+    updater: Option<UpdateCoordinator>,
+    update_candidate: Option<UpdateCandidate>,
 }
 
 impl Default for HomeBotApp {
@@ -107,6 +113,8 @@ impl Default for HomeBotApp {
             transport_error: None,
             chats: Vec::new(),
             transport: None,
+            updater: None,
+            update_candidate: None,
         }
     }
 }
@@ -144,6 +152,7 @@ impl HomeBotApp {
 
     pub fn render(&mut self, context: &egui::Context) {
         self.pump_transport(context);
+        self.pump_updater();
         let activated: Vec<_> = self.deep_link_receiver.try_iter().collect();
         for deep_link in activated {
             self.open_deep_link(deep_link);
@@ -158,7 +167,9 @@ impl HomeBotApp {
         self.titlebar(context);
         CentralPanel::default().show(context, |ui| {
             if self.settings_open {
-                settings_view(ui, self.theme, &mut self.settings);
+                if let Some(action) = settings_view(ui, self.theme, &mut self.settings) {
+                    self.handle_settings_action(action);
+                }
                 if self.settings.section == SettingsSection::Devices {
                     self.device_pairing_controls(ui);
                 }
@@ -169,6 +180,65 @@ impl HomeBotApp {
         self.editor(context);
         self.flush_transport();
         context.request_repaint_after(std::time::Duration::from_millis(100));
+    }
+
+    fn handle_settings_action(&mut self, action: SettingsAction) {
+        let updater = self.updater.get_or_insert_with(|| {
+            UpdateCoordinator::start(DEFAULT_MANIFEST_URL, default_staging_directory())
+        });
+        match action {
+            SettingsAction::CheckForUpdate => {
+                self.settings.update_state = UpdateState::Checking;
+                self.settings.update_message = None;
+                self.settings.update_version = None;
+                self.update_candidate = None;
+                updater.send(UpdateCommand::Check);
+            }
+            SettingsAction::StageUpdate => {
+                if let Some(candidate) = self.update_candidate.clone() {
+                    self.settings.update_state = UpdateState::Staging;
+                    self.settings.update_message = None;
+                    updater.send(UpdateCommand::Stage(candidate));
+                }
+            }
+        }
+    }
+
+    fn pump_updater(&mut self) {
+        let events = self
+            .updater
+            .as_ref()
+            .map_or_else(Vec::new, |updater| updater.try_events().collect());
+        for event in events {
+            match event {
+                UpdateEvent::Current => {
+                    self.settings.update_state = UpdateState::Current;
+                    self.settings.update_version = None;
+                    self.settings.update_message = None;
+                    self.update_candidate = None;
+                }
+                UpdateEvent::Available(candidate) => {
+                    self.settings.update_state = UpdateState::Available;
+                    self.settings.update_version = Some(candidate.version.clone());
+                    self.settings.update_message =
+                        Some("HomeBot will download only after you approve it.".to_owned());
+                    self.update_candidate = Some(candidate);
+                }
+                UpdateEvent::Staged { version, path } => {
+                    self.settings.update_state = UpdateState::Ready;
+                    self.settings.update_version = Some(version);
+                    self.settings.update_message = Some(format!(
+                        "Verified package staged at {}. Installation remains a separate explicit action.",
+                        path.display()
+                    ));
+                    self.update_candidate = None;
+                }
+                UpdateEvent::Failed(message) => {
+                    self.settings.update_state = UpdateState::Failed;
+                    self.settings.update_message = Some(message);
+                }
+            }
+        }
     }
 
     fn pump_transport(&mut self, context: &egui::Context) {

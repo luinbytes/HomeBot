@@ -6,3 +6,4 @@ cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test --workspace --all-features
 cargo run -p homebot-protocol --example export_schema -- --check
 cargo run -p homebot-protocol --example export_android -- --check
+./scripts/check-packaging.sh

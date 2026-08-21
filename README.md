@@ -50,7 +50,7 @@ The hosted cloud VM is the one intentional Grok Bot parity exclusion. Your HomeB
 
 ## Status and installation
 
-HomeBot is currently in **M5: Android & Remote Parity**. M0 through M4 are complete in the project roadmap, secure owner pairing/device sessions are implemented, and the native Android application architecture/client is the active workstream.
+HomeBot is currently in **M6: Packaging, Hardening & v1 Parity Gate**. M0 through M5 are complete. Native macOS/Arch package pipelines and migration/update recovery are active release workstreams.
 
 There are still **no supported release packages**. Follow [INSTALL.md](INSTALL.md) for human installation status or [AGENT_INSTALL.md](AGENT_INSTALL.md) for deterministic automation instructions. Release readiness is tracked against [the parity matrix](docs/parity-matrix.md).
 
@@ -65,8 +65,8 @@ Supported v1 targets are macOS x86_64 and arm64, Linux x86_64 with Arch/Omarchy 
 | M2 · Grok Bot Desktop Parity | Complete |
 | M3 · Routines, Skills & Plugins | Complete |
 | M4 · T3 Code Developer Superpowers | Complete |
-| M5 · Android & Remote Parity | In progress |
-| M6 · Packaging, Hardening & v1 Parity Gate | Not started |
+| M5 · Android & Remote Parity | Complete |
+| M6 · Packaging, Hardening & v1 Parity Gate | In progress |
 
 ## Architecture
 
@@ -85,7 +85,7 @@ Coding chats can attach an existing repository directly or use a deterministic i
 | `homebot-tools` | Server-enforced filesystem, PTY, browser, plugin, and secret capabilities |
 | `homebot-vcs` | Workspaces, worktrees, checkpoints, diffs, and safe source control |
 | `homebot-desktop` | Native egui client, authenticated transport, and local-server supervision |
-| `android/` | Native Kotlin/Compose client and Android Keystore device session, currently under active M5 development |
+| `android/` | Native Kotlin/Compose client, resumable protocol transport, Android Keystore device session, and server-backed feature projections |
 
 Bots own stable HomeBot identity and app-managed history. A provider profile maps a Bot/chat to backend-specific conversations; switching providers does not replace the Bot.
 
@@ -110,6 +110,7 @@ Read the deeper contracts:
 - [Turn checkpoints, diffs, and restore](docs/checkpoints.md)
 - [Source control and pull requests](docs/source-control.md)
 - [Queued work and provider context](docs/working-context.md)
+- [Updates, migration backup, and recovery](docs/recovery.md)
 - [Security and threat model](docs/security.md)
 - [Android](docs/android.md)
 - [Routines](docs/routines.md)

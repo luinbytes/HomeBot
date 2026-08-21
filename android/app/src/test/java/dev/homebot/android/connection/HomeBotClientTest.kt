@@ -182,6 +182,28 @@ class HomeBotClientTest {
     }
 
     @Test
+    fun oversizedServerEventIsRejectedWithoutUnboundedBuffering() = runBlocking {
+        server.start()
+        sessions.save(credentials())
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse = when (request.path) {
+                "/api/v1/version" -> jsonResponse(VERSION_RESPONSE)
+                "/api/v1/events" -> MockResponse().withWebSocketUpgrade(object : WebSocketListener() {
+                    override fun onMessage(webSocket: WebSocket, text: String) {
+                        if (text.contains("\"kind\":\"hello\"")) {
+                            webSocket.send("x".repeat(256 * 1024 + 1))
+                        }
+                    }
+                })
+                else -> MockResponse().setResponseCode(404)
+            }
+        }
+
+        val result = withTimeout(10_000) { client().connectOnce() }
+        assertTrue(result is DisconnectReason.Retry)
+    }
+
+    @Test
     fun endpointPolicyAllowsLoopbackHttpAndRequiresHttpsEverywhereElse() {
         assertTrue(EndpointPolicy.normalize("http://127.0.0.1:7123").isSuccess)
         assertTrue(EndpointPolicy.normalize("http://10.0.2.2:7123").isSuccess)

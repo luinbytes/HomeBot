@@ -385,6 +385,9 @@ pub(super) fn vcs_error(error: &VcsError) -> ApiError {
         | VcsError::NoRemote
         | VcsError::UnsafeWorktreePath
         | VcsError::Git(_) => ApiError::conflict(&error.to_string()),
+        VcsError::UnsafeRepositoryConfig => ApiError::conflict(
+            "Repository-local Git configuration is unsafe for server-managed operations",
+        ),
         VcsError::AuthenticationFailed => ApiError::conflict("Remote authentication failed"),
         VcsError::PullRequestUnavailable => {
             ApiError::unavailable("Pull-request integration is unavailable")

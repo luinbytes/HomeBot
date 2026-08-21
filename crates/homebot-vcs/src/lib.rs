@@ -90,6 +90,8 @@ pub enum VcsError {
     PullRequestUnavailable,
     #[error("Managed worktree path is outside its root")]
     UnsafeWorktreePath,
+    #[error("Repository configuration can execute code and was refused")]
+    UnsafeRepositoryConfig,
     #[error("filesystem operation failed: {0}")]
     Io(#[from] std::io::Error),
 }
@@ -320,6 +322,11 @@ impl GitRuntime {
         environment: &[(&str, &str)],
         output_limit: usize,
     ) -> Result<Vec<u8>, VcsError> {
+        if let Some(repository) = repository
+            && arguments.first() != Some(&"init")
+        {
+            self.ensure_repository_config_safe(repository).await?;
+        }
         let mut command = Command::new(&self.executable);
         command
             .env_clear()
@@ -350,6 +357,82 @@ impl GitRuntime {
         Ok(output.stdout)
     }
 
+    async fn ensure_repository_config_safe(&self, repository: &Path) -> Result<(), VcsError> {
+        let mut scopes = vec!["--local"];
+        let mut worktree_config = Command::new(&self.executable);
+        worktree_config
+            .env_clear()
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .env("LC_ALL", "C")
+            .arg("-C")
+            .arg(repository)
+            .args([
+                "config",
+                "--local",
+                "--no-includes",
+                "--bool",
+                "--get",
+                "extensions.worktreeConfig",
+            ])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true);
+        let worktree_config = timeout(self.command_timeout, worktree_config.output())
+            .await
+            .map_err(|_| VcsError::Timeout)??;
+        if worktree_config.stdout.len() > MAX_OUTPUT_BYTES
+            || worktree_config.stderr.len() > MAX_OUTPUT_BYTES
+        {
+            return Err(VcsError::OutputLimit);
+        }
+        if worktree_config.status.success() && worktree_config.stdout == b"true\n" {
+            scopes.push("--worktree");
+        } else if worktree_config.status.code() != Some(1) {
+            return Err(VcsError::UnsafeRepositoryConfig);
+        }
+
+        for scope in scopes {
+            let mut command = Command::new(&self.executable);
+            command
+                .env_clear()
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .env("GIT_TERMINAL_PROMPT", "0")
+                .env("LC_ALL", "C")
+                .arg("-C")
+                .arg(repository)
+                .args([
+                    "config",
+                    scope,
+                    "--includes",
+                    "--name-only",
+                    "--get-regexp",
+                    ".*",
+                ])
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .kill_on_drop(true);
+            let output = timeout(self.command_timeout, command.output())
+                .await
+                .map_err(|_| VcsError::Timeout)??;
+            if output.stdout.len() > MAX_OUTPUT_BYTES || output.stderr.len() > MAX_OUTPUT_BYTES {
+                return Err(VcsError::OutputLimit);
+            }
+            // Exit 1 means the selected scope had no values. Other failures are unsafe to ignore.
+            if !output.status.success() && output.status.code() != Some(1) {
+                return Err(VcsError::UnsafeRepositoryConfig);
+            }
+            let names =
+                String::from_utf8(output.stdout).map_err(|_| VcsError::UnsafeRepositoryConfig)?;
+            if names.lines().any(unsafe_repository_config_key) {
+                return Err(VcsError::UnsafeRepositoryConfig);
+            }
+        }
+        Ok(())
+    }
+
     async fn git_remote(&self, repository: &Path, arguments: &[&str]) -> Result<String, VcsError> {
         let mut environment = Vec::new();
         for key in ["HOME", "XDG_CONFIG_HOME", "SSH_AUTH_SOCK"] {
@@ -373,6 +456,29 @@ impl GitRuntime {
         String::from_utf8(output)
             .map_err(|_| VcsError::Git("Git returned invalid UTF-8".to_owned()))
     }
+}
+
+fn unsafe_repository_config_key(name: &str) -> bool {
+    let name = name.trim().to_ascii_lowercase();
+    name == "core.fsmonitor"
+        || name == "core.sshcommand"
+        || name == "core.gitproxy"
+        || name == "core.worktree"
+        || name == "core.askpass"
+        || name == "diff.external"
+        || name.starts_with("credential.")
+        || name.starts_with("filter.")
+        || name.starts_with("include.")
+        || name.starts_with("includeif.")
+        || name.starts_with("protocol.")
+        || name.starts_with("url.")
+        || (name.starts_with("diff.")
+            && (name.ends_with(".command") || name.ends_with(".textconv")))
+        || (name.starts_with("remote.")
+            && (name.ends_with(".receivepack")
+                || name.ends_with(".uploadpack")
+                || name.strip_suffix(".proxy").is_some()))
+        || (name.starts_with("http.") && name.strip_suffix(".proxy").is_some())
 }
 
 fn discover_github_cli() -> Option<PathBuf> {

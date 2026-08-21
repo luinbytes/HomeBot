@@ -63,6 +63,15 @@ impl OpenAiCompatibleProfile {
                 "OpenAI-compatible endpoints require HTTPS except on loopback",
             ));
         }
+        if !base_url.username().is_empty()
+            || base_url.password().is_some()
+            || base_url.query().is_some()
+            || base_url.fragment().is_some()
+        {
+            return Err(invalid_request(
+                "OpenAI-compatible endpoint credentials and parameters must not be embedded in the URL",
+            ));
+        }
         if !base_url.path().ends_with('/') {
             let path = format!("{}/", base_url.path());
             base_url.set_path(&path);

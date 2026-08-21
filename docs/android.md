@@ -19,6 +19,12 @@ The connection state exposed as a Kotlin `StateFlow` covers:
 
 Compose observes only this projection and submits actions through the client. Durable Bots, chats, groups, messages, activity, approvals, routines, and workspace state remain server-owned.
 
+## Bot, chat and coding surfaces
+
+The native product shell renders the server snapshot as a mobile Bot roster and group-chat list. Bot create/edit/archive/restore, direct-chat creation, timeline reads, messages, queued follow-ups, steering, stop, retry, approvals, unread clearing, group mentions and ownership handoff all call authenticated versioned server endpoints. Incremental stream events advance the cursor and trigger a timeline refresh; Android does not manufacture assistant messages or mutate durable product state locally.
+
+The Android document picker feeds the three-stage authenticated attachment contract: create metadata, upload bounded bytes, then finalize by SHA-256 before attaching the server identifier to a message. Coding chats expose normalized VCS status and working-tree diffs plus exact checkpoint comparison and server-owned safe restore. Remote source paths never become Android-local filesystem authority.
+
 ## Credentials and endpoints
 
 The persistent device-session credential is AES-256-GCM encrypted with a non-exportable Android Keystore key before storage. Logs and `toString` output redact it. DataStore contains only non-secret preferences such as the selected endpoint and device name. Room is intentionally absent in v1 groundwork because there is no offline-editing contract yet; adding a second cache now would create an unjustified source of truth.
@@ -27,6 +33,6 @@ All non-loopback endpoints require HTTPS, including LAN and Tailscale connection
 
 ## Verification
 
-Deterministic MockWebServer tests cover pairing, credential redaction, version skew, revocation, snapshot hydration, cursor resume, stale-cursor snapshot fallback, event replay, and duplicate-sequence suppression. GitHub Actions runs Android lint, JVM unit tests, and a debug APK build, then publishes the APK as a CI artifact.
+Deterministic MockWebServer tests cover pairing, credential redaction, version skew, revocation, snapshot hydration, cursor resume, stale-cursor snapshot fallback, event replay, duplicate-sequence suppression, authenticated product mutations, typed queued steering, and attachment create/upload/finalize. GitHub Actions runs Android lint, JVM unit tests, and a debug APK build, then publishes the APK as a CI artifact.
 
 Feature work builds on this transport to render the server-owned Bot, chat, group, activity, approval, routine, plugin, device, provider, workspace, diff, and Git models. Background reconnect must respect Android execution limits and avoid permanent polling.

@@ -16,22 +16,23 @@ use homebot_protocol::{
     CreateBotRequest, CreateDirectChatRequest, CreateDirectChatResponse, CreateGroupChatRequest,
     CreateGroupChatResponse, CreateLocalMcpPluginRequest, CreatePairingRequest,
     CreatePullRequestRequest, CreateRepositoryWorkspaceRequest, CreateRoutineRequest,
-    CreateRoutineTriggerRequest, CreateSkillRequest, DeliverRoutineTriggerRequest,
-    DetachChatWorkspaceRequest, DeviceSessionSummary, DuplicateRoutineRequest,
-    DuplicateSkillRequest, ExchangePairingRequest, FinalizeAttachmentRequest, GroupBotStatus,
-    GroupTimelineResponse, HandoffGroupRequest, ImportSkillRequest, InteractionMode,
-    MissedRunPolicy, OverlapPolicy, PairingEndpointKind, PairingExchangeResponse, PairingOffer,
-    PluginConnectionState, PluginMutationRequest, PluginSummary, PullRequestMetadata,
-    PullRequestMutationResponse, QueuedPromptKind, RecordedAction, RecordedActor,
-    RepositoryWorkspaceSummary, RestoreCheckpointRequest, RetryPolicy, RevokeDeviceSessionRequest,
-    RoutineDefinition, RoutineInput, RoutineInputKind, RoutineJobSummary, RoutineRecordingSummary,
-    RoutineRunSummary, RoutineSchedule, RoutineStep, RoutineStepStatus, RoutineSummary,
-    RoutineTriggerDefinition, RoutineTriggerSource, RunRoutineRequest, SecretSummary,
-    SendGroupMessageRequest, SendMessageRequest, SendMessageResponse, SetInteractionModeRequest,
-    SkillAssignmentRequest, SkillBundle, SkillContext, SkillDefinition, SkillImportConflictPolicy,
-    SkillSummary, SkillToolReference, StartRoutineRecordingRequest, TurnCheckpointSummary,
-    UpdateBotRequest, UpdateGroupParticipantRequest, UpdateRoutineRequest, UpdateSkillRequest,
-    VcsCommitRequest, VcsCommitResult, VcsCreateBranchRequest, VcsMutationStatus, VcsPushRequest,
+    CreateRoutineTriggerRequest, CreateSkillRequest, DeleteBotRequest,
+    DeliverRoutineTriggerRequest, DetachChatWorkspaceRequest, DeviceSessionSummary,
+    DuplicateRoutineRequest, DuplicateSkillRequest, ExchangePairingRequest,
+    FinalizeAttachmentRequest, GroupBotStatus, GroupTimelineResponse, HandoffGroupRequest,
+    ImportSkillRequest, InteractionMode, MissedRunPolicy, OverlapPolicy, PairingEndpointKind,
+    PairingExchangeResponse, PairingOffer, PluginConnectionState, PluginMutationRequest,
+    PluginSummary, PullRequestMetadata, PullRequestMutationResponse, QueuedPromptKind,
+    RecordedAction, RecordedActor, RepositoryWorkspaceSummary, RestoreCheckpointRequest,
+    RetryPolicy, RevokeDeviceSessionRequest, RoutineDefinition, RoutineInput, RoutineInputKind,
+    RoutineJobSummary, RoutineRecordingSummary, RoutineRunSummary, RoutineSchedule, RoutineStep,
+    RoutineStepStatus, RoutineSummary, RoutineTriggerDefinition, RoutineTriggerSource,
+    RunRoutineRequest, SecretSummary, SendGroupMessageRequest, SendMessageRequest,
+    SendMessageResponse, SetInteractionModeRequest, SkillAssignmentRequest, SkillBundle,
+    SkillContext, SkillDefinition, SkillImportConflictPolicy, SkillSummary, SkillToolReference,
+    StartRoutineRecordingRequest, TurnCheckpointSummary, UpdateBotRequest,
+    UpdateGroupParticipantRequest, UpdateRoutineRequest, UpdateSkillRequest, VcsCommitRequest,
+    VcsCommitResult, VcsCreateBranchRequest, VcsMutationStatus, VcsPushRequest,
     VcsRemoteMutationResponse, VcsStatus, WorkingContextSummary, WorkingTreeCondition,
     WorkingTreeDiffResponse, WorkspaceBranchesResponse, WorkspaceMode,
 };
@@ -1176,6 +1177,90 @@ async fn bot_lifecycle_validates_persists_streams_and_reports_provider_health()
         .await?;
     assert!(!response_json::<BotResponse>(response).await?.bot.archived);
 
+    for (action, expected) in [("pin", true), ("hide", true), ("unhide", false)] {
+        let response = app
+            .clone()
+            .oneshot(json_request(
+                "POST",
+                &format!("/api/v1/bots/{key}/{action}"),
+                &BotMutationRequest {
+                    request_id: Uuid::now_v7(),
+                    idempotency_key: Uuid::now_v7(),
+                },
+            ))
+            .await?;
+        let bot = response_json::<BotResponse>(response).await?.bot;
+        if action == "pin" {
+            assert_eq!(bot.pinned, expected);
+        } else {
+            assert_eq!(bot.hidden, expected);
+        }
+    }
+    let duplicate_key = Uuid::now_v7();
+    let duplicate_request = BotMutationRequest {
+        request_id: Uuid::now_v7(),
+        idempotency_key: duplicate_key,
+    };
+    let response = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            &format!("/api/v1/bots/{key}/duplicate"),
+            &duplicate_request,
+        ))
+        .await?;
+    assert_eq!(response.status(), StatusCode::CREATED);
+    assert_eq!(
+        response_json::<BotResponse>(response).await?.bot.name,
+        "Nova copy"
+    );
+    let replay = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            &format!("/api/v1/bots/{key}/duplicate"),
+            &duplicate_request,
+        ))
+        .await?;
+    assert_eq!(replay.status(), StatusCode::OK);
+    let wrong_confirmation = DeleteBotRequest {
+        request_id: Uuid::now_v7(),
+        idempotency_key: Uuid::now_v7(),
+        confirm_name: "Nova".to_owned(),
+    };
+    let response = app
+        .clone()
+        .oneshot(json_request(
+            "DELETE",
+            &format!("/api/v1/bots/{duplicate_key}"),
+            &wrong_confirmation,
+        ))
+        .await?;
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let delete_request = DeleteBotRequest {
+        request_id: Uuid::now_v7(),
+        idempotency_key: Uuid::now_v7(),
+        confirm_name: "Nova copy".to_owned(),
+    };
+    let response = app
+        .clone()
+        .oneshot(json_request(
+            "DELETE",
+            &format!("/api/v1/bots/{duplicate_key}"),
+            &delete_request,
+        ))
+        .await?;
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    let replay = app
+        .clone()
+        .oneshot(json_request(
+            "DELETE",
+            &format!("/api/v1/bots/{duplicate_key}"),
+            &delete_request,
+        ))
+        .await?;
+    assert_eq!(replay.status(), StatusCode::NO_CONTENT);
+
     storage
         .set_bot_attention(
             Uuid::nil(),
@@ -1222,7 +1307,18 @@ async fn bot_lifecycle_validates_persists_streams_and_reports_provider_health()
     assert_eq!(snapshot.bots[0].title, "Lead researcher");
     let events = storage.events_after(Uuid::nil(), 0, 100).await?;
     assert!(events.len() >= 5);
-    assert!(events.iter().all(|event| event.event_kind == "bot_changed"));
+    assert!(
+        events
+            .iter()
+            .all(|event| matches!(event.event_kind.as_str(), "bot_changed" | "bot_deleted"))
+    );
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| event.event_kind == "bot_deleted")
+            .count(),
+        1
+    );
     storage.pool().close().await;
     let reopened = Storage::open(&database).await?;
     assert_eq!(reopened.list_bots(Uuid::nil(), true).await?.len(), 1);

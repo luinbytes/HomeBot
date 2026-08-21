@@ -82,6 +82,9 @@ pub enum ServerEventBody {
     BotChanged {
         bot: BotSummary,
     },
+    BotDeleted {
+        bot_id: Uuid,
+    },
     ChatChanged {
         chat: ChatSummary,
     },
@@ -235,6 +238,10 @@ pub struct BotSummary {
     pub shape: BotShape,
     pub color: BotColor,
     pub archived: bool,
+    #[serde(default)]
+    pub pinned: bool,
+    #[serde(default)]
+    pub hidden: bool,
     pub unread_count: u32,
     pub attention: BotAttention,
     pub provider: BotProviderStatus,
@@ -327,6 +334,14 @@ pub struct UpdateBotRequest {
 pub struct BotMutationRequest {
     pub request_id: Uuid,
     pub idempotency_key: Uuid,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct DeleteBotRequest {
+    pub request_id: Uuid,
+    pub idempotency_key: Uuid,
+    pub confirm_name: String,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]

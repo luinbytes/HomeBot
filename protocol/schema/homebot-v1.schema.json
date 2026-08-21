@@ -947,12 +947,20 @@
         "description": {
           "type": "string"
         },
+        "hidden": {
+          "type": "boolean",
+          "default": false
+        },
         "id": {
           "type": "string",
           "format": "uuid"
         },
         "name": {
           "type": "string"
+        },
+        "pinned": {
+          "type": "boolean",
+          "default": false
         },
         "provider": {
           "$ref": "#/$defs/BotProviderStatus"
@@ -4055,6 +4063,23 @@
           "required": [
             "kind",
             "bot"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "bot_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "kind": {
+              "type": "string",
+              "const": "bot_deleted"
+            }
+          },
+          "required": [
+            "kind",
+            "bot_id"
           ]
         },
         {

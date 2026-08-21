@@ -28,7 +28,7 @@ use std::{
 };
 use uuid::Uuid;
 
-pub const SCHEMA_VERSION: u32 = 17;
+pub const SCHEMA_VERSION: u32 = 18;
 static MIGRATOR: std::sync::LazyLock<sqlx::migrate::Migrator> = std::sync::LazyLock::new(|| {
     use sqlx::migrate::{Migration, MigrationType, Migrator};
     use std::borrow::Cow;
@@ -106,6 +106,11 @@ static MIGRATOR: std::sync::LazyLock<sqlx::migrate::Migrator> = std::sync::LazyL
             17,
             "device pairing",
             include_str!("../migrations/0017_device_pairing.sql"),
+        ),
+        (
+            18,
+            "bot parity",
+            include_str!("../migrations/0018_bot_parity.sql"),
         ),
     ]
     .into_iter()
@@ -2041,7 +2046,11 @@ impl Storage {
     ) -> Result<Vec<Bot>, StorageError> {
         let rows = sqlx::query(
             "SELECT * FROM bots WHERE owner_id = ? AND (? OR archived_at_ms IS NULL)
-             ORDER BY archived_at_ms IS NOT NULL, name COLLATE NOCASE, id",
+             ORDER BY archived_at_ms IS NOT NULL,
+                      hidden_at_ms IS NOT NULL,
+                      pinned_at_ms IS NULL,
+                      pinned_at_ms DESC,
+                      name COLLATE NOCASE, id",
         )
         .bind(owner_id.to_string())
         .bind(include_archived)
@@ -2185,6 +2194,208 @@ impl Storage {
         .execute(&self.pool)
         .await?;
         Ok(bot)
+    }
+
+    /// Changes a Bot's durable roster pin without making client state authoritative.
+    ///
+    /// # Errors
+    /// Returns not-found or database errors.
+    pub async fn set_bot_pinned(
+        &self,
+        owner_id: Uuid,
+        bot_id: Uuid,
+        pinned: bool,
+        now_ms: i64,
+    ) -> Result<Bot, StorageError> {
+        let result = sqlx::query(
+            "UPDATE bots SET pinned_at_ms = ?, updated_at_ms = ? WHERE owner_id = ? AND id = ?",
+        )
+        .bind(pinned.then_some(now_ms))
+        .bind(now_ms)
+        .bind(owner_id.to_string())
+        .bind(bot_id.to_string())
+        .execute(&self.pool)
+        .await?;
+        if result.rows_affected() == 0 {
+            return Err(StorageError::BotNotFound);
+        }
+        self.get_bot(owner_id, bot_id).await
+    }
+
+    /// Changes whether a Bot is hidden from the normal roster.
+    ///
+    /// # Errors
+    /// Returns not-found or database errors.
+    pub async fn set_bot_hidden(
+        &self,
+        owner_id: Uuid,
+        bot_id: Uuid,
+        hidden: bool,
+        now_ms: i64,
+    ) -> Result<Bot, StorageError> {
+        let result = sqlx::query(
+            "UPDATE bots SET hidden_at_ms = ?, updated_at_ms = ? WHERE owner_id = ? AND id = ?",
+        )
+        .bind(hidden.then_some(now_ms))
+        .bind(now_ms)
+        .bind(owner_id.to_string())
+        .bind(bot_id.to_string())
+        .execute(&self.pool)
+        .await?;
+        if result.rows_affected() == 0 {
+            return Err(StorageError::BotNotFound);
+        }
+        self.get_bot(owner_id, bot_id).await
+    }
+
+    /// Permanently removes an owner-scoped Bot. Foreign keys remove its chats,
+    /// provider mappings, routine state, and assignments; machine files are not touched.
+    ///
+    /// # Errors
+    /// Returns not-found or database errors.
+    pub async fn delete_bot(&self, owner_id: Uuid, bot_id: Uuid) -> Result<(), StorageError> {
+        let result = sqlx::query("DELETE FROM bots WHERE owner_id = ? AND id = ?")
+            .bind(owner_id.to_string())
+            .bind(bot_id.to_string())
+            .execute(&self.pool)
+            .await?;
+        if result.rows_affected() == 0 {
+            return Err(StorageError::BotNotFound);
+        }
+        Ok(())
+    }
+
+    /// Duplicates a Bot's profile, enabled Skill assignments, routines, and
+    /// triggers while deliberately excluding chats, provider conversations,
+    /// learned history, attachments, recordings, and run history.
+    ///
+    /// # Errors
+    /// Returns not-found, integrity, serialization, uniqueness, or database errors.
+    #[allow(clippy::too_many_lines)]
+    pub async fn duplicate_bot_configuration(
+        &self,
+        owner_id: Uuid,
+        source_bot_id: Uuid,
+        duplicate_id: Uuid,
+        now_ms: i64,
+    ) -> Result<Bot, StorageError> {
+        let source = self.get_bot(owner_id, source_bot_id).await?;
+        let mut ordinal = 1_u32;
+        let duplicate_name = loop {
+            let suffix = if ordinal == 1 {
+                " copy".to_owned()
+            } else {
+                format!(" copy {ordinal}")
+            };
+            let keep = homebot_domain::BOT_NAME_MAX_CHARS.saturating_sub(suffix.chars().count());
+            let base = source.name.chars().take(keep).collect::<String>();
+            let candidate = format!("{base}{suffix}");
+            let exists: i64 = sqlx::query_scalar(
+                "SELECT count(*) FROM bots WHERE owner_id = ? AND lower(trim(name)) = lower(trim(?))",
+            )
+            .bind(owner_id.to_string())
+            .bind(&candidate)
+            .fetch_one(&self.pool)
+            .await?;
+            if exists == 0 {
+                break candidate;
+            }
+            ordinal = ordinal
+                .checked_add(1)
+                .ok_or_else(|| StorageError::Integrity("Bot copy suffix overflow".to_owned()))?;
+        };
+
+        let mut duplicate = source.clone();
+        duplicate.id = BotId(duplicate_id);
+        duplicate.name = duplicate_name.clone();
+        duplicate.archived_at_ms = None;
+        duplicate.pinned_at_ms = None;
+        duplicate.hidden_at_ms = None;
+        duplicate.unread_count = 0;
+        duplicate.attention = BotAttention::None;
+        duplicate.created_at_ms = now_ms;
+        duplicate.updated_at_ms = now_ms;
+
+        let routines = sqlx::query(
+            "SELECT r.id, r.name, r.description, r.enabled, r.draft, v.definition_json
+             FROM routines r JOIN routine_versions v ON v.id = r.active_version_id
+             WHERE r.owner_id = ? AND r.bot_id = ? ORDER BY r.created_at_ms, r.id",
+        )
+        .bind(owner_id.to_string())
+        .bind(source_bot_id.to_string())
+        .fetch_all(&self.pool)
+        .await?;
+        let mut transaction = self.pool.begin().await?;
+        sqlx::query(
+            "INSERT INTO bots (id, owner_id, name, title, description, provider_profile_id, shape, color,
+              permission_profile, archived_at_ms, unread_count, attention, created_at_ms, updated_at_ms,
+              pinned_at_ms, hidden_at_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 0, 'none', ?, ?, NULL, NULL)",
+        )
+        .bind(duplicate_id.to_string()).bind(owner_id.to_string()).bind(&duplicate_name)
+        .bind(&duplicate.title).bind(&duplicate.description)
+        .bind(duplicate.provider_profile_id.map(|id| id.to_string()))
+        .bind(duplicate.shape.as_str()).bind(duplicate.color.as_str())
+        .bind(duplicate.permission_profile.as_str()).bind(now_ms).bind(now_ms)
+        .execute(&mut *transaction).await?;
+        sqlx::query(
+            "INSERT INTO skill_bot_assignments (owner_id, skill_id, bot_id, assigned_at_ms)
+             SELECT owner_id, skill_id, ?, ? FROM skill_bot_assignments
+             WHERE owner_id = ? AND bot_id = ?",
+        )
+        .bind(duplicate_id.to_string())
+        .bind(now_ms)
+        .bind(owner_id.to_string())
+        .bind(source_bot_id.to_string())
+        .execute(&mut *transaction)
+        .await?;
+
+        for row in routines {
+            let source_routine_id: String = row.try_get("id")?;
+            let original_name: String = row.try_get("name")?;
+            let base_name = format!("{original_name} ({duplicate_name})");
+            let mut routine_ordinal = 1_u32;
+            let routine_name = loop {
+                let candidate = if routine_ordinal == 1 {
+                    base_name.clone()
+                } else {
+                    format!("{base_name} {routine_ordinal}")
+                };
+                let exists: i64 = sqlx::query_scalar("SELECT count(*) FROM routines WHERE owner_id = ? AND lower(trim(name)) = lower(trim(?))")
+                    .bind(owner_id.to_string()).bind(&candidate).fetch_one(&mut *transaction).await?;
+                if exists == 0 {
+                    break candidate;
+                }
+                routine_ordinal = routine_ordinal.checked_add(1).ok_or_else(|| {
+                    StorageError::Integrity("routine copy suffix overflow".to_owned())
+                })?;
+            };
+            let routine_id = Uuid::now_v7();
+            let version_id = Uuid::now_v7();
+            let definition_json: String = row.try_get("definition_json")?;
+            sqlx::query("INSERT INTO routines (id, owner_id, bot_id, name, description, active_version_id, enabled, draft, created_at_ms, updated_at_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+                .bind(routine_id.to_string()).bind(owner_id.to_string()).bind(duplicate_id.to_string())
+                .bind(routine_name).bind(row.try_get::<String, _>("description")?).bind(version_id.to_string())
+                .bind(row.try_get::<bool, _>("enabled")?).bind(row.try_get::<bool, _>("draft")?)
+                .bind(now_ms).bind(now_ms).execute(&mut *transaction).await?;
+            sqlx::query("INSERT INTO routine_versions (id, routine_id, version, definition_json, created_at_ms) VALUES (?, ?, 1, ?, ?)")
+                .bind(version_id.to_string()).bind(routine_id.to_string()).bind(definition_json).bind(now_ms)
+                .execute(&mut *transaction).await?;
+            let triggers = sqlx::query("SELECT configuration_json, enabled FROM routine_triggers WHERE owner_id = ? AND routine_id = ? ORDER BY created_at_ms, id")
+                .bind(owner_id.to_string()).bind(source_routine_id).fetch_all(&mut *transaction).await?;
+            for trigger in triggers {
+                let configuration_json: String = trigger.try_get("configuration_json")?;
+                let trigger_definition: RoutineTriggerDefinition =
+                    serde_json::from_str(&configuration_json)
+                        .map_err(|error| StorageError::Serialization(error.to_string()))?;
+                let kind = trigger_kind(&trigger_definition);
+                sqlx::query("INSERT INTO routine_triggers (id, owner_id, routine_id, kind, configuration_json, enabled, last_evaluated_at_ms, next_fire_at_ms, last_event_sequence, created_at_ms, updated_at_ms) VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, 0, ?, ?)")
+                    .bind(Uuid::now_v7().to_string()).bind(owner_id.to_string()).bind(routine_id.to_string())
+                    .bind(kind).bind(configuration_json).bind(trigger.try_get::<bool, _>("enabled")?)
+                    .bind(now_ms).bind(now_ms).execute(&mut *transaction).await?;
+            }
+        }
+        transaction.commit().await?;
+        Ok(duplicate)
     }
 
     /// Clears an existing Bot's unread count.
@@ -4870,6 +5081,8 @@ fn bot_from_row(row: &sqlx::sqlite::SqliteRow) -> Result<Bot, StorageError> {
         provider_profile_id: provider_profile_id.as_deref().map(parse_uuid).transpose()?,
         permission_profile: permission_profile.parse()?,
         archived_at_ms: row.try_get("archived_at_ms")?,
+        pinned_at_ms: row.try_get("pinned_at_ms")?,
+        hidden_at_ms: row.try_get("hidden_at_ms")?,
         unread_count: u32::try_from(unread_count)
             .map_err(|_| StorageError::Integrity("invalid Bot unread count".to_owned()))?,
         attention: attention.parse()?,
@@ -6501,6 +6714,9 @@ mod tests {
         ] {
             sqlx::raw_sql(migration).execute(&pool).await?;
         }
+        sqlx::raw_sql(include_str!("../migrations/0018_bot_parity.sql"))
+            .execute(&pool)
+            .await?;
         let legacy = Storage { pool: pool.clone() };
         let owner = Uuid::now_v7();
         let bot = legacy
@@ -6576,6 +6792,9 @@ mod tests {
         ] {
             sqlx::raw_sql(migration).execute(&pool).await?;
         }
+        sqlx::raw_sql(include_str!("../migrations/0018_bot_parity.sql"))
+            .execute(&pool)
+            .await?;
         let storage = Storage { pool: pool.clone() };
         let owner = Uuid::now_v7();
         let bot = storage
@@ -6670,6 +6889,9 @@ mod tests {
         ] {
             sqlx::raw_sql(migration).execute(&pool).await?;
         }
+        sqlx::raw_sql(include_str!("../migrations/0018_bot_parity.sql"))
+            .execute(&pool)
+            .await?;
         let storage = Storage { pool: pool.clone() };
         let owner = Uuid::now_v7();
         let bot = storage
@@ -6899,6 +7121,170 @@ mod tests {
                 .await?
                 .unread_count,
             0
+        );
+        let pinned = reopened.set_bot_pinned(owner, nova.id.0, true, 17).await?;
+        assert_eq!(pinned.pinned_at_ms, Some(17));
+        let hidden = reopened.set_bot_hidden(owner, nova.id.0, true, 18).await?;
+        assert_eq!(hidden.hidden_at_ms, Some(18));
+        reopened.pool.close().await;
+        let reopened = Storage::open(&database).await?;
+        let durable = reopened.get_bot(owner, nova.id.0).await?;
+        assert_eq!(
+            (durable.pinned_at_ms, durable.hidden_at_ms),
+            (Some(17), Some(18))
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[allow(clippy::too_many_lines)]
+    async fn bot_duplicate_copies_configuration_without_history_and_delete_cascades()
+    -> Result<(), StorageError> {
+        let directory = tempfile::tempdir()?;
+        let database = directory.path().join("homebot.db");
+        let owner = Uuid::now_v7();
+        let storage = Storage::open(&database).await?;
+        let source = storage
+            .create_bot(owner, Bot::create("Nova", "Research")?, 1)
+            .await?;
+        let chat = storage
+            .create_direct_chat(owner, source.id.0, Uuid::now_v7(), 2)
+            .await?;
+        storage
+            .append_user_message(
+                owner,
+                chat.id,
+                Uuid::now_v7(),
+                "private history",
+                &[],
+                None,
+                Vec::new(),
+                &[],
+                3,
+            )
+            .await?;
+
+        let skill_id = Uuid::now_v7();
+        storage
+            .create_skill(&SkillRecord {
+                id: skill_id,
+                owner_id: owner,
+                name: "Reviewer".to_owned(),
+                description: String::new(),
+                active_version_id: Uuid::now_v7(),
+                version: 1,
+                definition: skill_definition("Review carefully."),
+                bot_ids: Vec::new(),
+                created_at_ms: 4,
+                updated_at_ms: 4,
+            })
+            .await?;
+        storage
+            .set_skill_assignment(owner, skill_id, source.id.0, true, 5)
+            .await?;
+        let routine = RoutineRecord {
+            id: Uuid::now_v7(),
+            owner_id: owner,
+            bot_id: source.id.0,
+            name: "Daily brief".to_owned(),
+            description: "Configured".to_owned(),
+            enabled: true,
+            draft: false,
+            active_version_id: Uuid::now_v7(),
+            version: 1,
+            definition: RoutineDefinition {
+                inputs: Vec::new(),
+                steps: Vec::new(),
+                expected_outputs: Vec::new(),
+            },
+            created_at_ms: 6,
+            updated_at_ms: 6,
+        };
+        storage.create_routine(&routine).await?;
+        let trigger = RoutineTriggerRecord {
+            id: Uuid::now_v7(),
+            owner_id: owner,
+            routine_id: routine.id,
+            definition: RoutineTriggerDefinition {
+                source: homebot_routines::RoutineTriggerSource::Webhook {
+                    slug: "daily".to_owned(),
+                },
+                missed_run_policy: homebot_routines::MissedRunPolicy::RunOnce,
+                overlap_policy: homebot_routines::OverlapPolicy::Queue,
+                retry_policy: homebot_routines::RetryPolicy::default(),
+                catch_up_limit: 1,
+            },
+            enabled: true,
+            last_evaluated_at_ms: Some(7),
+            next_fire_at_ms: Some(8),
+            last_event_sequence: 9,
+            created_at_ms: 7,
+            updated_at_ms: 7,
+        };
+        storage.create_routine_trigger(&trigger).await?;
+
+        let duplicate_id = Uuid::now_v7();
+        let duplicate = storage
+            .duplicate_bot_configuration(owner, source.id.0, duplicate_id, 10)
+            .await?;
+        assert_eq!(duplicate.name, "Nova copy");
+        assert_eq!(
+            storage.skill_bot_ids_for_bot(owner, duplicate_id).await?,
+            vec![skill_id]
+        );
+        assert_eq!(
+            storage.list_direct_chats(owner).await?.len(),
+            1,
+            "chat history is not copied"
+        );
+        let copied_routine = storage
+            .list_routines(owner)
+            .await?
+            .into_iter()
+            .find(|item| item.bot_id == duplicate_id)
+            .ok_or(StorageError::RoutineNotFound)?;
+        assert_eq!(
+            (
+                copied_routine.enabled,
+                copied_routine.draft,
+                copied_routine.version
+            ),
+            (true, false, 1)
+        );
+        let copied_triggers = storage
+            .routine_triggers(owner, Some(copied_routine.id))
+            .await?;
+        assert_eq!(copied_triggers.len(), 1);
+        assert_eq!(
+            (
+                copied_triggers[0].last_evaluated_at_ms,
+                copied_triggers[0].last_event_sequence
+            ),
+            (None, 0)
+        );
+        assert!(
+            storage
+                .routine_runs(owner, copied_routine.id)
+                .await?
+                .is_empty()
+        );
+
+        storage.pool.close().await;
+        let reopened = Storage::open(&database).await?;
+        assert_eq!(
+            reopened.get_bot(owner, duplicate_id).await?.name,
+            "Nova copy"
+        );
+        reopened.delete_bot(owner, source.id.0).await?;
+        assert!(matches!(
+            reopened.get_bot(owner, source.id.0).await,
+            Err(StorageError::BotNotFound)
+        ));
+        assert!(reopened.list_direct_chats(owner).await?.is_empty());
+        assert_eq!(
+            reopened.list_routines(owner).await?.len(),
+            1,
+            "duplicate configuration survives source deletion"
         );
         Ok(())
     }

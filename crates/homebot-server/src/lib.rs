@@ -221,10 +221,18 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/api/v1/events", get(events_socket))
         .route("/api/v1/bots", get(bots::list).post(bots::create))
-        .route("/api/v1/bots/{bot_id}", put(bots::update))
+        .route(
+            "/api/v1/bots/{bot_id}",
+            put(bots::update).delete(bots::delete),
+        )
         .route("/api/v1/bots/{bot_id}/archive", post(bots::archive))
         .route("/api/v1/bots/{bot_id}/restore", post(bots::restore))
         .route("/api/v1/bots/{bot_id}/read", post(bots::mark_read))
+        .route("/api/v1/bots/{bot_id}/pin", post(bots::pin))
+        .route("/api/v1/bots/{bot_id}/unpin", post(bots::unpin))
+        .route("/api/v1/bots/{bot_id}/hide", post(bots::hide))
+        .route("/api/v1/bots/{bot_id}/unhide", post(bots::unhide))
+        .route("/api/v1/bots/{bot_id}/duplicate", post(bots::duplicate))
         .route("/api/v1/chats/direct", post(chats::create_direct))
         .route("/api/v1/chats/{chat_id}/timeline", get(chats::timeline))
         .route(

@@ -108,3 +108,43 @@ jobs:
           name: HomeBot-Android-debug
           path: android/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
+
+  macos-package:
+    name: macOS package (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+            arch: Intel
+          - os: macos-14
+            target: aarch64-apple-darwin
+            arch: Apple-Silicon
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: package-${{ matrix.target }}
+      - name: Build release binaries
+        run: cargo build --release --target ${{ matrix.target }} -p homebot-desktop -p homebot-server
+      - name: Assemble and verify application bundle
+        env:
+          HOMEBOT_TARGET: ${{ matrix.target }}
+          HOMEBOT_VERSION: 0.0.1-ci
+          HOMEBOT_BUILD_VERSION: ${{ github.run_number }}
+          SOURCE_DATE_EPOCH: 1704067200
+        run: ./scripts/package-macos.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: HomeBot-macOS-${{ matrix.arch }}
+          path: |
+            dist/*.tar.gz
+            dist/*-notarization.zip
+            dist/*.manifest.json
+            dist/*.SHA256SUMS
+          if-no-files-found: error

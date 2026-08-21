@@ -7,10 +7,10 @@ This file is operational state for coding agents. It is not user-facing product 
 ## Current state
 
 - Current milestone: M6, packaging, hardening and the v1 parity gate. M0 through M5 are verified complete.
-- Current Linear issue: 6C7-68, safe updater and migration recovery (`In Progress`). 6C7-66 and 6C7-67 remain In Progress pending platform CI/external machine evidence.
-- Current Git branch: `feat/6c7-68-safe-updates`.
-- Latest public and verified implementation commit: `8851233e714ccfcee605a9b7b63beb570be577b6` (reproducible macOS packaging foundation on public `main`).
-- Latest verified GitHub Actions run: `32451067995`, all twelve jobs passed, including Intel/Apple Silicon package assembly and artifact upload, Android, Rust/dependency gates, Linux and visual goldens.
+- Current Linear issue: 6C7-69, security hardening, fuzzing and hostile-repository acceptance (`In Progress`). 6C7-66 remains In Progress only for unavailable Developer ID/notarisation and physical clean-machine evidence.
+- Current Git branch: `feat/6c7-69-security-hardening`.
+- Latest public and verified implementation commit: `e52bdbc88a9a2d5ab86b962845886f65d0691b66` (6C7-68 safe updater and migration recovery on public `main`).
+- Latest verified GitHub Actions run: `32456932817`, all thirteen jobs passed, including Rust quality, Android, dependency gates, Linux, both macOS builds/goldens/packages, and the Arch clean package lifecycle.
 - Public repository: `https://github.com/luinbytes/HomeBot`.
 - Required commit identity: `luinbytes <42706009+luinbytes@users.noreply.github.com>`.
 
@@ -60,19 +60,23 @@ Current blockers:
 - 6C7-63, Android routine/run/trigger controls, Skills assignment, plugin/MCP controls, provider/endpoint settings, opaque secret references and paired-device self management with owner administration still denied.
 - 6C7-64, event-driven Android Bot/approval/routine/error notifications, exact deep links and connectivity-driven reconnect without permanent polling.
 - M5 epic 6C7-59: native Android and secure remote parity verified complete.
-- Most recent completed issue: 6C7-64.
+- 6C7-67, AUR-ready Arch/Omarchy desktop and headless packaging with a clean install/update/uninstall CI lifecycle.
+- 6C7-68, explicit manifest-driven desktop update staging, verified pre-migration backups, too-new-schema refusal and deterministic recovery coverage.
+- Most recent completed issue: 6C7-68.
 - Focused repository presentation pass: README badges and real desktop previews added from checked-in visual goldens; tracked-file hygiene audited with no junk removals required and `.gitignore` expanded for common Rust, Android, editor, environment, Python, Node, log and temporary outputs.
 
 ## Immediate next work
 
-1. Finish 6C7-68's manifest-driven explicit updater, verified pre-migration backups, downgrade refusal and recovery tests; publish and verify the full remote gate.
-2. Reconcile PR #5/#6 platform artifact CI and keep only genuinely external signing/physical-machine evidence open on 6C7-66/67.
-3. Continue immediately through 6C7-69 security hardening and the remaining M6 gates.
+1. Finish the final Android/full-workspace verification and exact-revision Codex Security report for 6C7-69, then publish the hardening tree and require the full remote gate.
+2. Continue immediately into 6C7-70 measurable performance/resource budgets and desktop/Android accessibility acceptance.
+3. Execute 6C7-71's complete cross-platform parity gate; keep real Codex/Claude provider smoke tests and Apple release signing as explicit blockers until suitable credentials/machines are available.
 
 ## Verification state
 
 Verified at the latest remote baseline:
 
+- GitHub Actions run `32456932817` passed all thirteen jobs for public 6C7-68 commit `e52bdbc`. It verified updater/migration recovery, Android, dependency policy/audit, Linux, both macOS builds and packages/goldens, and the Arch clean package lifecycle.
+- GitHub Actions run `32455982765` passed all thirteen jobs for the final 6C7-67 tree, including source-archive creation, package build, clean install, update, uninstall, manifest/checksum generation and artifact upload in a fresh Arch container.
 - GitHub Actions run `32451067995` passed all twelve jobs for the corrected macOS packaging branch. It uploaded `HomeBot-macOS-Intel` and `HomeBot-macOS-Apple-Silicon` artifacts with reproducible bundles, notarisation ZIPs, manifests and checksums; public `main` is `8851233`.
 - GitHub Actions run `32449482551` passed all ten jobs for public 6C7-64 commit `5adeeab9`. Android tests prove authoritative event-to-notification mapping, exact deep links, duplicate-safe sequence handling and connectivity-triggered reconnect without permanent polling.
 - GitHub Actions run `32448835788` passed all ten jobs for public 6C7-63 commit `f834e37`. Android lint, seven deterministic tests, debug APK assembly/artifact upload, Rust quality, dependency audit/policy, Linux and both macOS builds, and all visual-golden platforms passed.
@@ -92,6 +96,7 @@ Verified at the latest remote baseline:
 
 Verified locally at the current baseline:
 
+- 6C7-69's Rust security gate passes: bounded protocol/WebSocket/MCP inputs, hostile Git configuration denial, provider URL credential rejection, all capability-class approval negatives, deterministic parser properties, secret-leak scanning, strict clippy, schema/Android drift and visual goldens. The authenticated invalid-token fixture passes five consecutive runs after keeping its temporary SQLite directory alive for the Router lifetime.
 - 6C7-68's complete `./scripts/check.sh` gate passes with 169 Rust tests, strict clippy, all visual goldens, schema/Android drift checks and deterministic packaging-contract checks. A follow-up symlink-negative test also passes, bringing the targeted current total to 170. Storage coverage upgrades and verifies backups for every prior schema v1–v16, reuses an interrupted-launch backup, refuses v18, fails closed on corruption/backup failure/symlink substitution and preserves transactional rollback. Desktop coverage proves compatible same-origin manifests, explicit staging, exact streamed size/SHA-256, traversal denial and partial-file cleanup.
 - 6C7-61 has a real Gradle application module, Compose shell, Coroutines/Flow state machine, OkHttp HTTP/WebSocket transport, Keystore-encrypted device session, DataStore endpoint preferences, generated Rust-owned snapshot/version/attachment models and Android CI artifact job.
 - Deterministic Android tests cover one-time pairing, credential redaction, version skew, revocation, snapshot hydration, cursor resume, stale-cursor fallback, replay and duplicate-sequence suppression. Run `32446363611` compiled against Android SDK 36 and Kotlin 2.3, passed lint and all tests, assembled `app-debug.apk`, and uploaded `HomeBot-Android-debug`.
@@ -122,8 +127,7 @@ Verified locally at the current baseline:
 ## Known failures and incomplete implementation
 
 - macOS Developer ID signing/notarisation credentials and clean Intel/Apple Silicon test machines are unavailable in this environment. CI can verify reproducible ad-hoc-signed bundles, but those checks do not satisfy final release signing acceptance.
-- 6C7-67 clean PR #7 is published at `d849ec0c9e047c39a181baa5d86f39b564c4c5e3`. Its first superseded run proved the fresh Arch container lacked Git before checkout; checkout order is corrected and replacement package CI is running.
-- Arch/Omarchy packaging, updater/migration recovery, release hardening, performance/accessibility, and final parity/release artifacts remain incomplete roadmap work.
+- 6C7-69 security hardening, performance/accessibility, and final parity/release artifacts remain incomplete roadmap work.
 - Real authenticated Codex/Claude round trips are unavailable in this environment. OpenAI-compatible and CDP behavior use protocol-faithful local fixtures.
 - No release artifact exists. Do not describe HomeBot as installable or v1-ready.
 

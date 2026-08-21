@@ -1688,4 +1688,36 @@ mod tests {
             assert!(!presentation(unsafe_path).is_remote_safe(), "{unsafe_path}");
         }
     }
+
+    #[test]
+    fn hostile_parser_corpus_is_total_and_never_accepts_unversioned_noise() {
+        let mut state = 0x9e37_79b9_7f4a_7c15_u64;
+        for length in 0..=2_048_usize {
+            let mut bytes = Vec::with_capacity(length);
+            for _ in 0..length {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                bytes.push(state.to_le_bytes()[0]);
+            }
+            assert!(serde_json::from_slice::<ClientMessage>(&bytes).is_err());
+        }
+    }
+
+    #[test]
+    fn sequence_classification_obeys_monotonic_cursor_properties() {
+        for previous in [0, 1, u64::from(u32::MAX), u64::MAX - 1, u64::MAX] {
+            for received in [0, previous, previous.saturating_add(1), u64::MAX] {
+                let disposition = classify_sequence(previous, received);
+                assert_eq!(
+                    disposition == SequenceDisposition::Duplicate,
+                    received <= previous
+                );
+                assert_eq!(
+                    disposition == SequenceDisposition::Next,
+                    received > previous && received == previous.saturating_add(1)
+                );
+            }
+        }
+    }
 }

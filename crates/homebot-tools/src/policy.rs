@@ -477,6 +477,41 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn every_capability_class_fails_closed_without_a_server_rule() {
+        let engine = PolicyEngine::new(
+            Duration::from_secs(60),
+            Arc::new(RecordingActivitySink::default()),
+        );
+        for capability in [
+            CapabilityClass::FilesystemRead,
+            CapabilityClass::FilesystemWrite,
+            CapabilityClass::ProcessExecute,
+            CapabilityClass::BrowserObserve,
+            CapabilityClass::BrowserAct,
+            CapabilityClass::GitRead,
+            CapabilityClass::GitWrite,
+            CapabilityClass::GitRemote,
+            CapabilityClass::PluginRead,
+            CapabilityClass::PluginWrite,
+            CapabilityClass::ExternalCommunication,
+            CapabilityClass::ExternalMutation,
+            CapabilityClass::SecretUse,
+            CapabilityClass::DeviceAdministration,
+        ] {
+            let mut candidate = request();
+            candidate.capability = capability;
+            candidate.action = format!("security.{capability:?}").to_ascii_lowercase();
+            assert!(
+                matches!(
+                    engine.authorize(&candidate, None).await,
+                    Err(ToolError::ApprovalRequired(_))
+                ),
+                "{capability:?} did not fail closed"
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn policy_change_invalidates_previously_approved_ticket() {
         let engine = PolicyEngine::new(
             Duration::from_secs(60),

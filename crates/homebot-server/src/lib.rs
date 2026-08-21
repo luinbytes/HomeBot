@@ -57,6 +57,8 @@ const HEARTBEAT_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1
 const HEARTBEAT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(45);
 const OUTBOUND_CAPACITY: usize = 256;
 const LIVE_EVENT_CAPACITY: usize = 1_024;
+const MAX_WEBSOCKET_MESSAGE_BYTES: usize = 256 * 1024;
+const MAX_WEBSOCKET_FRAME_BYTES: usize = 64 * 1024;
 const COMMAND_DELAY: std::time::Duration = std::time::Duration::from_millis(5);
 
 #[derive(Debug)]
@@ -476,7 +478,10 @@ async fn events_socket(
     Extension(identity): Extension<AuthenticatedIdentity>,
     upgrade: WebSocketUpgrade,
 ) -> Response {
-    upgrade.on_upgrade(move |socket| serve_events(socket, state, identity))
+    upgrade
+        .max_message_size(MAX_WEBSOCKET_MESSAGE_BYTES)
+        .max_frame_size(MAX_WEBSOCKET_FRAME_BYTES)
+        .on_upgrade(move |socket| serve_events(socket, state, identity))
 }
 
 async fn serve_events(mut socket: WebSocket, state: AppState, identity: AuthenticatedIdentity) {

@@ -24,6 +24,7 @@ jobs:
       - run: cargo test --workspace --all-features
       - run: cargo run -p homebot-protocol --example export_schema -- --check
       - run: cargo run -p homebot-protocol --example export_android -- --check
+      - run: ./scripts/security-gate.sh
 
   rust-build:
     name: Rust build (${{ matrix.target }})

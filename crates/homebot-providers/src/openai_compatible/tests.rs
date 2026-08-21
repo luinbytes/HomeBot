@@ -185,6 +185,24 @@ fn remote_cleartext_and_resolved_secret_debug_are_denied_or_redacted()
         "model",
     );
     assert!(result.is_err());
+    for endpoint in [
+        "https://user:password@example.com/v1/",
+        "https://example.com/v1/?api_key=secret-value",
+        "https://example.com/v1/#secret-value",
+    ] {
+        assert!(
+            OpenAiCompatibleProfile::new(
+                ProviderAdapterId::new("unsafe-api")?,
+                "Unsafe",
+                Url::parse(endpoint)?,
+                OpenAiApiStyle::Responses,
+                SecretReference::new(Uuid::nil()),
+                "model",
+            )
+            .is_err(),
+            "credential-bearing URL was accepted: {endpoint}"
+        );
+    }
     assert_eq!(
         format!("{:?}", crate::ResolvedSecret::new("secret-value")),
         "ResolvedSecret([REDACTED])"

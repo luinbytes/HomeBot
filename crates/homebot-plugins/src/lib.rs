@@ -386,4 +386,27 @@ mod tests {
         assert_eq!(output.content["content"][0]["text"], "fixture result");
         Ok(())
     }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn malicious_mcp_output_is_bounded_before_json_parsing()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let server = directory.path().join("oversized-mcp");
+        let oversized = "x".repeat(MAX_MESSAGE_BYTES + 1);
+        std::fs::write(
+            &server,
+            format!("#!/bin/sh\nprintf '%s\\n' '{oversized}'\n"),
+        )?;
+        let mut permissions = std::fs::metadata(&server)?.permissions();
+        permissions.set_mode(0o700);
+        std::fs::set_permissions(&server, permissions)?;
+
+        let adapter = LocalMcpAdapter::new(LocalMcpProfile::new(server));
+        assert!(matches!(
+            adapter.discover_tools().await,
+            Err(PluginError::MessageTooLarge)
+        ));
+        Ok(())
+    }
 }

@@ -558,7 +558,7 @@ class HomeBotClient(
         private val session: SessionCredentials,
         private val disconnected: CompletableDeferred<DisconnectReason>,
     ) : WebSocketListener() {
-        private val events = Channel<Pair<WebSocket, String>>(Channel.UNLIMITED)
+        private val events = Channel<Pair<WebSocket, String>>(EVENT_BUFFER_CAPACITY)
         private val processor = scope.launch {
             for ((webSocket, text) in events) {
                 runCatching { handleEvent(webSocket, endpoint, text) }
@@ -585,10 +585,18 @@ class HomeBotClient(
         }
 
         override fun onMessage(webSocket: WebSocket, text: String) {
-            if (events.trySend(webSocket to text).isFailure) {
-                webSocket.close(1002, "HomeBot event processor unavailable")
+            if (text.toByteArray(Charsets.UTF_8).size > MAX_EVENT_BYTES) {
+                webSocket.close(1009, "HomeBot event exceeded the size limit")
                 disconnected.complete(
-                    DisconnectReason.Retry(ClientFailure.Protocol("HomeBot event processor unavailable")),
+                    DisconnectReason.Retry(ClientFailure.Protocol("HomeBot event exceeded the size limit")),
+                )
+                events.cancel()
+                return
+            }
+            if (events.trySend(webSocket to text).isFailure) {
+                webSocket.close(1013, "HomeBot event processor is backpressured")
+                disconnected.complete(
+                    DisconnectReason.Retry(ClientFailure.Protocol("HomeBot event processor is backpressured")),
                 )
             }
         }
@@ -847,7 +855,9 @@ class HomeBotClient(
 
     private companion object {
         const val CLIENT_VERSION = "homebot-android/0.1.0"
+        const val EVENT_BUFFER_CAPACITY = 128
         const val MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024
+        const val MAX_EVENT_BYTES = 256 * 1024
         val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
     }
 }

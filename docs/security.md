@@ -64,6 +64,8 @@ The local computer layer opens workspace roots as `cap-std` capability directori
 
 Security-relevant events include authentication failure, pairing creation/exchange, device creation/revocation, policy change, approval request/decision/use, secret reference mutation/use, denied capability, remote bind change, plugin installation, external mutation, and destructive VCS operation. Audit records store identities, scopes, safe metadata, and outcomes, never secret values.
 
+The M6 re-execution of this threat model, resolved findings and concrete negative-test coverage are recorded in [security-review-6c7-69.md](security-review-6c7-69.md). CI also runs a tracked-secret/SQLite-column gate; this complements OS-backed storage and runtime redaction rather than replacing either control.
+
 ## Dependency exceptions
 
 The egui 0.32.3 graph selected for HomeBot's Rust 1.85 minimum version transitively includes `ttf-parser` 0.25.1, covered by unmaintained advisory RUSTSEC-2026-0192. The advisory reports maintenance status, not a known vulnerability, and publishes no safe upgrade. CI ignores only this exact advisory while continuing to fail all vulnerability advisories. The exception must be reviewed during 6C7-69 and removed before v1 if egui offers a compatible maintained font stack.

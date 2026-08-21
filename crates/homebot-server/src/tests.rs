@@ -240,11 +240,19 @@ impl ProviderAdapter for ChatFakeAdapter {
     }
 }
 
-async fn test_app() -> Result<Router, homebot_storage::StorageError> {
+struct TestApp {
+    router: Router,
+    _directory: tempfile::TempDir,
+}
+
+async fn test_app() -> Result<TestApp, homebot_storage::StorageError> {
     let directory = tempfile::tempdir()?;
     let path = directory.path().join("homebot.db");
     let storage = Storage::open(&path).await?;
-    Ok(router(AppState::new(storage, "correct-token")))
+    Ok(TestApp {
+        router: router(AppState::new(storage, "correct-token")),
+        _directory: directory,
+    })
 }
 
 #[cfg(unix)]
@@ -2538,8 +2546,9 @@ async fn wait_for_timeline(
 #[tokio::test]
 async fn health_is_available_without_auth_but_reveals_no_secrets()
 -> Result<(), Box<dyn std::error::Error>> {
-    let response = test_app()
-        .await?
+    let app = test_app().await?;
+    let response = app
+        .router
         .oneshot(Request::get("/health").body(Body::empty())?)
         .await?;
     assert_eq!(response.status(), StatusCode::OK);
@@ -2554,10 +2563,8 @@ async fn protected_routes_deny_missing_and_invalid_tokens_server_side()
         if let Some(value) = authorization {
             request = request.header("authorization", value);
         }
-        let response = test_app()
-            .await?
-            .oneshot(request.body(Body::empty())?)
-            .await?;
+        let app = test_app().await?;
+        let response = app.router.oneshot(request.body(Body::empty())?).await?;
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
     Ok(())
@@ -2924,8 +2931,9 @@ async fn secret_crud_uses_only_os_vault_values_and_reports_locked_state()
 
 #[tokio::test]
 async fn valid_device_session_can_negotiate_version() -> Result<(), Box<dyn std::error::Error>> {
-    let response = test_app()
-        .await?
+    let app = test_app().await?;
+    let response = app
+        .router
         .oneshot(
             Request::get("/api/v1/version")
                 .header("authorization", "Bearer correct-token")
@@ -2939,8 +2947,9 @@ async fn valid_device_session_can_negotiate_version() -> Result<(), Box<dyn std:
 #[tokio::test]
 async fn stale_protocol_is_rejected_with_upgrade_required() -> Result<(), Box<dyn std::error::Error>>
 {
-    let response = test_app()
-        .await?
+    let app = test_app().await?;
+    let response = app
+        .router
         .oneshot(
             Request::get("/api/v1/version")
                 .header("authorization", "Bearer correct-token")
@@ -2997,6 +3006,31 @@ async fn websocket_requires_auth_and_sends_snapshot_after_hello()
             boundary_sequence: 0,
             ..
         }
+    ));
+    task.abort();
+    Ok(())
+}
+
+#[tokio::test]
+async fn websocket_rejects_oversized_client_messages() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let storage = Storage::open(&directory.path().join("homebot.db")).await?;
+    let (address, task, _guard) = spawn_app(storage).await?;
+    let mut request = format!("ws://{address}/api/v1/events").into_client_request()?;
+    request
+        .headers_mut()
+        .insert("authorization", "Bearer correct-token".parse()?);
+    let (mut socket, _) = connect_async(request).await?;
+    socket
+        .send(tokio_tungstenite::tungstenite::Message::Text(
+            "x".repeat(super::MAX_WEBSOCKET_MESSAGE_BYTES + 1).into(),
+        ))
+        .await?;
+
+    let response = tokio::time::timeout(std::time::Duration::from_secs(2), socket.next()).await?;
+    assert!(matches!(
+        response,
+        Some(Ok(tokio_tungstenite::tungstenite::Message::Close(_)) | Err(_)) | None
     ));
     task.abort();
     Ok(())
@@ -4805,6 +4839,7 @@ async fn source_control_is_server_owned_idempotent_and_remote_push_requires_appr
         Some(42)
     );
     let replay = app
+        .clone()
         .oneshot(json_request(
             "POST",
             &format!("/api/v1/chats/{}/vcs/pull-request", chat.id),
@@ -4816,5 +4851,21 @@ async fn source_control_is_server_owned_idempotent_and_remote_push_requires_appr
         response_json::<PullRequestMutationResponse>(replay).await?,
         created
     );
+
+    let config_path = repository.path().join(".git/config");
+    let config = std::fs::read_to_string(&config_path)?;
+    std::fs::write(
+        &config_path,
+        format!("{config}\n[core]\n\tfsmonitor = !touch server-policy-bypass\n"),
+    )?;
+    let hostile = app
+        .oneshot(
+            Request::get(&status_url)
+                .header("authorization", "Bearer correct-token")
+                .body(Body::empty())?,
+        )
+        .await?;
+    assert_eq!(hostile.status(), StatusCode::CONFLICT);
+    assert!(!repository.path().join("server-policy-bypass").exists());
     Ok(())
 }

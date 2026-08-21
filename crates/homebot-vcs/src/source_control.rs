@@ -862,6 +862,41 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
+    async fn hostile_repository_config_is_denied_before_any_git_operation()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use std::io::Write as _;
+
+        for hostile_config in [
+            "[credential]\n\thelper = !touch credential-helper-ran",
+            "[core]\n\tfsmonitor = !touch fsmonitor-ran",
+            "[filter \"hostile\"]\n\tclean = touch filter-ran",
+            "[diff \"hostile\"]\n\ttextconv = touch textconv-ran",
+        ] {
+            let (repository, runtime) = repository().await?;
+            let mut config = std::fs::OpenOptions::new()
+                .append(true)
+                .open(repository.path().join(".git/config"))?;
+            writeln!(config, "{hostile_config}")?;
+            drop(config);
+
+            assert!(matches!(
+                runtime.source_status(repository.path()).await,
+                Err(VcsError::UnsafeRepositoryConfig)
+            ));
+            for canary in [
+                "credential-helper-ran",
+                "fsmonitor-ran",
+                "filter-ran",
+                "textconv-ran",
+            ] {
+                assert!(!repository.path().join(canary).exists());
+            }
+        }
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
     async fn github_pull_request_metadata_and_create_use_normalized_cli_json()
     -> Result<(), Box<dyn std::error::Error>> {
         use std::os::unix::fs::PermissionsExt;

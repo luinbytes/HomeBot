@@ -27,5 +27,5 @@ fi
 
 # The packaged desktop owns the same supervised, loopback-only server implementation and the
 # standalone headless binary remains available for diagnostics/service packaging.
-strings "$app/Contents/MacOS/HomeBot" | grep -q 'HomeBot server is unavailable'
-strings "$app/Contents/Resources/bin/homebot-server" | grep -q 'HOMEBOT_ALLOW_REMOTE'
+strings "$app/Contents/MacOS/HomeBot" | grep 'HomeBot server is unavailable' >/dev/null
+strings "$app/Contents/Resources/bin/homebot-server" | grep 'HOMEBOT_ALLOW_REMOTE' >/dev/null

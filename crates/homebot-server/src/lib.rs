@@ -208,6 +208,11 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/version", get(version))
         .route("/api/v1/pairing", post(pairing::create))
         .route("/api/v1/devices", get(pairing::list_devices))
+        .route("/api/v1/device", get(pairing::current_device))
+        .route(
+            "/api/v1/device/revoke",
+            post(pairing::revoke_current_device),
+        )
         .route(
             "/api/v1/devices/{device_id}/revoke",
             post(pairing::revoke_device),

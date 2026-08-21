@@ -84,7 +84,7 @@ private fun ProductShell(viewModel: MainViewModel, live: ConnectionState.Live, s
                 ProductDestination.Bots -> RosterScreen(viewModel, live)
                 is ProductDestination.DirectChat -> DirectChatScreen(viewModel, state.directTimeline, state)
                 is ProductDestination.GroupChat -> GroupChatScreen(viewModel, state.groupTimeline)
-                ProductDestination.Settings -> ConnectedSettings(live)
+                ProductDestination.Settings -> ConnectedSettings(viewModel, live, state)
             }
             if (state.loading) CircularProgressIndicator(Modifier.align(Alignment.Center), color = Violet)
             state.error?.let { ErrorBanner(it, viewModel::clearError) }
@@ -322,14 +322,102 @@ private fun ApprovalCard(approval: ApprovalSummary, onDecision: (ApprovalSummary
 }
 
 @Composable
-private fun ConnectedSettings(live: ConnectionState.Live) {
-    Column(Modifier.fillMaxSize().padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        Text("Settings", fontSize = 28.sp, fontWeight = FontWeight.Bold)
-        HomeBotCard("Server endpoint", live.endpoint) {}
-        HomeBotCard("Protocol stream", "Sequence ${live.cursor} • authenticated device session") {}
-        Text("Providers, routines, Skills, plugins and device management remain server-authoritative.", color = Muted)
+private fun ConnectedSettings(viewModel: MainViewModel, live: ConnectionState.Live, state: AndroidProductState) {
+    val endpointSettings by viewModel.settings.collectAsState()
+    var endpoint by remember(endpointSettings.endpoint) { mutableStateOf(endpointSettings.endpoint.ifBlank { live.endpoint }) }
+    var endpointError by remember { mutableStateOf<String?>(null) }
+    val selectedRoutine = state.routines.firstOrNull { it.id == state.selectedRoutineId }
+    LazyColumn(Modifier.fillMaxSize().padding(horizontal = 20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        item {
+            Text("Settings & automations", fontSize = 28.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 18.dp))
+            Text("All status and mutations come from your HomeBot server.", color = Muted)
+        }
+        item {
+            Text("Connection", fontSize = 20.sp, fontWeight = FontWeight.Bold)
+            OutlinedTextField(endpoint, { endpoint = it }, Modifier.fillMaxWidth(), label = { Text("HTTPS or loopback endpoint") })
+            Button(onClick = { viewModel.updateEndpoint(endpoint, endpointSettings.deviceName) { endpointError = it } }) {
+                Text("Save and reconnect")
+            }
+            endpointError?.let { Text(it, color = Danger) }
+            Text("Sequence ${live.cursor} • authenticated device session", color = Muted, fontSize = 12.sp)
+        }
+        item { SectionTitle("Routines") }
+        items(state.routines, key = { it.id }) { routine ->
+            Card(shape = CardShape) {
+                Column(Modifier.fillMaxWidth().padding(14.dp)) {
+                    Text(routine.name, fontWeight = FontWeight.Bold)
+                    Text("v${routine.version} • ${if (routine.enabled) "enabled" else "disabled"}", color = Muted)
+                    Row {
+                        TextButton(onClick = { viewModel.selectRoutine(routine.id) }) { Text("Details & history") }
+                        Button(onClick = { viewModel.runRoutine(routine.id) }, enabled = !routine.draft) { Text("Run now") }
+                    }
+                }
+            }
+        }
+        selectedRoutine?.let { routine ->
+            item {
+                Text("${routine.name} run history", fontWeight = FontWeight.SemiBold)
+                Text("${state.routineTriggers.size} schedules/triggers", color = Muted)
+            }
+            items(state.routineRuns, key = { it.id }) { run ->
+                HomeBotCard(run.status, "Attempt ${run.attempt_count}${run.error_message?.let { error -> " • $error" } ?: ""}") {}
+            }
+        }
+        item { SectionTitle("Skills") }
+        items(state.skills, key = { it.id }) { skill ->
+            Card(shape = CardShape) {
+                Row(Modifier.fillMaxWidth().padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text(skill.name, fontWeight = FontWeight.Bold)
+                        Text("v${skill.version} • ${skill.bot_ids.size} Bots", color = Muted)
+                    }
+                    live.snapshot.bots.firstOrNull()?.let { bot ->
+                        val assigned = bot.id in skill.bot_ids
+                        TextButton(onClick = { viewModel.toggleSkill(skill.id, bot.id, !assigned) }) {
+                            Text(if (assigned) "Unassign" else "Assign to ${bot.name}")
+                        }
+                    }
+                }
+            }
+        }
+        item { SectionTitle("Plugins & MCP") }
+        items(state.plugins, key = { it.id }) { plugin ->
+            Card(shape = CardShape) {
+                Column(Modifier.fillMaxWidth().padding(14.dp)) {
+                    Text(plugin.name, fontWeight = FontWeight.Bold)
+                    Text("${plugin.connection_state} • ${plugin.auth_state} • ${plugin.tools.size} tools", color = Muted)
+                    plugin.error_message?.let { Text(it, color = Danger) }
+                    Row {
+                        TextButton(onClick = { viewModel.mutatePlugin(plugin.id, "health") }) { Text("Check") }
+                        TextButton(onClick = { viewModel.mutatePlugin(plugin.id, if (plugin.enabled) "disable" else "enable") }) {
+                            Text(if (plugin.enabled) "Disable" else "Enable")
+                        }
+                    }
+                }
+            }
+        }
+        item { SectionTitle("Secret references") }
+        if (state.secrets.isEmpty()) item { Text("No secret references configured.", color = Muted) }
+        items(state.secrets, key = { it.id }) { secret ->
+            HomeBotCard(secret.label, "${secret.status} • value is never displayed") {}
+        }
+        item { SectionTitle("This paired device") }
+        state.currentDevice?.let { device ->
+            item {
+                Card(shape = CardShape) {
+                    Column(Modifier.fillMaxWidth().padding(14.dp)) {
+                        Text(device.name, fontWeight = FontWeight.Bold)
+                        Text("${device.endpoint_kind.name.lowercase()} • session ${device.id.take(8)}…", color = Muted)
+                        OutlinedButton(onClick = viewModel::revokeThisDevice) { Text("Revoke this device") }
+                    }
+                }
+            }
+        }
+        item { Spacer(Modifier.height(20.dp)) }
     }
 }
+
+@Composable private fun SectionTitle(title: String) { Text(title, fontSize = 20.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 12.dp)) }
 
 @Composable
 private fun PairingScreen(viewModel: MainViewModel, connection: ConnectionState, incomingPairing: String?) {

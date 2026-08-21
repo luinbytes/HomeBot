@@ -4,6 +4,13 @@ import dev.homebot.protocol.ChatTimelineResponse
 import dev.homebot.protocol.GroupTimelineResponse
 import dev.homebot.protocol.VcsStatus
 import dev.homebot.protocol.WorkingTreeDiffResponse
+import dev.homebot.protocol.DeviceSessionSummary
+import dev.homebot.protocol.PluginSummary
+import dev.homebot.protocol.RoutineRunSummary
+import dev.homebot.protocol.RoutineSummary
+import dev.homebot.protocol.RoutineTriggerSummary
+import dev.homebot.protocol.SecretSummary
+import dev.homebot.protocol.SkillSummary
 
 sealed interface ProductDestination {
     data object Bots : ProductDestination
@@ -22,6 +29,14 @@ data class AndroidProductState(
     val directTimeline: ChatTimelineResponse? = null,
     val groupTimeline: GroupTimelineResponse? = null,
     val coding: CodingWorkspaceProjection = CodingWorkspaceProjection(),
+    val skills: List<SkillSummary> = emptyList(),
+    val plugins: List<PluginSummary> = emptyList(),
+    val routines: List<RoutineSummary> = emptyList(),
+    val routineRuns: List<RoutineRunSummary> = emptyList(),
+    val routineTriggers: List<RoutineTriggerSummary> = emptyList(),
+    val secrets: List<SecretSummary> = emptyList(),
+    val currentDevice: DeviceSessionSummary? = null,
+    val selectedRoutineId: String? = null,
     val loading: Boolean = false,
     val error: String? = null,
 )

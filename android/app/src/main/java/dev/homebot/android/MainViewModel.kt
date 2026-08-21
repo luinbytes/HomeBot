@@ -79,6 +79,51 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun showSettings() {
         mutableProduct.value = mutableProduct.value.copy(destination = ProductDestination.Settings, error = null)
+        loadServices()
+    }
+
+    fun loadServices() = perform {
+        val skills = homeBot.client.skills().getOrThrow()
+        val plugins = homeBot.client.plugins().getOrThrow()
+        val routines = homeBot.client.routines().getOrThrow()
+        val secrets = homeBot.client.secrets().getOrThrow()
+        val device = homeBot.client.currentDevice().getOrThrow()
+        mutableProduct.value = mutableProduct.value.copy(
+            skills = skills,
+            plugins = plugins,
+            routines = routines,
+            secrets = secrets,
+            currentDevice = device,
+        )
+    }
+
+    fun selectRoutine(routineId: String) = perform {
+        val runs = homeBot.client.routineRuns(routineId).getOrThrow()
+        val triggers = homeBot.client.routineTriggers(routineId).getOrThrow()
+        mutableProduct.value = mutableProduct.value.copy(
+            selectedRoutineId = routineId,
+            routineRuns = runs,
+            routineTriggers = triggers,
+        )
+    }
+
+    fun runRoutine(routineId: String) = perform {
+        homeBot.client.runRoutine(routineId).getOrThrow()
+        selectRoutine(routineId)
+    }
+
+    fun mutatePlugin(pluginId: String, action: String) = perform {
+        homeBot.client.mutatePlugin(pluginId, action).getOrThrow()
+        loadServices()
+    }
+
+    fun toggleSkill(skillId: String, botId: String, enabled: Boolean) = perform {
+        homeBot.client.setSkillAssigned(skillId, botId, enabled).getOrThrow()
+        loadServices()
+    }
+
+    fun revokeThisDevice() = perform {
+        homeBot.client.revokeCurrentDevice().getOrThrow()
     }
 
     fun openDirectChat(chatId: String) {

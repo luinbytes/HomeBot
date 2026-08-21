@@ -22,6 +22,7 @@ import dev.homebot.protocol.GlobalSearchResponse
 import dev.homebot.protocol.HandoffGroupRequest
 import dev.homebot.protocol.MessageMutationRequest
 import dev.homebot.protocol.MessageSummary
+import dev.homebot.protocol.MessageReferenceInput
 import dev.homebot.protocol.PROTOCOL_VERSION
 import dev.homebot.protocol.PairingExchangeResponse
 import dev.homebot.protocol.ProtocolRange
@@ -265,8 +266,9 @@ class HomeBotClient(
         steering: Boolean = false,
         attachmentIds: List<String> = emptyList(),
         replyToMessageId: String? = null,
+        references: List<MessageReferenceInput> = emptyList(),
     ): Result<SendMessageResponse> = authenticated {
-        val request = SendMessageRequest(ids(), ids(), content, attachmentIds, replyToMessageId, emptyList())
+        val request = SendMessageRequest(ids(), ids(), content, attachmentIds, replyToMessageId, emptyList(), emptyList(), references)
         post(
             "api/v1/chats/$chatId/${if (steering) "steer" else "messages"}",
             request,
@@ -300,8 +302,9 @@ class HomeBotClient(
         content: String,
         mentionedBotIds: List<String>,
         replyToMessageId: String? = null,
+        references: List<MessageReferenceInput> = emptyList(),
     ): Result<MessageSummary> = authenticated {
-        val request = SendGroupMessageRequest(ids(), ids(), content, mentionedBotIds, emptyList(), replyToMessageId)
+        val request = SendGroupMessageRequest(ids(), ids(), content, mentionedBotIds, emptyList(), replyToMessageId, references)
         post(
             "api/v1/groups/$chatId/messages",
             request,

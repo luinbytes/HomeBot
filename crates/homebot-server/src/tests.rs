@@ -20,21 +20,22 @@ use homebot_protocol::{
     DeliverRoutineTriggerRequest, DetachChatWorkspaceRequest, DeviceSessionSummary,
     DuplicateRoutineRequest, DuplicateSkillRequest, ExchangePairingRequest,
     FinalizeAttachmentRequest, GlobalSearchResponse, GroupBotStatus, GroupTimelineResponse,
-    HandoffGroupRequest, ImportSkillRequest, InteractionMode, MissedRunPolicy, OverlapPolicy,
-    PairingEndpointKind, PairingExchangeResponse, PairingOffer, PluginConnectionState,
-    PluginMutationRequest, PluginSummary, PullRequestMetadata, PullRequestMutationResponse,
-    QueuedPromptKind, ReactionMutationRequest, RecordedAction, RecordedActor,
-    RepositoryWorkspaceSummary, RestoreCheckpointRequest, RetryPolicy, RevokeDeviceSessionRequest,
-    RoutineDefinition, RoutineInput, RoutineInputKind, RoutineJobSummary, RoutineRecordingSummary,
-    RoutineRunSummary, RoutineSchedule, RoutineStep, RoutineStepStatus, RoutineSummary,
-    RoutineTriggerDefinition, RoutineTriggerSource, RunRoutineRequest, SecretSummary,
-    SendGroupMessageRequest, SendMessageRequest, SendMessageResponse, SetInteractionModeRequest,
-    SkillAssignmentRequest, SkillBundle, SkillContext, SkillDefinition, SkillImportConflictPolicy,
-    SkillSummary, SkillTestSummary, SkillToolReference, StartRoutineRecordingRequest,
-    TurnCheckpointSummary, UpdateBotRequest, UpdateGroupParticipantRequest, UpdateRoutineRequest,
-    UpdateSkillRequest, VcsCommitRequest, VcsCommitResult, VcsCreateBranchRequest,
-    VcsMutationStatus, VcsPushRequest, VcsRemoteMutationResponse, VcsStatus, WorkingContextSummary,
-    WorkingTreeCondition, WorkingTreeDiffResponse, WorkspaceBranchesResponse, WorkspaceMode,
+    HandoffGroupRequest, ImportSkillRequest, InteractionMode, MessageReferenceInput,
+    MessageReferenceKind, MissedRunPolicy, OverlapPolicy, PairingEndpointKind,
+    PairingExchangeResponse, PairingOffer, PluginConnectionState, PluginMutationRequest,
+    PluginSummary, PullRequestMetadata, PullRequestMutationResponse, QueuedPromptKind,
+    ReactionMutationRequest, RecordedAction, RecordedActor, RepositoryWorkspaceSummary,
+    RestoreCheckpointRequest, RetryPolicy, RevokeDeviceSessionRequest, RoutineDefinition,
+    RoutineInput, RoutineInputKind, RoutineJobSummary, RoutineRecordingSummary, RoutineRunSummary,
+    RoutineSchedule, RoutineStep, RoutineStepStatus, RoutineSummary, RoutineTriggerDefinition,
+    RoutineTriggerSource, RunRoutineRequest, SecretSummary, SendGroupMessageRequest,
+    SendMessageRequest, SendMessageResponse, SetInteractionModeRequest, SkillAssignmentRequest,
+    SkillBundle, SkillContext, SkillDefinition, SkillImportConflictPolicy, SkillSummary,
+    SkillTestSummary, SkillToolReference, StartRoutineRecordingRequest, TurnCheckpointSummary,
+    UpdateBotRequest, UpdateGroupParticipantRequest, UpdateRoutineRequest, UpdateSkillRequest,
+    VcsCommitRequest, VcsCommitResult, VcsCreateBranchRequest, VcsMutationStatus, VcsPushRequest,
+    VcsRemoteMutationResponse, VcsStatus, WorkingContextSummary, WorkingTreeCondition,
+    WorkingTreeDiffResponse, WorkspaceBranchesResponse, WorkspaceMode,
 };
 use homebot_providers::{
     ActivityKind, ActivityStatus as ProviderActivityStatus, ApprovalDecision, CompactRequest,
@@ -285,6 +286,7 @@ async fn global_search_is_owner_scoped_and_returns_exact_targets()
             None,
             Vec::new(),
             &[],
+            &[],
             3,
         )
         .await?;
@@ -345,6 +347,7 @@ async fn global_search_is_owner_scoped_and_returns_exact_targets()
             &[],
             None,
             Vec::new(),
+            &[],
             &[],
             8,
         )
@@ -1678,6 +1681,10 @@ async fn direct_chat_send_queue_replay_and_timeline_are_server_authoritative()
         reply_to_message_id: None,
         mentioned_bot_ids: vec![bot_id],
         skill_ids: Vec::new(),
+        references: vec![MessageReferenceInput {
+            kind: MessageReferenceKind::Bot,
+            target_id: bot_id,
+        }],
     };
     let response = app
         .clone()
@@ -1691,6 +1698,28 @@ async fn direct_chat_send_queue_replay_and_timeline_are_server_authoritative()
         response_json::<SendMessageResponse>(response).await?,
         SendMessageResponse::Sent { message } if message.id == message_key
     ));
+    let rename = UpdateBotRequest {
+        request_id: Uuid::now_v7(),
+        idempotency_key: Uuid::now_v7(),
+        name: "Nova renamed".to_owned(),
+        title: "Research".to_owned(),
+        description: String::new(),
+        shape: BotShape::RoundedSquare,
+        color: BotColor::Violet,
+        provider_profile_id: None,
+        permission_profile: BotPermissionProfile::AskBeforeChanges,
+    };
+    assert_eq!(
+        app.clone()
+            .oneshot(json_request(
+                "PUT",
+                &format!("/api/v1/bots/{bot_id}"),
+                &rename
+            ))
+            .await?
+            .status(),
+        StatusCode::OK
+    );
     let replay = app
         .clone()
         .oneshot(json_request(
@@ -1699,9 +1728,41 @@ async fn direct_chat_send_queue_replay_and_timeline_are_server_authoritative()
             &send,
         ))
         .await?;
+    let replayed = response_json::<SendMessageResponse>(replay).await?;
+    assert!(
+        matches!(&replayed, SendMessageResponse::Sent { message } if message.id == message_key)
+    );
+    let SendMessageResponse::Sent { message } = replayed else {
+        unreachable!()
+    };
+    assert_eq!(message.references[0].label, "Nova");
+
+    let invalid_reference_key = Uuid::now_v7();
+    let invalid_reference = SendMessageRequest {
+        request_id: Uuid::now_v7(),
+        idempotency_key: invalid_reference_key,
+        content: "Use an unavailable plugin".to_owned(),
+        attachment_ids: Vec::new(),
+        reply_to_message_id: None,
+        mentioned_bot_ids: Vec::new(),
+        skill_ids: Vec::new(),
+        references: vec![MessageReferenceInput {
+            kind: MessageReferenceKind::Plugin,
+            target_id: Uuid::nil(),
+        }],
+    };
+    let invalid = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            &format!("/api/v1/chats/{chat_key}/messages"),
+            &invalid_reference,
+        ))
+        .await?;
+    assert_eq!(invalid.status(), StatusCode::NOT_FOUND);
     assert!(matches!(
-        response_json::<SendMessageResponse>(replay).await?,
-        SendMessageResponse::Sent { message } if message.id == message_key
+        storage.message(Uuid::nil(), invalid_reference_key).await,
+        Err(homebot_storage::StorageError::MessageNotFound)
     ));
 
     let reaction = ReactionMutationRequest {
@@ -1750,6 +1811,7 @@ async fn direct_chat_send_queue_replay_and_timeline_are_server_authoritative()
         reply_to_message_id: Some(message_key),
         mentioned_bot_ids: Vec::new(),
         skill_ids: Vec::new(),
+        references: Vec::new(),
     };
     let response = app
         .clone()
@@ -1773,6 +1835,7 @@ async fn direct_chat_send_queue_replay_and_timeline_are_server_authoritative()
         reply_to_message_id: None,
         mentioned_bot_ids: Vec::new(),
         skill_ids: Vec::new(),
+        references: Vec::new(),
     };
     let response = app
         .clone()
@@ -1918,6 +1981,7 @@ async fn provider_turn_streams_persists_approves_resumes_and_cancels()
         reply_to_message_id: None,
         mentioned_bot_ids: Vec::new(),
         skill_ids: Vec::new(),
+        references: Vec::new(),
     };
     let response = app
         .clone()
@@ -2007,6 +2071,7 @@ async fn provider_turn_streams_persists_approves_resumes_and_cancels()
                 reply_to_message_id: None,
                 mentioned_bot_ids: Vec::new(),
                 skill_ids: Vec::new(),
+                references: Vec::new(),
             },
         ))
         .await?;
@@ -2066,6 +2131,7 @@ async fn queued_followups_and_steering_are_idempotent_restart_durable_and_cancel
         reply_to_message_id: None,
         mentioned_bot_ids: Vec::new(),
         skill_ids: Vec::new(),
+        references: Vec::new(),
     };
     let first = app
         .clone()
@@ -2338,6 +2404,7 @@ async fn queued_turns_plan_mode_compaction_and_reset_preserve_homebot_history()
         reply_to_message_id: None,
         mentioned_bot_ids: Vec::new(),
         skill_ids: Vec::new(),
+        references: Vec::new(),
     };
     let first = app
         .clone()
@@ -2723,6 +2790,7 @@ async fn failed_provider_message_can_be_retried_idempotently()
                 reply_to_message_id: None,
                 mentioned_bot_ids: Vec::new(),
                 skill_ids: Vec::new(),
+                references: Vec::new(),
             },
         ))
         .await?;
@@ -2854,6 +2922,16 @@ async fn group_chat_contract_coordinates_three_bots_with_bounded_handoff()
                 mentioned_bot_ids: vec![bot_ids[0], bot_ids[1]],
                 shared_context_message_ids: Vec::new(),
                 reply_to_message_id: None,
+                references: vec![
+                    MessageReferenceInput {
+                        kind: MessageReferenceKind::Bot,
+                        target_id: bot_ids[0],
+                    },
+                    MessageReferenceInput {
+                        kind: MessageReferenceKind::Group,
+                        target_id: chat_id,
+                    },
+                ],
             },
         ))
         .await?;
@@ -2883,6 +2961,7 @@ async fn group_chat_contract_coordinates_three_bots_with_bounded_handoff()
                 mentioned_bot_ids: Vec::new(),
                 shared_context_message_ids: Vec::new(),
                 reply_to_message_id: Some(first_message),
+                references: Vec::new(),
             },
         ))
         .await?;
@@ -3001,6 +3080,14 @@ async fn group_chat_contract_coordinates_three_bots_with_bounded_handoff()
         Some(first_message)
     );
     assert_eq!(timeline.handoffs.len(), 1);
+    let referenced = timeline
+        .messages
+        .iter()
+        .find(|message| message.id == first_message)
+        .ok_or("referenced message missing")?;
+    assert_eq!(referenced.references.len(), 2);
+    assert_eq!(referenced.references[0].label, "Nova");
+    assert_eq!(referenced.references[1].label, "Release team");
 
     let response = app
         .oneshot(json_request(
@@ -4601,6 +4688,7 @@ async fn coding_turn_checkpoints_diff_restore_and_fork_provider_conversation()
                 reply_to_message_id: None,
                 mentioned_bot_ids: Vec::new(),
                 skill_ids: Vec::new(),
+                references: Vec::new(),
             },
         ))
         .await?;
@@ -4804,6 +4892,7 @@ async fn skill_versions_are_assembled_for_providers_and_pinned_to_message_histor
                 reply_to_message_id: None,
                 mentioned_bot_ids: Vec::new(),
                 skill_ids: Vec::new(),
+                references: Vec::new(),
             },
         ))
         .await?;

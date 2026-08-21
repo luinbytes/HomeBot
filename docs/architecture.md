@@ -54,7 +54,7 @@ Group coordination is an explicit server state machine with a bounded hop count,
 
 Bot lifecycle is owner-scoped and server-authoritative. The domain validates identity fields and explicit archive/restore transitions. SQLite persists visual identity, advanced provider/permission references, unread count and normalized attention. Desktop keeps only a replaceable roster projection. See [bots.md](bots.md).
 
-Direct chats persist rich message parts, reply/mention metadata and queued prompts independently of provider conversations. The desktop timeline is a replaceable projection built from an HTTP boundary snapshot plus strictly sequenced provider-neutral events. See [chats.md](chats.md).
+Direct chats persist rich message parts, reply/thread metadata, reactions, immutable typed references and queued prompts independently of provider conversations. Applied Skills and routine references pin accepted version IDs, while reference labels are historical snapshots rather than mutable joins. Desktop and Android timelines are replaceable projections built from authenticated HTTP boundaries plus strictly sequenced provider-neutral events. See [chats.md](chats.md).
 
 ## Persistence
 

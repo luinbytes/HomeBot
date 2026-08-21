@@ -3,8 +3,8 @@ use std::collections::HashSet;
 use homebot_protocol::{
     ActivitySummary, ApprovalStatus, ApprovalSummary, ChatSummary, ChatTimelineResponse,
     CheckpointRestoreSummary, ContextCompactionStrategy, InteractionMode, MessagePart,
-    MessageStatus, MessageSummary, QueuedPromptSummary, SequenceDisposition, ServerEvent,
-    ServerEventBody, TurnCheckpointSummary, WorkingContextSummary, classify_sequence,
+    MessageReferenceInput, MessageStatus, MessageSummary, QueuedPromptSummary, SequenceDisposition,
+    ServerEvent, ServerEventBody, TurnCheckpointSummary, WorkingContextSummary, classify_sequence,
 };
 use uuid::Uuid;
 
@@ -15,6 +15,7 @@ pub struct ComposerDraft {
     pub reply_to_message_id: Option<Uuid>,
     pub mentioned_bot_ids: Vec<Uuid>,
     pub skill_ids: Vec<Uuid>,
+    pub references: Vec<MessageReferenceInput>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -420,6 +421,7 @@ mod tests {
             shared_context_message_ids: Vec::new(),
             applied_skills: Vec::new(),
             reactions: Vec::new(),
+            references: Vec::new(),
             created_at_ms: 1,
             completed_at_ms: None,
             error: None,

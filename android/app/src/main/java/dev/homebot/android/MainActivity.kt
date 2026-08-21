@@ -376,6 +376,12 @@ private fun MessageCard(
                 if (message.status == "failed") TextButton(onClick = { onRetry(message) }) { Text("Retry") }
                 message.error?.let { Text(it.message, color = Danger, fontSize = 12.sp) }
                 message.reply_to_message_id?.let { Text("Reply to ${it.take(8)}", color = Muted, fontSize = 11.sp) }
+                if (message.references.isNotEmpty()) {
+                    Text(message.references.joinToString("  ") { "@${it.label}" }, color = Violet, fontSize = 12.sp)
+                }
+                if (message.applied_skills.isNotEmpty()) {
+                    Text(message.applied_skills.joinToString("  ") { "/${it.name} v${it.version}" }, color = Violet, fontSize = 12.sp)
+                }
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     message.reactions.forEach { reaction ->
                         TextButton(onClick = { onReaction(message.id, reaction.emoji, !reaction.reacted_by_user) }) {

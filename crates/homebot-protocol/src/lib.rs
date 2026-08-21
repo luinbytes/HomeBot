@@ -517,6 +517,8 @@ pub struct SendGroupMessageRequest {
     pub shared_context_message_ids: Vec<Uuid>,
     #[serde(default)]
     pub reply_to_message_id: Option<Uuid>,
+    #[serde(default)]
+    pub references: Vec<MessageReferenceInput>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
@@ -601,9 +603,36 @@ pub struct MessageSummary {
     pub applied_skills: Vec<AppliedSkillSummary>,
     #[serde(default)]
     pub reactions: Vec<ReactionSummary>,
+    #[serde(default)]
+    pub references: Vec<MessageReferenceSummary>,
     pub created_at_ms: i64,
     pub completed_at_ms: Option<i64>,
     pub error: Option<ErrorEnvelope>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MessageReferenceKind {
+    Bot,
+    Group,
+    Routine,
+    Plugin,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct MessageReferenceInput {
+    pub kind: MessageReferenceKind,
+    pub target_id: Uuid,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct MessageReferenceSummary {
+    pub kind: MessageReferenceKind,
+    pub target_id: Uuid,
+    pub target_version_id: Option<Uuid>,
+    pub label: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
@@ -925,12 +954,14 @@ pub struct SendMessageRequest {
     pub mentioned_bot_ids: Vec<Uuid>,
     #[serde(default)]
     pub skill_ids: Vec<Uuid>,
+    #[serde(default)]
+    pub references: Vec<MessageReferenceInput>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum SendMessageResponse {
-    Sent { message: MessageSummary },
+    Sent { message: Box<MessageSummary> },
     Queued { prompt: QueuedPromptSummary },
 }
 

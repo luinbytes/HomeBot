@@ -18,12 +18,17 @@ prepare() {
 
 build() {
   cd "HomeBot-${pkgver}"
-  CARGO_TARGET_DIR=target cargo build --frozen --release -p homebot-desktop -p homebot-server
+  # Arch's global --as-needed linker flag can discard SQLx's bundled SQLite
+  # dependency from the migration proc-macro shared object. Keep the distro
+  # hardening flags, then cancel only that state before Cargo's link inputs.
+  RUSTFLAGS="${RUSTFLAGS:-} -C link-arg=-Wl,--no-as-needed" \
+    CARGO_TARGET_DIR=target cargo build --frozen --release -p homebot-desktop -p homebot-server
 }
 
 check() {
   cd "HomeBot-${pkgver}"
-  CARGO_TARGET_DIR=target cargo test --frozen --release -p homebot-server --bin homebot-server
+  RUSTFLAGS="${RUSTFLAGS:-} -C link-arg=-Wl,--no-as-needed" \
+    CARGO_TARGET_DIR=target cargo test --frozen --release -p homebot-server --bin homebot-server
 }
 
 package() {

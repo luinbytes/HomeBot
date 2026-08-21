@@ -404,6 +404,10 @@ private fun ConnectedSettings(viewModel: MainViewModel, live: ConnectionState.Li
                 }
             }
         }
+        item { SectionTitle("Provider status") }
+        items(live.snapshot.bots, key = { "provider-${it.id}" }) { bot ->
+            HomeBotCard(bot.name, "${bot.provider} • profile ${bot.advanced.provider_profile_id?.take(8) ?: "not configured"}") {}
+        }
         item { SectionTitle("Secret references") }
         if (state.secrets.isEmpty()) item { Text("No secret references configured.", color = Muted) }
         items(state.secrets, key = { it.id }) { secret ->

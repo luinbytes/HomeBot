@@ -25,6 +25,8 @@ The native product shell renders the server snapshot as a mobile Bot roster and 
 
 The Android document picker feeds the three-stage authenticated attachment contract: create metadata, upload bounded bytes, then finalize by SHA-256 before attaching the server identifier to a message. Coding chats expose normalized VCS status and working-tree diffs plus exact checkpoint comparison and server-owned safe restore. Remote source paths never become Android-local filesystem authority.
 
+The settings and automations surface fetches routine definitions, run history and triggers; it supports Run now, enable/disable and explicit one-shot scheduling. Skills assignment and plugin/MCP health and enablement use the same authenticated mutation contract. Secret rows contain only label and availability status—values are never returned or rendered. A paired device can inspect and revoke only its own session; owner-wide session listing and revocation remain forbidden to paired-device credentials.
+
 ## Credentials and endpoints
 
 The persistent device-session credential is AES-256-GCM encrypted with a non-exportable Android Keystore key before storage. Logs and `toString` output redact it. DataStore contains only non-secret preferences such as the selected endpoint and device name. Room is intentionally absent in v1 groundwork because there is no offline-editing contract yet; adding a second cache now would create an unjustified source of truth.

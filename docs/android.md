@@ -43,6 +43,6 @@ All non-loopback endpoints require HTTPS, including LAN and Tailscale connection
 
 ## Verification
 
-Deterministic MockWebServer tests cover pairing, credential redaction, version skew, revocation, snapshot hydration, cursor resume, stale-cursor snapshot fallback, event replay, duplicate-sequence suppression, authenticated product mutations, typed queued steering, and attachment create/upload/finalize. GitHub Actions runs Android lint, JVM unit tests, and a debug APK build, then publishes the APK as a CI artifact.
+Deterministic MockWebServer tests cover pairing, credential redaction, version skew, revocation, snapshot hydration, cursor resume, stale-cursor snapshot fallback, event replay, duplicate-sequence suppression, authenticated product mutations, typed queued steering, and attachment create/upload/finalize. GitHub Actions runs Android lint and JVM unit tests, assembles both debug and minified release variants, and exercises the release packaging contract with an ephemeral CI-only signing key. The resulting debug and `ci-ephemeral` artifacts prove the build and verification pipeline; neither is a public release candidate or the production signing identity.
 
 Feature work builds on this transport to render the server-owned Bot, chat, group, activity, approval, routine, plugin, device, provider, workspace, diff, and Git models. Background reconnect must respect Android execution limits and avoid permanent polling.

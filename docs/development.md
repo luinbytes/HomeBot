@@ -32,7 +32,7 @@ cargo run -p homebot-protocol --example export_android
 cargo run -p homebot-protocol --example export_android -- --check
 ```
 
-CI repeats lint, unit tests, schema drift verification, and debug APK assembly. Android tests use a deterministic MockWebServer rather than a developer's HomeBot instance.
+CI repeats lint, unit tests, schema drift verification, debug APK assembly, minified release assembly, and signed-artifact verification with an ephemeral CI-only key. Android tests use a deterministic MockWebServer rather than a developer's HomeBot instance. CI signing is deliberately classified `ci-ephemeral`; it must never be used for or represented as the public HomeBot signing identity.
 
 Git/worktree fixtures use a real installed Git binary and temporary repositories. They must prove preservation of dirty and untracked primary-tree data as well as successful cleanup; never replace these postcondition checks with mocked command strings.
 

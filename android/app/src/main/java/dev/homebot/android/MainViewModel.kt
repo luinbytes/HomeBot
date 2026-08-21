@@ -112,6 +112,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         selectRoutine(routineId)
     }
 
+    fun toggleRoutine(routineId: String, enabled: Boolean) = perform {
+        homeBot.client.mutateRoutine(routineId, enabled).getOrThrow()
+        loadServices()
+    }
+
+    fun scheduleRoutine(routineId: String) = perform {
+        homeBot.client.scheduleRoutineOnce(routineId, System.currentTimeMillis() + 5 * 60_000).getOrThrow()
+        selectRoutine(routineId)
+    }
+
     fun mutatePlugin(pluginId: String, action: String) = perform {
         homeBot.client.mutatePlugin(pluginId, action).getOrThrow()
         loadServices()

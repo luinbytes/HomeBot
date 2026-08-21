@@ -49,6 +49,7 @@ import dev.homebot.protocol.RunRoutineRequest
 import dev.homebot.protocol.SecretSummary
 import dev.homebot.protocol.SkillAssignmentRequest
 import dev.homebot.protocol.SkillSummary
+import dev.homebot.protocol.CreateRoutineTriggerRequest
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -73,6 +74,7 @@ import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.long
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 import okhttp3.HttpUrl
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
@@ -370,6 +372,43 @@ class HomeBotClient(
             request,
             RunRoutineRequest.serializer(),
             RoutineRunSummary.serializer(),
+        )
+    }
+
+    suspend fun mutateRoutine(routineId: String, enabled: Boolean): Result<RoutineSummary> = authenticated {
+        val request = PluginMutationRequest(ids(), ids())
+        post(
+            "api/v1/routines/$routineId/${if (enabled) "enable" else "disable"}",
+            request,
+            PluginMutationRequest.serializer(),
+            RoutineSummary.serializer(),
+        )
+    }
+
+    suspend fun scheduleRoutineOnce(routineId: String, atUnixMs: Long): Result<RoutineTriggerSummary> = authenticated {
+        val definition = buildJsonObject {
+            put("source", buildJsonObject {
+                put("kind", "schedule")
+                put("schedule", buildJsonObject {
+                    put("kind", "one_shot")
+                    put("at_unix_ms", atUnixMs)
+                })
+            })
+            put("missed_run_policy", "run_once")
+            put("overlap_policy", buildJsonObject { put("kind", "queue") })
+            put("retry_policy", buildJsonObject {
+                put("maximum_attempts", 1)
+                put("initial_backoff_seconds", 5)
+                put("maximum_backoff_seconds", 300)
+            })
+            put("catch_up_limit", 1)
+        }
+        val request = CreateRoutineTriggerRequest(ids(), ids(), definition, true)
+        post(
+            "api/v1/routines/$routineId/triggers",
+            request,
+            CreateRoutineTriggerRequest.serializer(),
+            RoutineTriggerSummary.serializer(),
         )
     }
 

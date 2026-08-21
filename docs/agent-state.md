@@ -1,6 +1,6 @@
 # HomeBot autonomous agent state
 
-Updated: 21 August 2026, Europe/London
+Updated: 22 August 2026, Europe/London
 
 This file is operational state for coding agents. It is not user-facing product documentation.
 
@@ -9,8 +9,8 @@ This file is operational state for coding agents. It is not user-facing product 
 - Current milestone: M6, packaging, hardening and the v1 parity gate. M0 through M5 are verified complete.
 - Current Linear issues: 6C7-66, real Developer ID signing/notarisation and clean Intel/Apple Silicon validation (`In Progress`); 6C7-75, physical-platform, assistive-technology and live-provider release acceptance (`In Progress`, externally blocked). Final gate 6C7-71 remains Todo and blocked by them.
 - Current Git branch: public `main`; local continuity branch `audit/6c7-75-release-readiness` contains the same verified implementation tree plus this handoff update.
-- Latest public and verified implementation commit: `84084ff8a61607cc3fa36a85484d8f03352e5e88` (exact tree `97d83a132c116fc0b205bf61bbddd31064642b8e`). It includes production provider composition (6C7-77), the fail-closed macOS notarisation pipeline, and the verified Android release-artifact pipeline (6C7-78).
-- Latest verified GitHub Actions run: `32534100793`, all sixteen jobs passed, including Rust quality, Android lint/tests/debug and minified release builds/signature packaging, dependency gates, Linux and Arch packaging, both macOS architectures' builds/goldens/packages, and all resource probes.
+- Latest public and verified implementation commit: `ca8edf477380265109015241b46aa4a5b26457c4` (exact tree `daf86edd51011b5b87c310108f573bbecb16fdb2`). It includes production provider composition (6C7-77), the fail-closed macOS notarisation pipeline, the Android release-artifact pipeline (6C7-78), and consistent v1 candidate identity across every client/package (6C7-79).
+- Latest verified GitHub Actions run: `32536602259`, all sixteen jobs passed, including Rust/release-version quality, Android lint/tests/debug and minified release builds/signature packaging, dependency gates, Linux and Arch 1.0.0 packaging, both macOS architectures' 1.0.0 builds/goldens/packages, and all resource probes.
 - Public repository: `https://github.com/luinbytes/HomeBot`.
 - Required commit identity: `luinbytes <42706009+luinbytes@users.noreply.github.com>`.
 
@@ -34,6 +34,7 @@ Architecture decisions currently frozen:
 - Pairing offers are five-minute, single-use, endpoint-bound credentials stored only as digests. Named device sessions use the same authenticated versioned protocol as desktop, are owner-listable/revocable, and cannot administer devices. Remote binding is explicit and loopback remains the safe default.
 - Shared browser profiles and sessions are server-owned, owner-scoped state. Generated profile directory references never expose native paths or credentials; group handoff preserves access. Navigation and human takeover remain digest-bound capability operations, while watch/return and live activity use the authenticated sequenced contract.
 - Android release packaging accepts only a cryptographically verified, version/package-matched signed APK and emits a manifest, certificate-digest evidence, and SHA-256 checksums. CI uses an explicitly `ci-ephemeral` identity that cannot be represented as the public signing identity.
+- Root `VERSION` is the single candidate identity. Cargo metadata, server/desktop negotiation, Android BuildConfig/client identity, and macOS/Arch/Android artifact names and manifests must agree; the release gate rejects divergence.
 
 Current blockers:
 
@@ -71,7 +72,8 @@ Current blockers:
 - 6C7-76, durable bounded group rename/membership, owner-managed deny-first capability rules/audit, and server-owned shared browser watch/takeover/return with approval, artifact, handoff, restart, desktop and Android parity.
 - 6C7-77, production provider configuration/registry composition, real `ProviderRuntime` injection into `AppState`, safe profile projection, configured Bot-turn resolution, clean configuration failures and fixture-provider exclusion.
 - 6C7-78, deterministic Android v1 version injection, minified release assembly, fail-closed APK signature/package/version verification, manifest/certificate evidence/checksums and explicitly non-release CI signing.
-- Most recent completed issue: 6C7-78.
+- 6C7-79, single `1.0.0` candidate identity across Cargo/server/desktop, Android app/protocol client, macOS, Arch and Android packaging, with a fail-closed consistency gate.
+- Most recent completed issue: 6C7-79.
 - Focused repository presentation pass: README badges and real desktop previews added from checked-in visual goldens; tracked-file hygiene audited with no junk removals required and `.gitignore` expanded for common Rust, Android, editor, environment, Python, Node, log and temporary outputs.
 
 ## Immediate next work
@@ -85,6 +87,7 @@ Current blockers:
 
 Verified at the latest remote baseline:
 
+- GitHub Actions run `32536602259` passed all sixteen jobs for public 6C7-79 tree `daf86edd51011b5b87c310108f573bbecb16fdb2`, merged as `ca8edf47`. It verifies all HomeBot Rust packages/server/desktop as 1.0.0, Android BuildConfig and protocol identity from root `VERSION`, 1.0.0 minified/signed-pipeline APK, 1.0.0 Intel/Apple Silicon bundles, and clean Arch 1.0.0 install/update/uninstall with matching manifests/checksums.
 - GitHub Actions run `32534100793` passed all sixteen jobs for public 6C7-78 tree `97d83a132c116fc0b205bf61bbddd31064642b8e`, merged as `84084ff8`. Android lint/tests, debug and minified release assembly, ephemeral CI signing, `apksigner` verification, package/version validation, manifest/checksum generation and artifact upload all passed. The CI-only release-pipeline artifact from run `32533932893` has workflow-archive digest `sha256:03266a922fc915aa5c69b05ca7f235323d9a9cfb679457f1c45f8d6ba5ab787e` and is explicitly not a release candidate.
 - GitHub Actions run `32532554784` passed all sixteen jobs for macOS notarisation-pipeline tree `53f29dae2c1fdcf3d6b152efe24d90cdcad5e8d1`, merged as `a3f44842`. Automated evidence covers deterministic bundles, architecture validation, notarisation ZIPs, fail-closed Developer ID/notary commands, manifests and checksums; real Apple signing/notarisation and physical Macs remain open in 6C7-66/75.
 - GitHub Actions run `32531703016` passed all sixteen jobs for production-provider composition tree `8bfbabf9a0cf1b2da31741f34ba13fb6b01327cf`, merged as `6fece576`. Tests exercise the production composition root, safe defaults/configuration errors, real runtime injection and a structured CLI Bot turn without fixture defaults.

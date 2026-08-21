@@ -187,6 +187,7 @@ pub(super) async fn resolve_approval(
         .chat_approval(state.owner_id, approval_id)
         .await?;
     if approval.capability.starts_with("homebot.git.") {
+        state.ensure_policy_loaded().await?;
         state
             .policy_engine
             .decide(

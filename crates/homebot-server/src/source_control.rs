@@ -179,6 +179,7 @@ pub(super) async fn push(
         ),
         destructive: true,
     };
+    state.ensure_policy_loaded().await?;
     match state
         .policy_engine
         .authorize(&capability, request.approval_id)
@@ -310,6 +311,7 @@ pub(super) async fn create_pull_request(
         ),
         destructive: false,
     };
+    state.ensure_policy_loaded().await?;
     match state
         .policy_engine
         .authorize(&capability, request.approval_id)

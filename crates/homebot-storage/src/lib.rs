@@ -28,7 +28,7 @@ use std::{
 };
 use uuid::Uuid;
 
-pub const SCHEMA_VERSION: u32 = 20;
+pub const SCHEMA_VERSION: u32 = 21;
 static MIGRATOR: std::sync::LazyLock<sqlx::migrate::Migrator> = std::sync::LazyLock::new(|| {
     use sqlx::migrate::{Migration, MigrationType, Migrator};
     use std::borrow::Cow;
@@ -121,6 +121,11 @@ static MIGRATOR: std::sync::LazyLock<sqlx::migrate::Migrator> = std::sync::LazyL
             20,
             "message references",
             include_str!("../migrations/0020_message_references.sql"),
+        ),
+        (
+            21,
+            "capability rules",
+            include_str!("../migrations/0021_capability_rules.sql"),
         ),
     ]
     .into_iter()
@@ -559,6 +564,31 @@ pub struct MessageReactionRecord {
     pub emoji: String,
     pub count: u32,
     pub reacted_by_user: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CapabilityRuleRecord {
+    pub id: Uuid,
+    pub owner_id: Uuid,
+    pub capability: String,
+    pub effect: String,
+    pub device_id: Option<Uuid>,
+    pub bot_id: Option<Uuid>,
+    pub chat_id: Option<Uuid>,
+    pub workspace_id: Option<Uuid>,
+    pub action_prefix: Option<String>,
+    pub created_at_ms: i64,
+    pub updated_at_ms: i64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CapabilityRuleAuditRecord {
+    pub id: Uuid,
+    pub owner_id: Uuid,
+    pub rule_id: Uuid,
+    pub action: String,
+    pub snapshot: Value,
+    pub created_at_ms: i64,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -3653,6 +3683,116 @@ impl Storage {
             .collect()
     }
 
+    /// Creates or updates a narrow owner-scoped capability rule and appends immutable audit.
+    ///
+    /// # Errors
+    /// Returns scope validation, ownership, or database errors.
+    pub async fn upsert_capability_rule(
+        &self,
+        rule: &CapabilityRuleRecord,
+    ) -> Result<CapabilityRuleRecord, StorageError> {
+        validate_capability_rule(rule)?;
+        let mut transaction = self.pool.begin().await?;
+        validate_capability_rule_scopes(&mut transaction, rule).await?;
+        let existing_owner: Option<String> =
+            sqlx::query_scalar("SELECT owner_id FROM capability_rules WHERE id = ?")
+                .bind(rule.id.to_string())
+                .fetch_optional(&mut *transaction)
+                .await?;
+        if existing_owner
+            .as_deref()
+            .is_some_and(|owner| owner != rule.owner_id.to_string())
+        {
+            return Err(StorageError::Integrity(
+                "capability rule is not owner accessible".to_owned(),
+            ));
+        }
+        let existed = existing_owner.is_some();
+        sqlx::query("INSERT INTO capability_rules (id, owner_id, capability, effect, device_id, bot_id, chat_id, workspace_id, action_prefix, created_at_ms, updated_at_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET capability = excluded.capability, effect = excluded.effect, device_id = excluded.device_id, bot_id = excluded.bot_id, chat_id = excluded.chat_id, workspace_id = excluded.workspace_id, action_prefix = excluded.action_prefix, updated_at_ms = excluded.updated_at_ms WHERE capability_rules.owner_id = excluded.owner_id")
+            .bind(rule.id.to_string()).bind(rule.owner_id.to_string()).bind(&rule.capability).bind(&rule.effect)
+            .bind(rule.device_id.map(|id| id.to_string())).bind(rule.bot_id.map(|id| id.to_string()))
+            .bind(rule.chat_id.map(|id| id.to_string())).bind(rule.workspace_id.map(|id| id.to_string()))
+            .bind(&rule.action_prefix).bind(rule.created_at_ms).bind(rule.updated_at_ms)
+            .execute(&mut *transaction).await?;
+        insert_capability_audit(
+            &mut transaction,
+            rule,
+            if existed { "updated" } else { "created" },
+            rule.updated_at_ms,
+        )
+        .await?;
+        transaction.commit().await?;
+        self.capability_rule(rule.owner_id, rule.id).await
+    }
+
+    /// Lists current rules in deterministic deny-first evaluation order.
+    ///
+    /// # Errors
+    /// Returns database or integrity errors.
+    pub async fn capability_rules(
+        &self,
+        owner_id: Uuid,
+    ) -> Result<Vec<CapabilityRuleRecord>, StorageError> {
+        let rows = sqlx::query("SELECT * FROM capability_rules WHERE owner_id = ? ORDER BY CASE effect WHEN 'deny' THEN 0 WHEN 'require_approval' THEN 1 ELSE 2 END, created_at_ms, id")
+            .bind(owner_id.to_string()).fetch_all(&self.pool).await?;
+        rows.iter().map(capability_rule_from_row).collect()
+    }
+
+    /// Deletes one owner-scoped rule while retaining an immutable audit snapshot.
+    ///
+    /// # Errors
+    /// Returns not-found, ownership, or database errors.
+    pub async fn delete_capability_rule(
+        &self,
+        owner_id: Uuid,
+        rule_id: Uuid,
+        now_ms: i64,
+    ) -> Result<(), StorageError> {
+        let rule = self.capability_rule(owner_id, rule_id).await?;
+        let mut transaction = self.pool.begin().await?;
+        insert_capability_audit(&mut transaction, &rule, "deleted", now_ms).await?;
+        sqlx::query("DELETE FROM capability_rules WHERE owner_id = ? AND id = ?")
+            .bind(owner_id.to_string())
+            .bind(rule_id.to_string())
+            .execute(&mut *transaction)
+            .await?;
+        transaction.commit().await?;
+        Ok(())
+    }
+
+    /// Lists immutable capability-rule audit records.
+    ///
+    /// # Errors
+    /// Returns database or integrity errors.
+    pub async fn capability_rule_audit(
+        &self,
+        owner_id: Uuid,
+    ) -> Result<Vec<CapabilityRuleAuditRecord>, StorageError> {
+        let rows = sqlx::query(
+            "SELECT * FROM capability_rule_audit WHERE owner_id = ? ORDER BY created_at_ms, id",
+        )
+        .bind(owner_id.to_string())
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter().map(capability_audit_from_row).collect()
+    }
+
+    async fn capability_rule(
+        &self,
+        owner_id: Uuid,
+        rule_id: Uuid,
+    ) -> Result<CapabilityRuleRecord, StorageError> {
+        let row = sqlx::query("SELECT * FROM capability_rules WHERE owner_id = ? AND id = ?")
+            .bind(owner_id.to_string())
+            .bind(rule_id.to_string())
+            .fetch_optional(&self.pool)
+            .await?
+            .ok_or(StorageError::Integrity(
+                "capability rule was not found".to_owned(),
+            ))?;
+        capability_rule_from_row(&row)
+    }
+
     /// Creates the stable assistant message that receives provider deltas.
     ///
     /// # Errors
@@ -5828,6 +5968,128 @@ async fn insert_message_reference_records(
             .execute(&mut **transaction).await?;
     }
     Ok(())
+}
+
+fn validate_capability_rule(rule: &CapabilityRuleRecord) -> Result<(), StorageError> {
+    const CAPABILITIES: &[&str] = &[
+        "filesystem_read",
+        "filesystem_write",
+        "process_execute",
+        "browser_observe",
+        "browser_act",
+        "git_read",
+        "git_write",
+        "git_remote",
+        "plugin_read",
+        "plugin_write",
+        "external_communication",
+        "external_mutation",
+        "secret_use",
+        "device_administration",
+    ];
+    if !CAPABILITIES.contains(&rule.capability.as_str())
+        || !matches!(rule.effect.as_str(), "allow" | "require_approval" | "deny")
+        || rule.action_prefix.as_ref().is_some_and(|prefix| {
+            prefix.is_empty()
+                || prefix.chars().count() > 120
+                || prefix.chars().any(char::is_control)
+        })
+    {
+        return Err(StorageError::Integrity(
+            "invalid capability rule".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+async fn validate_capability_rule_scopes(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    rule: &CapabilityRuleRecord,
+) -> Result<(), StorageError> {
+    for (table, id) in [
+        ("device_sessions", rule.device_id),
+        ("bots", rule.bot_id),
+        ("chats", rule.chat_id),
+        ("repository_workspaces", rule.workspace_id),
+    ] {
+        let Some(id) = id else { continue };
+        let query = format!("SELECT count(*) FROM {table} WHERE owner_id = ? AND id = ?");
+        let count: i64 = sqlx::query_scalar(&query)
+            .bind(rule.owner_id.to_string())
+            .bind(id.to_string())
+            .fetch_one(&mut **transaction)
+            .await?;
+        if count != 1 {
+            return Err(StorageError::Integrity(
+                "capability rule scope is not owner accessible".to_owned(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+async fn insert_capability_audit(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    rule: &CapabilityRuleRecord,
+    action: &str,
+    now_ms: i64,
+) -> Result<(), StorageError> {
+    let snapshot = serde_json::json!({
+        "capability": rule.capability, "effect": rule.effect,
+        "device_id": rule.device_id, "bot_id": rule.bot_id, "chat_id": rule.chat_id,
+        "workspace_id": rule.workspace_id, "action_prefix": rule.action_prefix,
+    });
+    sqlx::query("INSERT INTO capability_rule_audit (id, owner_id, rule_id, action, snapshot_json, created_at_ms) VALUES (?, ?, ?, ?, ?, ?)")
+        .bind(Uuid::now_v7().to_string()).bind(rule.owner_id.to_string()).bind(rule.id.to_string())
+        .bind(action).bind(snapshot).bind(now_ms).execute(&mut **transaction).await?;
+    Ok(())
+}
+
+fn capability_rule_from_row(
+    row: &sqlx::sqlite::SqliteRow,
+) -> Result<CapabilityRuleRecord, StorageError> {
+    Ok(CapabilityRuleRecord {
+        id: parse_uuid(row.try_get("id")?)?,
+        owner_id: parse_uuid(row.try_get("owner_id")?)?,
+        capability: row.try_get("capability")?,
+        effect: row.try_get("effect")?,
+        device_id: row
+            .try_get::<Option<String>, _>("device_id")?
+            .as_deref()
+            .map(parse_uuid)
+            .transpose()?,
+        bot_id: row
+            .try_get::<Option<String>, _>("bot_id")?
+            .as_deref()
+            .map(parse_uuid)
+            .transpose()?,
+        chat_id: row
+            .try_get::<Option<String>, _>("chat_id")?
+            .as_deref()
+            .map(parse_uuid)
+            .transpose()?,
+        workspace_id: row
+            .try_get::<Option<String>, _>("workspace_id")?
+            .as_deref()
+            .map(parse_uuid)
+            .transpose()?,
+        action_prefix: row.try_get("action_prefix")?,
+        created_at_ms: row.try_get("created_at_ms")?,
+        updated_at_ms: row.try_get("updated_at_ms")?,
+    })
+}
+
+fn capability_audit_from_row(
+    row: &sqlx::sqlite::SqliteRow,
+) -> Result<CapabilityRuleAuditRecord, StorageError> {
+    Ok(CapabilityRuleAuditRecord {
+        id: parse_uuid(row.try_get("id")?)?,
+        owner_id: parse_uuid(row.try_get("owner_id")?)?,
+        rule_id: parse_uuid(row.try_get("rule_id")?)?,
+        action: row.try_get("action")?,
+        snapshot: row.try_get("snapshot_json")?,
+        created_at_ms: row.try_get("created_at_ms")?,
+    })
 }
 
 async fn reserve_promoted_chat(
@@ -8939,6 +9201,54 @@ mod tests {
                 .map(|value| value.status),
             Some("ready".to_owned())
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn capability_rules_reject_foreign_scopes_and_keep_immutable_audit_after_restart()
+    -> Result<(), StorageError> {
+        let directory = tempfile::tempdir()?;
+        let database = directory.path().join("homebot.db");
+        let storage = Storage::open(&database).await?;
+        let owner = Uuid::now_v7();
+        let other_owner = Uuid::now_v7();
+        let foreign_bot = storage
+            .create_bot(other_owner, Bot::create("Foreign", "Private")?, 1)
+            .await?;
+        let rule_id = Uuid::now_v7();
+        let mut rule = CapabilityRuleRecord {
+            id: rule_id,
+            owner_id: owner,
+            capability: "filesystem_write".to_owned(),
+            effect: "deny".to_owned(),
+            device_id: None,
+            bot_id: Some(foreign_bot.id.0),
+            chat_id: None,
+            workspace_id: None,
+            action_prefix: Some("filesystem.write".to_owned()),
+            created_at_ms: 2,
+            updated_at_ms: 2,
+        };
+        assert!(storage.upsert_capability_rule(&rule).await.is_err());
+        rule.bot_id = None;
+        storage.upsert_capability_rule(&rule).await?;
+        rule.effect = "allow".to_owned();
+        rule.updated_at_ms = 3;
+        storage.upsert_capability_rule(&rule).await?;
+        storage.delete_capability_rule(owner, rule_id, 4).await?;
+
+        let reopened = Storage::open(&database).await?;
+        assert!(reopened.capability_rules(owner).await?.is_empty());
+        let audit = reopened.capability_rule_audit(owner).await?;
+        assert_eq!(
+            audit
+                .iter()
+                .map(|entry| entry.action.as_str())
+                .collect::<Vec<_>>(),
+            vec!["created", "updated", "deleted"]
+        );
+        assert_eq!(audit[0].snapshot["effect"], "deny");
+        assert_eq!(audit[2].snapshot["effect"], "allow");
         Ok(())
     }
 }

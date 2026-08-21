@@ -9,7 +9,8 @@ use futures_util::{SinkExt, StreamExt};
 use homebot_protocol::{
     AddGroupParticipantRequest, AppendRoutineRecordingRequest, ApprovalDecisionRequest,
     ArtifactSummary, AttachChatWorkspaceRequest, Attachment, BotColor, BotMutationRequest,
-    BotPermissionProfile, BotProviderStatus, BotResponse, BotShape, ChatTimelineResponse,
+    BotPermissionProfile, BotProviderStatus, BotResponse, BotShape, CapabilityClass,
+    CapabilityRuleAuditSummary, CapabilityRuleEffect, CapabilityRuleSummary, ChatTimelineResponse,
     ChatWorkspaceSummary, CheckpointDiffResponse, CheckpointPhase, CheckpointRestoreSummary,
     CompactWorkingContextRequest, ContextCompactionStatus, ContextCompactionStrategy,
     ConversationReconciliation, CreateAttachmentRequest, CreateAttachmentResponse,
@@ -33,9 +34,10 @@ use homebot_protocol::{
     SkillAssignmentRequest, SkillBundle, SkillContext, SkillDefinition, SkillImportConflictPolicy,
     SkillSummary, SkillTestSummary, SkillToolReference, StartRoutineRecordingRequest,
     TurnCheckpointSummary, UpdateBotRequest, UpdateGroupParticipantRequest, UpdateRoutineRequest,
-    UpdateSkillRequest, VcsCommitRequest, VcsCommitResult, VcsCreateBranchRequest,
-    VcsMutationStatus, VcsPushRequest, VcsRemoteMutationResponse, VcsStatus, WorkingContextSummary,
-    WorkingTreeCondition, WorkingTreeDiffResponse, WorkspaceBranchesResponse, WorkspaceMode,
+    UpdateSkillRequest, UpsertCapabilityRuleRequest, VcsCommitRequest, VcsCommitResult,
+    VcsCreateBranchRequest, VcsMutationStatus, VcsPushRequest, VcsRemoteMutationResponse,
+    VcsStatus, WorkingContextSummary, WorkingTreeCondition, WorkingTreeDiffResponse,
+    WorkspaceBranchesResponse, WorkspaceMode,
 };
 use homebot_providers::{
     ActivityKind, ActivityStatus as ProviderActivityStatus, ApprovalDecision, CompactRequest,
@@ -44,6 +46,7 @@ use homebot_providers::{
     ProviderRuntime, ResumeRequest, StartRequest,
 };
 use homebot_secrets::{MemorySecretVault, SecretStatus, SecretVault, locator_for};
+use sha2::{Digest, Sha256};
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::{
@@ -5504,5 +5507,125 @@ async fn source_control_is_server_owned_idempotent_and_remote_push_requires_appr
         .await?;
     assert_eq!(hostile.status(), StatusCode::CONFLICT);
     assert!(!repository.path().join("server-policy-bypass").exists());
+    Ok(())
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn capability_rules_are_owner_managed_idempotent_audited_and_restart_enforced()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let database = directory.path().join("homebot.db");
+    let storage = Storage::open(&database).await?;
+    let app = router(AppState::new(storage.clone(), "correct-token"));
+    let rule_id = Uuid::now_v7();
+    let request = UpsertCapabilityRuleRequest {
+        request_id: Uuid::now_v7(),
+        idempotency_key: Uuid::now_v7(),
+        capability: CapabilityClass::GitRemote,
+        effect: CapabilityRuleEffect::Deny,
+        device_id: None,
+        bot_id: None,
+        chat_id: None,
+        workspace_id: None,
+        action_prefix: Some("git.push".to_owned()),
+    };
+    let created = app
+        .clone()
+        .oneshot(json_request(
+            "PUT",
+            &format!("/api/v1/capability-rules/{rule_id}"),
+            &request,
+        ))
+        .await?;
+    assert_eq!(created.status(), StatusCode::OK);
+    let created: CapabilityRuleSummary = response_json(created).await?;
+    assert_eq!(created.effect, CapabilityRuleEffect::Deny);
+
+    let replay = app
+        .clone()
+        .oneshot(json_request(
+            "PUT",
+            &format!("/api/v1/capability-rules/{rule_id}"),
+            &request,
+        ))
+        .await?;
+    assert_eq!(
+        response_json::<CapabilityRuleSummary>(replay).await?,
+        created
+    );
+    let audit = app
+        .clone()
+        .oneshot(
+            Request::get("/api/v1/capability-rules/audit")
+                .header("authorization", "Bearer correct-token")
+                .body(Body::empty())?,
+        )
+        .await?;
+    assert_eq!(
+        response_json::<Vec<CapabilityRuleAuditSummary>>(audit)
+            .await?
+            .len(),
+        1
+    );
+
+    let restarted = AppState::new(Storage::open(&database).await?, "correct-token");
+    restarted.ensure_policy_loaded().await?;
+    let denied = restarted
+        .policy_engine
+        .authorize(
+            &homebot_tools::CapabilityRequest {
+                context: homebot_tools::OperationContext {
+                    operation_id: Uuid::now_v7(),
+                    owner_id: Uuid::nil(),
+                    device_id: Uuid::nil(),
+                    bot_id: Uuid::nil(),
+                    chat_id: Uuid::nil(),
+                    workspace_id: Uuid::nil(),
+                },
+                capability: homebot_tools::CapabilityClass::GitRemote,
+                action: "git.push.origin".to_owned(),
+                canonical_resource: "test".to_owned(),
+                summary: "test policy".to_owned(),
+                destructive: true,
+            },
+            None,
+        )
+        .await;
+    assert!(matches!(denied, Err(homebot_tools::ToolError::Denied)));
+
+    let device_token = "test-device-capability-token";
+    let digest: [u8; 32] = Sha256::digest(device_token.as_bytes()).into();
+    sqlx::query("INSERT INTO device_sessions (id, owner_id, name, token_digest, endpoint_kind, created_at_ms) VALUES (?, ?, 'Policy test device', ?, 'loopback', 1)")
+        .bind(Uuid::now_v7().to_string())
+        .bind(Uuid::nil().to_string())
+        .bind(digest.as_slice())
+        .execute(storage.pool())
+        .await?;
+    let forbidden = app
+        .clone()
+        .oneshot(
+            Request::get("/api/v1/capability-rules")
+                .header("authorization", format!("Bearer {device_token}"))
+                .body(Body::empty())?,
+        )
+        .await?;
+    assert_eq!(forbidden.status(), StatusCode::FORBIDDEN);
+
+    let deleted = app
+        .oneshot(json_request(
+            "DELETE",
+            &format!("/api/v1/capability-rules/{rule_id}"),
+            &BotMutationRequest {
+                request_id: Uuid::now_v7(),
+                idempotency_key: Uuid::now_v7(),
+            },
+        ))
+        .await?;
+    assert_eq!(deleted.status(), StatusCode::NO_CONTENT);
+    let audit = storage.capability_rule_audit(Uuid::nil()).await?;
+    assert_eq!(audit.len(), 2);
+    assert_eq!(audit[1].action, "deleted");
+    assert_eq!(audit[1].snapshot["action_prefix"], "git.push");
     Ok(())
 }

@@ -31,6 +31,12 @@
     "bot_response": {
       "$ref": "#/$defs/BotResponse"
     },
+    "capability_rule": {
+      "$ref": "#/$defs/CapabilityRuleSummary"
+    },
+    "capability_rule_audit": {
+      "$ref": "#/$defs/CapabilityRuleAuditSummary"
+    },
     "chat_timeline_response": {
       "$ref": "#/$defs/ChatTimelineResponse"
     },
@@ -235,6 +241,9 @@
     "update_skill_request": {
       "$ref": "#/$defs/UpdateSkillRequest"
     },
+    "upsert_capability_rule_request": {
+      "$ref": "#/$defs/UpsertCapabilityRuleRequest"
+    },
     "vcs_commit_request": {
       "$ref": "#/$defs/VcsCommitRequest"
     },
@@ -349,7 +358,10 @@
     "working_context",
     "set_interaction_mode_request",
     "compact_working_context_request",
-    "approval_decision_request"
+    "approval_decision_request",
+    "capability_rule",
+    "upsert_capability_rule_request",
+    "capability_rule_audit"
   ],
   "$defs": {
     "ActivityDetail": {
@@ -1053,6 +1065,127 @@
         "attention",
         "provider",
         "advanced"
+      ]
+    },
+    "CapabilityClass": {
+      "type": "string",
+      "enum": [
+        "filesystem_read",
+        "filesystem_write",
+        "process_execute",
+        "browser_observe",
+        "browser_act",
+        "git_read",
+        "git_write",
+        "git_remote",
+        "plugin_read",
+        "plugin_write",
+        "external_communication",
+        "external_mutation",
+        "secret_use",
+        "device_administration"
+      ]
+    },
+    "CapabilityRuleAuditSummary": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "type": "string"
+        },
+        "created_at_ms": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "rule_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "snapshot": true
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "rule_id",
+        "action",
+        "snapshot",
+        "created_at_ms"
+      ]
+    },
+    "CapabilityRuleEffect": {
+      "type": "string",
+      "enum": [
+        "allow",
+        "require_approval",
+        "deny"
+      ]
+    },
+    "CapabilityRuleSummary": {
+      "type": "object",
+      "properties": {
+        "action_prefix": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "bot_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid"
+        },
+        "capability": {
+          "$ref": "#/$defs/CapabilityClass"
+        },
+        "chat_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid"
+        },
+        "created_at_ms": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "device_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid"
+        },
+        "effect": {
+          "$ref": "#/$defs/CapabilityRuleEffect"
+        },
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "updated_at_ms": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "workspace_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "capability",
+        "effect",
+        "created_at_ms",
+        "updated_at_ms"
       ]
     },
     "ChatSummary": {
@@ -4711,6 +4844,39 @@
           "properties": {
             "kind": {
               "type": "string",
+              "const": "capability_rule_changed"
+            },
+            "rule": {
+              "$ref": "#/$defs/CapabilityRuleSummary"
+            }
+          },
+          "required": [
+            "kind",
+            "rule"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "capability_rule_removed"
+            },
+            "rule_id": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          "required": [
+            "kind",
+            "rule_id"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
               "const": "queued_prompt_changed"
             },
             "prompt": {
@@ -5432,6 +5598,13 @@
             "$ref": "#/$defs/BotSummary"
           }
         },
+        "capability_rules": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/CapabilityRuleSummary"
+          }
+        },
         "chat_workspaces": {
           "type": "array",
           "default": [],
@@ -5710,6 +5883,66 @@
         "idempotency_key",
         "name",
         "definition"
+      ]
+    },
+    "UpsertCapabilityRuleRequest": {
+      "type": "object",
+      "properties": {
+        "action_prefix": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "bot_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid"
+        },
+        "capability": {
+          "$ref": "#/$defs/CapabilityClass"
+        },
+        "chat_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid"
+        },
+        "device_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid"
+        },
+        "effect": {
+          "$ref": "#/$defs/CapabilityRuleEffect"
+        },
+        "idempotency_key": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "request_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "workspace_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "request_id",
+        "idempotency_key",
+        "capability",
+        "effect"
       ]
     },
     "VcsChangeKind": {

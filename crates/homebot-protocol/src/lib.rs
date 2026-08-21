@@ -115,6 +115,12 @@ pub enum ServerEventBody {
     ApprovalChanged {
         approval: ApprovalSummary,
     },
+    CapabilityRuleChanged {
+        rule: CapabilityRuleSummary,
+    },
+    CapabilityRuleRemoved {
+        rule_id: Uuid,
+    },
     QueuedPromptChanged {
         prompt: QueuedPromptSummary,
     },
@@ -226,6 +232,8 @@ pub struct Snapshot {
     pub repository_workspaces: Vec<RepositoryWorkspaceSummary>,
     #[serde(default)]
     pub chat_workspaces: Vec<ChatWorkspaceSummary>,
+    #[serde(default)]
+    pub capability_rules: Vec<CapabilityRuleSummary>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
@@ -839,6 +847,72 @@ pub struct ApprovalDecisionRequest {
     pub request_id: Uuid,
     pub idempotency_key: Uuid,
     pub allow: bool,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CapabilityClass {
+    FilesystemRead,
+    FilesystemWrite,
+    ProcessExecute,
+    BrowserObserve,
+    BrowserAct,
+    GitRead,
+    GitWrite,
+    GitRemote,
+    PluginRead,
+    PluginWrite,
+    ExternalCommunication,
+    ExternalMutation,
+    SecretUse,
+    DeviceAdministration,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CapabilityRuleEffect {
+    Allow,
+    RequireApproval,
+    Deny,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CapabilityRuleSummary {
+    pub id: Uuid,
+    pub capability: CapabilityClass,
+    pub effect: CapabilityRuleEffect,
+    pub device_id: Option<Uuid>,
+    pub bot_id: Option<Uuid>,
+    pub chat_id: Option<Uuid>,
+    pub workspace_id: Option<Uuid>,
+    pub action_prefix: Option<String>,
+    pub created_at_ms: i64,
+    pub updated_at_ms: i64,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct UpsertCapabilityRuleRequest {
+    pub request_id: Uuid,
+    pub idempotency_key: Uuid,
+    pub capability: CapabilityClass,
+    pub effect: CapabilityRuleEffect,
+    pub device_id: Option<Uuid>,
+    pub bot_id: Option<Uuid>,
+    pub chat_id: Option<Uuid>,
+    pub workspace_id: Option<Uuid>,
+    pub action_prefix: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CapabilityRuleAuditSummary {
+    pub id: Uuid,
+    pub rule_id: Uuid,
+    pub action: String,
+    pub snapshot: serde_json::Value,
+    pub created_at_ms: i64,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
@@ -1697,6 +1771,9 @@ pub struct ProtocolV1Schema {
     pub set_interaction_mode_request: SetInteractionModeRequest,
     pub compact_working_context_request: CompactWorkingContextRequest,
     pub approval_decision_request: ApprovalDecisionRequest,
+    pub capability_rule: CapabilityRuleSummary,
+    pub upsert_capability_rule_request: UpsertCapabilityRuleRequest,
+    pub capability_rule_audit: CapabilityRuleAuditSummary,
 }
 
 /// Checks whether a client protocol is in the supported inclusive range.

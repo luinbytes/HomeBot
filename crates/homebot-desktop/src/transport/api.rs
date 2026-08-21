@@ -1,10 +1,10 @@
 use super::{
     ApprovalDecisionRequest, BotClientCommand, BotEditorDraft, BotMutationRequest, BotResponse,
     Client, ComposerDraft, CreateAttachmentRequest, CreateAttachmentResponse, CreateBotRequest,
-    CreateDirectChatRequest, CreateDirectChatResponse, DesktopCommand, DesktopEvent, Digest,
-    ErrorEnvelope, FinalizeAttachmentRequest, MessageMutationRequest, Method, RuntimeConfig,
-    SendMessageRequest, Sender, Sha256, StatusCode, TimelineCommand, TransportFailure,
-    UpdateBotRequest, Uuid, WorkspaceCommand, protocol_error, request_error,
+    CreateDirectChatRequest, CreateDirectChatResponse, DeleteBotRequest, DesktopCommand,
+    DesktopEvent, Digest, ErrorEnvelope, FinalizeAttachmentRequest, MessageMutationRequest, Method,
+    RuntimeConfig, SendMessageRequest, Sender, Sha256, StatusCode, TimelineCommand,
+    TransportFailure, UpdateBotRequest, Uuid, WorkspaceCommand, protocol_error, request_error,
 };
 
 pub(super) async fn execute_command(
@@ -519,6 +519,27 @@ async fn execute_bot(
     command: BotClientCommand,
     events: &Sender<DesktopEvent>,
 ) -> Result<(), TransportFailure> {
+    if let BotClientCommand::Delete {
+        bot_id,
+        confirm_name,
+    } = &command
+    {
+        let response = authenticated(
+            client,
+            config,
+            Method::DELETE,
+            &format!("/api/v1/bots/{bot_id}"),
+        )
+        .json(&DeleteBotRequest {
+            request_id: Uuid::now_v7(),
+            idempotency_key: Uuid::now_v7(),
+            confirm_name: confirm_name.clone(),
+        })
+        .send()
+        .await
+        .map_err(request_error)?;
+        return ensure_success(response).await;
+    }
     let (method, path, body) = match command {
         BotClientCommand::Create(draft) => (
             Method::POST,
@@ -537,6 +558,12 @@ async fn execute_bot(
         }
         BotClientCommand::Archive(bot_id) => mutation(bot_id, "archive")?,
         BotClientCommand::Restore(bot_id) => mutation(bot_id, "restore")?,
+        BotClientCommand::Pin(bot_id) => mutation(bot_id, "pin")?,
+        BotClientCommand::Unpin(bot_id) => mutation(bot_id, "unpin")?,
+        BotClientCommand::Hide(bot_id) => mutation(bot_id, "hide")?,
+        BotClientCommand::Unhide(bot_id) => mutation(bot_id, "unhide")?,
+        BotClientCommand::Duplicate(bot_id) => mutation(bot_id, "duplicate")?,
+        BotClientCommand::Delete { .. } => unreachable!("delete handled above"),
         BotClientCommand::MarkRead(bot_id) => mutation(bot_id, "read")?,
         BotClientCommand::RetryConnection => return Ok(()),
     };

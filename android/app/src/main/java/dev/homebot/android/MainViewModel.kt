@@ -191,6 +191,23 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         homeBot.client.setBotArchived(botId, archived).getOrThrow()
     }
 
+    fun setBotPinned(botId: String, pinned: Boolean) = perform {
+        homeBot.client.setBotPinned(botId, pinned).getOrThrow()
+    }
+
+    fun setBotHidden(botId: String, hidden: Boolean) = perform {
+        homeBot.client.setBotHidden(botId, hidden).getOrThrow()
+    }
+
+    fun duplicateBot(botId: String) = perform {
+        homeBot.client.duplicateBot(botId).getOrThrow()
+    }
+
+    fun deleteBot(bot: BotSummary, confirmation: String) = perform {
+        require(confirmation == bot.name) { "Type the Bot name exactly to delete it" }
+        homeBot.client.deleteBot(bot.id, confirmation).getOrThrow()
+    }
+
     fun createGroup(title: String, botIds: List<String>) = perform {
         require(botIds.size >= 2) { "Choose at least two Bots" }
         val response = homeBot.client.createGroup(

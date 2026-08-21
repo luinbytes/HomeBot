@@ -81,6 +81,8 @@ data class BotSummary(
     val shape: String,
     val color: String,
     val archived: Boolean,
+    val pinned: Boolean = false,
+    val hidden: Boolean = false,
     val unread_count: Int,
     val attention: String,
     val provider: String,
@@ -115,6 +117,9 @@ data class UpdateBotRequest(
 
 @Serializable
 data class BotMutationRequest(val request_id: String, val idempotency_key: String)
+
+@Serializable
+data class DeleteBotRequest(val request_id: String, val idempotency_key: String, val confirm_name: String)
 
 @Serializable
 enum class PairingEndpointKind { @SerialName("loopback") LOOPBACK, @SerialName("lan") LAN, @SerialName("tailscale") TAILSCALE, @SerialName("custom_https") CUSTOM_HTTPS }

@@ -84,6 +84,7 @@ pub struct HomeBotApp {
     update_candidate: Option<UpdateCandidate>,
     performance: LocalPerformanceTelemetry,
     focus_composer: bool,
+    delete_confirmation: Option<(Uuid, String, String)>,
 }
 
 impl Default for HomeBotApp {
@@ -121,6 +122,7 @@ impl Default for HomeBotApp {
             update_candidate: None,
             performance: LocalPerformanceTelemetry::default(),
             focus_composer: false,
+            delete_confirmation: None,
         }
     }
 }
@@ -187,6 +189,7 @@ impl HomeBotApp {
             }
         });
         self.editor(context);
+        self.delete_dialog(context);
         self.flush_transport();
         self.performance
             .record("desktop_frame", frame_started.elapsed());
@@ -217,6 +220,7 @@ impl HomeBotApp {
             self.settings_open = false;
             self.roster.editor = None;
             self.editor_error = None;
+            self.delete_confirmation = None;
         }
     }
 
@@ -315,6 +319,7 @@ impl HomeBotApp {
                             self.roster.apply_change(bot.clone());
                             Some(bot.id)
                         }
+                        ServerEventBody::BotDeleted { bot_id } => self.apply_bot_deleted(*bot_id),
                         ServerEventBody::ChatChanged { chat } => {
                             upsert_chat(&mut self.chats, chat.clone());
                             if self.roster.selected == Some(chat.bot_id) {
@@ -378,6 +383,12 @@ impl HomeBotApp {
                 _ => unreachable!("source-control events are consumed before primary dispatch"),
             }
         }
+    }
+
+    fn apply_bot_deleted(&mut self, bot_id: Uuid) -> Option<Uuid> {
+        self.roster.apply_delete(bot_id);
+        self.chats.retain(|chat| chat.bot_id != bot_id);
+        None
     }
 
     fn apply_devices(&mut self, devices: Vec<homebot_protocol::DeviceSessionSummary>) {
@@ -661,6 +672,22 @@ impl HomeBotApp {
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                             if ui.button("Edit").clicked() {
                                 self.roster.begin_edit(bot.id);
+                            }
+                            if ui
+                                .button(if bot.pinned { "Unpin" } else { "Pin" })
+                                .clicked()
+                            {
+                                self.roster.queue_pin(bot.id, bot.pinned);
+                            }
+                            if ui.button("Duplicate").clicked() {
+                                self.roster.queue_duplicate(bot.id);
+                            }
+                            if ui.button("Hide").clicked() {
+                                self.roster.queue_hide(bot.id, bot.hidden);
+                            }
+                            if ui.button("Delete…").clicked() {
+                                self.delete_confirmation =
+                                    Some((bot.id, bot.name.clone(), String::new()));
                             }
                             let label = if bot.archived { "Restore" } else { "Archive" };
                             if ui.button(label).clicked() {
@@ -1203,6 +1230,30 @@ impl HomeBotApp {
         });
         if keep_open && self.roster.editor.is_none() {
             self.roster.editor = Some(draft);
+        }
+    }
+
+    fn delete_dialog(&mut self, context: &egui::Context) {
+        let Some((bot_id, name, mut confirmation)) = self.delete_confirmation.take() else {
+            return;
+        };
+        let mut keep_open = true;
+        egui::Window::new("Delete Bot")
+            .collapsible(false).resizable(false)
+            .show(context, |ui| {
+                ui.label(format!("Delete {name} and its HomeBot chat and routines? Shared computer files are not deleted."));
+                ui.label(format!("Type {name} to confirm"));
+                ui.text_edit_singleline(&mut confirmation);
+                ui.horizontal(|ui| {
+                    if ui.add_enabled(confirmation == name, egui::Button::new("Delete permanently")).clicked() {
+                        self.roster.queue_delete(bot_id, confirmation.clone());
+                        keep_open = false;
+                    }
+                    if ui.button("Cancel").clicked() { keep_open = false; }
+                });
+            });
+        if keep_open {
+            self.delete_confirmation = Some((bot_id, name, confirmation));
         }
     }
 }

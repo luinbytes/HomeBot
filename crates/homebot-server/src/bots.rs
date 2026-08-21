@@ -10,8 +10,8 @@ use homebot_domain::{
 };
 use homebot_protocol::{
     BotAdvancedSettings, BotAttention, BotColor, BotMutationRequest, BotPermissionProfile,
-    BotProviderStatus, BotResponse, BotShape, BotSummary, CreateBotRequest, ErrorCode,
-    ErrorEnvelope, ServerEventBody, UpdateBotRequest,
+    BotProviderStatus, BotResponse, BotShape, BotSummary, CreateBotRequest, DeleteBotRequest,
+    ErrorCode, ErrorEnvelope, ServerEventBody, UpdateBotRequest,
 };
 use homebot_storage::{IdempotencyClaim, StorageError};
 use serde::Serialize;
@@ -190,6 +190,177 @@ pub(super) async fn mark_read(
     Ok(Json(BotResponse { bot }))
 }
 
+async fn set_flag(
+    state: &AppState,
+    bot_id: Uuid,
+    request: &BotMutationRequest,
+    operation: &str,
+    value: bool,
+) -> Result<Json<BotResponse>, ApiError> {
+    let replayed = matches!(
+        claim(
+            state,
+            request.idempotency_key,
+            &format!("{operation}:{bot_id}"),
+            request,
+        )
+        .await?,
+        IdempotencyClaim::Replayed { .. }
+    );
+    let bot = if replayed {
+        let bot = state.storage.get_bot(state.owner_id, bot_id).await?;
+        let matches = if operation == "pin_bot" {
+            bot.pinned_at_ms.is_some() == value
+        } else {
+            bot.hidden_at_ms.is_some() == value
+        };
+        if !matches {
+            return Err(ApiError::conflict(
+                "The original Bot mutation is not reflected in current state",
+            ));
+        }
+        bot
+    } else if operation == "pin_bot" {
+        state
+            .storage
+            .set_bot_pinned(state.owner_id, bot_id, value, unix_time_ms())
+            .await?
+    } else {
+        state
+            .storage
+            .set_bot_hidden(state.owner_id, bot_id, value, unix_time_ms())
+            .await?
+    };
+    let bot = summary(state, bot).await;
+    if !replayed {
+        publish(state, bot.clone()).await?;
+    }
+    Ok(Json(BotResponse { bot }))
+}
+
+pub(super) async fn pin(
+    State(state): State<AppState>,
+    Path(bot_id): Path<Uuid>,
+    Json(request): Json<BotMutationRequest>,
+) -> Result<Json<BotResponse>, ApiError> {
+    set_flag(&state, bot_id, &request, "pin_bot", true).await
+}
+
+pub(super) async fn unpin(
+    State(state): State<AppState>,
+    Path(bot_id): Path<Uuid>,
+    Json(request): Json<BotMutationRequest>,
+) -> Result<Json<BotResponse>, ApiError> {
+    set_flag(&state, bot_id, &request, "pin_bot", false).await
+}
+
+pub(super) async fn hide(
+    State(state): State<AppState>,
+    Path(bot_id): Path<Uuid>,
+    Json(request): Json<BotMutationRequest>,
+) -> Result<Json<BotResponse>, ApiError> {
+    set_flag(&state, bot_id, &request, "hide_bot", true).await
+}
+
+pub(super) async fn unhide(
+    State(state): State<AppState>,
+    Path(bot_id): Path<Uuid>,
+    Json(request): Json<BotMutationRequest>,
+) -> Result<Json<BotResponse>, ApiError> {
+    set_flag(&state, bot_id, &request, "hide_bot", false).await
+}
+
+pub(super) async fn delete(
+    State(state): State<AppState>,
+    Path(bot_id): Path<Uuid>,
+    Json(request): Json<DeleteBotRequest>,
+) -> Result<StatusCode, ApiError> {
+    let existing = state.storage.get_bot(state.owner_id, bot_id).await;
+    if let Ok(bot) = &existing
+        && request.confirm_name != bot.name
+    {
+        return Err(ApiError::validation("Bot name confirmation did not match"));
+    }
+    if matches!(existing, Err(StorageError::BotNotFound)) {
+        let prior: i64 = sqlx::query_scalar("SELECT count(*) FROM idempotency_records WHERE key = ?")
+            .bind(request.idempotency_key.to_string())
+            .fetch_one(state.storage.pool())
+            .await
+            .map_err(|_| ApiError::internal())?;
+        if prior == 0 {
+            return Err(StorageError::BotNotFound.into());
+        }
+    }
+    let replayed = matches!(
+        claim(
+            &state,
+            request.idempotency_key,
+            &format!("delete_bot:{bot_id}"),
+            &request
+        )
+        .await?,
+        IdempotencyClaim::Replayed { .. }
+    );
+    if replayed {
+        return Ok(StatusCode::NO_CONTENT);
+    }
+    existing?;
+    state.storage.delete_bot(state.owner_id, bot_id).await?;
+    persist_event(
+        &state,
+        "bot_deleted",
+        ServerEventBody::BotDeleted { bot_id },
+    )
+    .await
+    .map_err(|()| ApiError::internal())?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub(super) async fn duplicate(
+    State(state): State<AppState>,
+    Path(bot_id): Path<Uuid>,
+    Json(request): Json<BotMutationRequest>,
+) -> Result<(StatusCode, Json<BotResponse>), ApiError> {
+    let replayed = matches!(
+        claim(
+            &state,
+            request.idempotency_key,
+            &format!("duplicate_bot:{bot_id}"),
+            &request
+        )
+        .await?,
+        IdempotencyClaim::Replayed { .. }
+    );
+    let bot = if replayed {
+        state
+            .storage
+            .get_bot(state.owner_id, request.idempotency_key)
+            .await?
+    } else {
+        state
+            .storage
+            .duplicate_bot_configuration(
+                state.owner_id,
+                bot_id,
+                request.idempotency_key,
+                unix_time_ms(),
+            )
+            .await?
+    };
+    let bot = summary(&state, bot).await;
+    if !replayed {
+        publish(&state, bot.clone()).await?;
+    }
+    Ok((
+        if replayed {
+            StatusCode::OK
+        } else {
+            StatusCode::CREATED
+        },
+        Json(BotResponse { bot }),
+    ))
+}
+
 pub(super) async fn claim<T: Serialize>(
     state: &AppState,
     key: Uuid,
@@ -257,6 +428,8 @@ pub(super) async fn summary(state: &AppState, bot: Bot) -> BotSummary {
             DomainColor::Slate => BotColor::Slate,
         },
         archived: bot.archived_at_ms.is_some(),
+        pinned: bot.pinned_at_ms.is_some(),
+        hidden: bot.hidden_at_ms.is_some(),
         unread_count: bot.unread_count,
         attention: match bot.attention {
             homebot_domain::BotAttention::None => BotAttention::None,

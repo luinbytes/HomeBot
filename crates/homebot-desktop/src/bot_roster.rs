@@ -90,6 +90,12 @@ pub enum BotClientCommand {
     Update(BotEditorDraft),
     Archive(Uuid),
     Restore(Uuid),
+    Pin(Uuid),
+    Unpin(Uuid),
+    Hide(Uuid),
+    Unhide(Uuid),
+    Duplicate(Uuid),
+    Delete { bot_id: Uuid, confirm_name: String },
     MarkRead(Uuid),
     RetryConnection,
 }
@@ -135,7 +141,25 @@ impl BotRosterModel {
         } else {
             self.bots.push(changed);
         }
-        self.bots.sort_by_key(|bot| bot.name.to_lowercase());
+        self.sort_authoritative();
+    }
+
+    pub fn apply_delete(&mut self, bot_id: Uuid) {
+        self.bots.retain(|bot| bot.id != bot_id);
+        if self.selected == Some(bot_id) {
+            self.selected = None;
+        }
+    }
+
+    fn sort_authoritative(&mut self) {
+        self.bots.sort_by(|left, right| {
+            left.archived
+                .cmp(&right.archived)
+                .then_with(|| left.hidden.cmp(&right.hidden))
+                .then_with(|| right.pinned.cmp(&left.pinned))
+                .then_with(|| left.name.to_lowercase().cmp(&right.name.to_lowercase()))
+                .then_with(|| left.id.cmp(&right.id))
+        });
     }
 
     pub fn begin_create(&mut self) {
@@ -182,6 +206,34 @@ impl BotRosterModel {
             .push(BotClientCommand::MarkRead(bot_id));
     }
 
+    pub fn queue_pin(&mut self, bot_id: Uuid, pinned: bool) {
+        self.pending_commands.push(if pinned {
+            BotClientCommand::Unpin(bot_id)
+        } else {
+            BotClientCommand::Pin(bot_id)
+        });
+    }
+
+    pub fn queue_hide(&mut self, bot_id: Uuid, hidden: bool) {
+        self.pending_commands.push(if hidden {
+            BotClientCommand::Unhide(bot_id)
+        } else {
+            BotClientCommand::Hide(bot_id)
+        });
+    }
+
+    pub fn queue_duplicate(&mut self, bot_id: Uuid) {
+        self.pending_commands
+            .push(BotClientCommand::Duplicate(bot_id));
+    }
+
+    pub fn queue_delete(&mut self, bot_id: Uuid, confirm_name: String) {
+        self.pending_commands.push(BotClientCommand::Delete {
+            bot_id,
+            confirm_name,
+        });
+    }
+
     #[must_use]
     pub fn take_commands(&mut self) -> Vec<BotClientCommand> {
         std::mem::take(&mut self.pending_commands)
@@ -191,7 +243,7 @@ impl BotRosterModel {
     pub fn visible_bots(&self) -> Vec<&BotSummary> {
         self.bots
             .iter()
-            .filter(|bot| self.show_archived || !bot.archived)
+            .filter(|bot| !bot.hidden && (self.show_archived || !bot.archived))
             .collect()
     }
 
@@ -218,6 +270,8 @@ mod tests {
             shape: BotShape::RoundedSquare,
             color: BotColor::Violet,
             archived: false,
+            pinned: false,
+            hidden: false,
             unread_count: 0,
             attention: BotAttention::None,
             provider: BotProviderStatus::NotConfigured,

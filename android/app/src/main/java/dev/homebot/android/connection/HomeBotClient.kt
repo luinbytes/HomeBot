@@ -11,6 +11,7 @@ import dev.homebot.protocol.ClientMessage
 import dev.homebot.protocol.CreateBotRequest
 import dev.homebot.protocol.CreateDirectChatRequest
 import dev.homebot.protocol.CreateDirectChatResponse
+import dev.homebot.protocol.DeleteBotRequest
 import dev.homebot.protocol.CreateGroupChatRequest
 import dev.homebot.protocol.CreateGroupChatResponse
 import dev.homebot.protocol.ErrorEnvelope
@@ -202,6 +203,26 @@ class HomeBotClient(
             BotMutationRequest.serializer(),
             BotResponse.serializer(),
         ).bot
+    }
+
+    suspend fun setBotPinned(botId: String, pinned: Boolean): Result<BotSummary> = authenticated {
+        post("api/v1/bots/$botId/${if (pinned) "pin" else "unpin"}", mutation(), BotMutationRequest.serializer(), BotResponse.serializer()).bot
+    }
+
+    suspend fun setBotHidden(botId: String, hidden: Boolean): Result<BotSummary> = authenticated {
+        post("api/v1/bots/$botId/${if (hidden) "hide" else "unhide"}", mutation(), BotMutationRequest.serializer(), BotResponse.serializer()).bot
+    }
+
+    suspend fun duplicateBot(botId: String): Result<BotSummary> = authenticated {
+        post("api/v1/bots/$botId/duplicate", mutation(), BotMutationRequest.serializer(), BotResponse.serializer()).bot
+    }
+
+    suspend fun deleteBot(botId: String, confirmName: String): Result<Unit> = authenticated {
+        deleteDiscarding(
+            "api/v1/bots/$botId",
+            DeleteBotRequest(ids(), ids(), confirmName),
+            DeleteBotRequest.serializer(),
+        )
     }
 
     suspend fun createDirectChat(botId: String): Result<ChatSummary> = authenticated {
@@ -703,6 +724,10 @@ class HomeBotClient(
                     json.decodeFromJsonElement<BotSummary>(event.getValue("bot")),
                 ) { it.id },
             )
+            "bot_deleted" -> projection.copy(
+                bots = projection.bots.filterNot { it.id == event.requiredString("bot_id") },
+                chats = projection.chats.filterNot { it.bot_id == event.requiredString("bot_id") },
+            )
             "chat_changed" -> projection.copy(
                 chats = projection.chats.upsert(
                     json.decodeFromJsonElement<ChatSummary>(event.getValue("chat")),
@@ -776,6 +801,17 @@ class HomeBotClient(
             requestSerializer: kotlinx.serialization.KSerializer<RequestType>,
         ) {
             val request = requestBuilder(path).post(json.encodeToString(requestSerializer, payload).jsonBody()).build()
+            executeDiscarding(request)
+        }
+
+        suspend fun <RequestType> deleteDiscarding(
+            path: String,
+            payload: RequestType,
+            requestSerializer: kotlinx.serialization.KSerializer<RequestType>,
+        ) {
+            val request = requestBuilder(path)
+                .delete(json.encodeToString(requestSerializer, payload).jsonBody())
+                .build()
             executeDiscarding(request)
         }
 

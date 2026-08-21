@@ -194,6 +194,10 @@ class HomeBotClientTest {
                             webSocket.send("x".repeat(256 * 1024 + 1))
                         }
                     }
+
+                    override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
+                        webSocket.close(code, reason)
+                    }
                 })
                 else -> MockResponse().setResponseCode(404)
             }

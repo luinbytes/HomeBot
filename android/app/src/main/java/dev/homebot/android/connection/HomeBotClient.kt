@@ -565,14 +565,31 @@ class HomeBotClient(
             for ((webSocket, text) in events) {
                 runCatching { handleEvent(webSocket, endpoint, text) }
                     .onFailure { failure ->
-                        webSocket.close(1002, "Invalid HomeBot event")
-                        disconnected.complete(
-                            DisconnectReason.Retry(
-                                ClientFailure.Protocol(failure.message ?: "Invalid HomeBot event"),
-                            ),
+                        reject(
+                            webSocket,
+                            1002,
+                            "Invalid HomeBot event",
+                            ClientFailure.Protocol(failure.message ?: "Invalid HomeBot event"),
                         )
-                        events.cancel()
                     }
+            }
+        }
+
+        private fun reject(
+            webSocket: WebSocket,
+            code: Int,
+            reason: String,
+            failure: ClientFailure.Protocol,
+        ) {
+            terminalFailure.compareAndSet(null, failure)
+            events.cancel()
+            if (!webSocket.close(code, reason)) {
+                webSocket.cancel()
+                return
+            }
+            scope.launch {
+                delay(REJECTED_SOCKET_GRACE_MS)
+                if (!disconnected.isCompleted) webSocket.cancel()
             }
         }
 
@@ -588,22 +605,21 @@ class HomeBotClient(
 
         override fun onMessage(webSocket: WebSocket, text: String) {
             if (text.toByteArray(Charsets.UTF_8).size > MAX_EVENT_BYTES) {
-                terminalFailure.compareAndSet(
-                    null,
+                reject(
+                    webSocket,
+                    1009,
+                    "HomeBot event exceeded the size limit",
                     ClientFailure.Protocol("HomeBot event exceeded the size limit"),
                 )
-                webSocket.close(1009, "HomeBot event exceeded the size limit")
-                webSocket.cancel()
-                events.cancel()
                 return
             }
             if (events.trySend(webSocket to text).isFailure) {
-                terminalFailure.compareAndSet(
-                    null,
+                reject(
+                    webSocket,
+                    1013,
+                    "HomeBot event processor is backpressured",
                     ClientFailure.Protocol("HomeBot event processor is backpressured"),
                 )
-                webSocket.close(1013, "HomeBot event processor is backpressured")
-                webSocket.cancel()
             }
         }
 
@@ -616,7 +632,10 @@ class HomeBotClient(
             scope.launch {
                 processor.join()
                 disconnected.complete(
-                    DisconnectReason.Retry(ClientFailure.Network("HomeBot event stream closed")),
+                    DisconnectReason.Retry(
+                        terminalFailure.get()
+                            ?: ClientFailure.Network("HomeBot event stream closed"),
+                    ),
                 )
             }
         }
@@ -866,6 +885,7 @@ class HomeBotClient(
         const val EVENT_BUFFER_CAPACITY = 128
         const val MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024
         const val MAX_EVENT_BYTES = 256 * 1024
+        const val REJECTED_SOCKET_GRACE_MS = 250L
         val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
     }
 }

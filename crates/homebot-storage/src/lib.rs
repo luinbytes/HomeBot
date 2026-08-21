@@ -24,7 +24,101 @@ use std::{collections::HashSet, path::Path, str::FromStr, time::Duration};
 use uuid::Uuid;
 
 pub const SCHEMA_VERSION: u32 = 17;
-static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
+static MIGRATOR: std::sync::LazyLock<sqlx::migrate::Migrator> = std::sync::LazyLock::new(|| {
+    use sqlx::migrate::{Migration, MigrationType, Migrator};
+    use std::borrow::Cow;
+
+    let migrations = [
+        (1, "initial", include_str!("../migrations/0001_initial.sql")),
+        (
+            2,
+            "event retention",
+            include_str!("../migrations/0002_event_retention.sql"),
+        ),
+        (
+            3,
+            "attachments",
+            include_str!("../migrations/0003_attachments.sql"),
+        ),
+        (
+            4,
+            "bot lifecycle",
+            include_str!("../migrations/0004_bot_lifecycle.sql"),
+        ),
+        (
+            5,
+            "direct chat",
+            include_str!("../migrations/0005_direct_chat.sql"),
+        ),
+        (
+            6,
+            "group coordination",
+            include_str!("../migrations/0006_group_coordination.sql"),
+        ),
+        (
+            7,
+            "activity artifacts",
+            include_str!("../migrations/0007_activity_artifacts.sql"),
+        ),
+        (
+            8,
+            "secret references",
+            include_str!("../migrations/0008_secret_references.sql"),
+        ),
+        (9, "plugins", include_str!("../migrations/0009_plugins.sql")),
+        (
+            10,
+            "routines",
+            include_str!("../migrations/0010_routines.sql"),
+        ),
+        (
+            11,
+            "routine scheduler",
+            include_str!("../migrations/0011_routine_scheduler.sql"),
+        ),
+        (12, "skills", include_str!("../migrations/0012_skills.sql")),
+        (
+            13,
+            "workspaces",
+            include_str!("../migrations/0013_workspaces.sql"),
+        ),
+        (
+            14,
+            "checkpoints",
+            include_str!("../migrations/0014_checkpoints.sql"),
+        ),
+        (
+            15,
+            "vcs operations",
+            include_str!("../migrations/0015_vcs_operations.sql"),
+        ),
+        (
+            16,
+            "working context",
+            include_str!("../migrations/0016_working_context.sql"),
+        ),
+        (
+            17,
+            "device pairing",
+            include_str!("../migrations/0017_device_pairing.sql"),
+        ),
+    ]
+    .into_iter()
+    .map(|(version, description, sql)| {
+        Migration::new(
+            version,
+            Cow::Borrowed(description),
+            MigrationType::Simple,
+            Cow::Borrowed(sql),
+            false,
+        )
+    })
+    .collect::<Vec<_>>();
+    Migrator {
+        migrations: Cow::Owned(migrations),
+        ..Migrator::DEFAULT
+    }
+});
 
 #[derive(Debug, thiserror::Error)]
 pub enum StorageError {

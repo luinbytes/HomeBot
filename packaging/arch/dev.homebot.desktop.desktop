@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=HomeBot
+Comment=Your self-hosted AI team
+Exec=/usr/bin/homebot-desktop
+Icon=homebot
+Terminal=false
+Categories=Network;Development;
+StartupNotify=true
+StartupWMClass=HomeBot
+Keywords=AI;Bots;Chat;Automation;

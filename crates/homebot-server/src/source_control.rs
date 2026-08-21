@@ -377,7 +377,7 @@ pub(super) async fn create_pull_request(
     Ok((StatusCode::CREATED, Json(response)))
 }
 
-async fn persist_approval(
+pub(super) async fn persist_approval(
     state: &AppState,
     chat_id: Uuid,
     ticket: &homebot_tools::ApprovalTicket,

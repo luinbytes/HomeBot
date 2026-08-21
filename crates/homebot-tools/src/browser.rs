@@ -129,6 +129,33 @@ impl BrowserService {
         })
     }
 
+    /// Creates a single server-owned profile directory without exposing its path to clients.
+    ///
+    /// # Errors
+    /// Rejects nested, parent, absolute, or symlink-backed directory references.
+    pub fn ensure_profile_directory(
+        &self,
+        profile: &BrowserSessionProfile,
+    ) -> Result<(), ToolError> {
+        let mut components = profile.profile_directory.components();
+        if profile.profile_directory.is_absolute()
+            || !matches!(components.next(), Some(Component::Normal(_)))
+            || components.next().is_some()
+        {
+            return Err(ToolError::PathOutsideWorkspace);
+        }
+        let path = self.profile_root.join(&profile.profile_directory);
+        if path.exists() {
+            reject_profile_symlinks(&self.profile_root, &path)?;
+            if !path.is_dir() {
+                return Err(ToolError::PathOutsideWorkspace);
+            }
+            return Ok(());
+        }
+        std::fs::create_dir(&path).map_err(|_| ToolError::OperationFailed)?;
+        reject_profile_symlinks(&self.profile_root, &path)
+    }
+
     /// Opens a new page target using a server-local profile reference.
     ///
     /// # Errors

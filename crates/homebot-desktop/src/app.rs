@@ -69,6 +69,7 @@ pub struct HomeBotApp {
     pub devices: Vec<homebot_protocol::DeviceSessionSummary>,
     pub pairing_offer: Option<homebot_protocol::PairingOffer>,
     pub capability_rules: Vec<homebot_protocol::CapabilityRuleSummary>,
+    pub browser_sessions: Vec<homebot_protocol::BrowserSessionSummary>,
     pairing_endpoint: String,
     pairing_insecure_private_acknowledged: bool,
     vcs_commit_message: String,
@@ -109,6 +110,7 @@ impl Default for HomeBotApp {
             devices: Vec::new(),
             pairing_offer: None,
             capability_rules: Vec::new(),
+            browser_sessions: Vec::new(),
             pairing_endpoint: "http://127.0.0.1:7123".to_owned(),
             pairing_insecure_private_acknowledged: false,
             vcs_commit_message: String::new(),
@@ -194,6 +196,7 @@ impl HomeBotApp {
                 if self.settings.section == SettingsSection::Devices {
                     self.device_pairing_controls(ui);
                     self.capability_policy_controls(ui);
+                    self.shared_browser_controls(ui);
                 }
             } else if self.search.is_some() {
                 self.search_content(ui);
@@ -308,13 +311,12 @@ impl HomeBotApp {
             let Some(event) = self.apply_policy_transport_event(event) else {
                 continue;
             };
+            let Some(event) = self.apply_browser_transport_event(event) else {
+                continue;
+            };
             match event {
                 DesktopEvent::Connecting => self.roster.connection = ConnectionState::Connecting,
-                DesktopEvent::Connected => {
-                    self.roster.connection = ConnectionState::Connected;
-                    self.transport_error = None;
-                    self.send_transport(DesktopCommand::LoadDevices);
-                }
+                DesktopEvent::Connected => self.apply_connected(),
                 DesktopEvent::Disconnected(error) => {
                     self.roster.connection = ConnectionState::Disconnected;
                     self.transport_error = Some(error.to_string());
@@ -416,6 +418,12 @@ impl HomeBotApp {
         self.update_device_count();
     }
 
+    fn apply_connected(&mut self) {
+        self.roster.connection = ConnectionState::Connected;
+        self.transport_error = None;
+        self.send_transport(DesktopCommand::LoadDevices);
+    }
+
     fn apply_snapshot(&mut self, snapshot: homebot_protocol::Snapshot) {
         self.roster.apply_snapshot(snapshot.bots);
         self.chats = snapshot.chats;
@@ -423,6 +431,7 @@ impl HomeBotApp {
         self.workspaces
             .hydrate(snapshot.repository_workspaces, snapshot.chat_workspaces);
         self.capability_rules = snapshot.capability_rules;
+        self.browser_sessions = snapshot.browser_sessions;
     }
 
     fn apply_device_revoked(&mut self, device: homebot_protocol::DeviceSessionSummary) {
@@ -509,6 +518,30 @@ impl HomeBotApp {
             }
             _ => Some(event),
         }
+    }
+
+    fn apply_browser_transport_event(&mut self, event: DesktopEvent) -> Option<DesktopEvent> {
+        let session = match &event {
+            DesktopEvent::Server(server_event) => match &server_event.body {
+                ServerEventBody::BrowserSessionChanged { session } => Some(session.clone()),
+                _ => None,
+            },
+            DesktopEvent::BrowserAction(response) => Some(response.session.clone()),
+            _ => None,
+        };
+        let Some(session) = session else {
+            return Some(event);
+        };
+        if let Some(existing) = self
+            .browser_sessions
+            .iter_mut()
+            .find(|item| item.id == session.id)
+        {
+            *existing = session;
+        } else {
+            self.browser_sessions.push(session);
+        }
+        None
     }
 
     fn flush_transport(&mut self) {
@@ -628,6 +661,38 @@ impl HomeBotApp {
                     ui.label(prefix);
                 }
             });
+        }
+    }
+
+    fn shared_browser_controls(&mut self, ui: &mut egui::Ui) {
+        ui.separator();
+        ui.strong("Shared browser");
+        ui.label("Browser login state stays in an owner-scoped server profile. Watch or take over without copying cookies or credentials into chat.");
+        let mut command = None;
+        for session in &self.browser_sessions {
+            ui.horizontal_wrapped(|ui| {
+                ui.strong(&session.profile_name);
+                ui.label(format!("{:?} • {:?}", session.status, session.controller));
+                if ui.button("Watch").clicked() {
+                    command = Some(DesktopCommand::BrowserWatch(session.id));
+                }
+                if session.controller == homebot_protocol::BrowserController::Bot {
+                    if ui.button("Take over").clicked() {
+                        command = Some(DesktopCommand::BrowserTakeover {
+                            session_id: session.id,
+                            approval_id: session.pending_approval_id,
+                        });
+                    }
+                } else if ui.button("Return to Bot").clicked() {
+                    command = Some(DesktopCommand::BrowserReturn(session.id));
+                }
+            });
+            if let Some(url) = &session.current_url {
+                ui.monospace(url);
+            }
+        }
+        if let Some(command) = command {
+            self.send_transport(command);
         }
     }
 

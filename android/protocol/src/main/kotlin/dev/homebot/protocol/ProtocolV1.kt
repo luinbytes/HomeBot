@@ -63,6 +63,7 @@ data class Snapshot(
     val repository_workspaces: List<RepositoryWorkspaceSummary> = emptyList(),
     val chat_workspaces: List<ChatWorkspaceSummary> = emptyList(),
     val capability_rules: List<CapabilityRuleSummary> = emptyList(),
+    val browser_sessions: List<BrowserSessionSummary> = emptyList(),
 )
 
 @Serializable
@@ -273,6 +274,34 @@ data class UpsertCapabilityRuleRequest(val request_id: String, val idempotency_k
 
 @Serializable
 data class CapabilityRuleAuditSummary(val id: String, val rule_id: String, val action: String, val snapshot: JsonElement, val created_at_ms: Long)
+
+@Serializable
+enum class BrowserController { @SerialName("bot") BOT, @SerialName("user") USER }
+
+@Serializable
+enum class BrowserSessionStatus { @SerialName("active") ACTIVE, @SerialName("awaiting_approval") AWAITING_APPROVAL, @SerialName("closed") CLOSED, @SerialName("failed") FAILED }
+
+@Serializable
+data class BrowserSessionSummary(val id: String, val chat_id: String, val bot_id: String, val profile_id: String, val profile_name: String, val current_url: String? = null, val controller: BrowserController, val status: BrowserSessionStatus, val pending_approval_id: String? = null, val created_at_ms: Long, val updated_at_ms: Long)
+
+@Serializable
+data class CreateBrowserSessionRequest(val request_id: String, val idempotency_key: String, val chat_id: String, val bot_id: String, val profile_id: String, val profile_name: String, val approval_id: String? = null)
+
+@Serializable
+data class BrowserMutationRequest(val request_id: String, val idempotency_key: String, val approval_id: String? = null)
+
+@Serializable
+sealed interface BrowserCommand {
+    @Serializable @SerialName("navigate") data class Navigate(val url: String) : BrowserCommand
+    @Serializable @SerialName("current_url") data object CurrentUrl : BrowserCommand
+    @Serializable @SerialName("capture_screenshot") data object CaptureScreenshot : BrowserCommand
+}
+
+@Serializable
+data class BrowserActionRequest(val request_id: String, val idempotency_key: String, val command: BrowserCommand, val approval_id: String? = null)
+
+@Serializable
+data class BrowserActionResponse(val session: BrowserSessionSummary, val approval: ApprovalSummary? = null, val artifact: ArtifactSummary? = null)
 
 @Serializable
 enum class QueuedPromptKind { @SerialName("follow_up") FOLLOW_UP, @SerialName("steering") STEERING }

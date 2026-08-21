@@ -28,7 +28,7 @@ use std::{
 };
 use uuid::Uuid;
 
-pub const SCHEMA_VERSION: u32 = 21;
+pub const SCHEMA_VERSION: u32 = 22;
 static MIGRATOR: std::sync::LazyLock<sqlx::migrate::Migrator> = std::sync::LazyLock::new(|| {
     use sqlx::migrate::{Migration, MigrationType, Migrator};
     use std::borrow::Cow;
@@ -126,6 +126,11 @@ static MIGRATOR: std::sync::LazyLock<sqlx::migrate::Migrator> = std::sync::LazyL
             21,
             "capability rules",
             include_str!("../migrations/0021_capability_rules.sql"),
+        ),
+        (
+            22,
+            "browser sessions",
+            include_str!("../migrations/0022_browser_sessions.sql"),
         ),
     ]
     .into_iter()
@@ -589,6 +594,34 @@ pub struct CapabilityRuleAuditRecord {
     pub action: String,
     pub snapshot: Value,
     pub created_at_ms: i64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BrowserProfileRecord {
+    pub id: Uuid,
+    pub owner_id: Uuid,
+    pub display_name: String,
+    pub directory_ref: String,
+    pub created_at_ms: i64,
+    pub updated_at_ms: i64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BrowserSessionRecord {
+    pub id: Uuid,
+    pub owner_id: Uuid,
+    pub chat_id: Uuid,
+    pub bot_id: Uuid,
+    pub profile_id: Uuid,
+    pub runtime_session_id: Option<Uuid>,
+    pub profile_name: String,
+    pub directory_ref: String,
+    pub current_url: Option<String>,
+    pub controller: String,
+    pub status: String,
+    pub pending_approval_id: Option<Uuid>,
+    pub created_at_ms: i64,
+    pub updated_at_ms: i64,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -3793,6 +3826,184 @@ impl Storage {
         capability_rule_from_row(&row)
     }
 
+    /// Creates or reuses one owner-scoped browser profile metadata record.
+    ///
+    /// Browser cookies and credentials stay in the server-owned profile directory and never
+    /// enter this record.
+    ///
+    /// # Errors
+    /// Returns validation, ownership, or database errors.
+    pub async fn upsert_browser_profile(
+        &self,
+        profile: &BrowserProfileRecord,
+    ) -> Result<BrowserProfileRecord, StorageError> {
+        if profile.display_name.trim().is_empty()
+            || profile.display_name.chars().count() > 80
+            || profile.directory_ref.is_empty()
+            || profile.directory_ref.chars().count() > 160
+            || profile.directory_ref.contains('/')
+            || profile.directory_ref.contains('\\')
+        {
+            return Err(StorageError::Integrity(
+                "invalid browser profile metadata".to_owned(),
+            ));
+        }
+        sqlx::query("INSERT INTO browser_profiles (id, owner_id, display_name, directory_ref, created_at_ms, updated_at_ms) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET display_name = excluded.display_name, updated_at_ms = excluded.updated_at_ms WHERE browser_profiles.owner_id = excluded.owner_id")
+            .bind(profile.id.to_string()).bind(profile.owner_id.to_string())
+            .bind(profile.display_name.trim()).bind(&profile.directory_ref)
+            .bind(profile.created_at_ms).bind(profile.updated_at_ms)
+            .execute(&self.pool).await?;
+        self.browser_profile(profile.owner_id, profile.id).await
+    }
+
+    /// Persists an active server-owned browser session after validating the Bot/chat scope.
+    ///
+    /// # Errors
+    /// Returns ownership, participant, state, or database errors.
+    pub async fn create_browser_session(
+        &self,
+        session: &BrowserSessionRecord,
+    ) -> Result<BrowserSessionRecord, StorageError> {
+        validate_browser_state(&session.controller, &session.status)?;
+        let mut transaction = self.pool.begin().await?;
+        let profile_count: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM browser_profiles WHERE id = ? AND owner_id = ?",
+        )
+        .bind(session.profile_id.to_string())
+        .bind(session.owner_id.to_string())
+        .fetch_one(&mut *transaction)
+        .await?;
+        let participant_count: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM chats c LEFT JOIN chat_participants p ON p.chat_id = c.id AND p.bot_id = ? WHERE c.id = ? AND c.owner_id = ? AND (c.direct_bot_id = ? OR p.bot_id IS NOT NULL)",
+        )
+        .bind(session.bot_id.to_string())
+        .bind(session.chat_id.to_string())
+        .bind(session.owner_id.to_string())
+        .bind(session.bot_id.to_string())
+        .fetch_one(&mut *transaction)
+        .await?;
+        if profile_count != 1 || participant_count != 1 {
+            return Err(StorageError::Integrity(
+                "browser session scope is not owner accessible".to_owned(),
+            ));
+        }
+        sqlx::query("INSERT INTO browser_sessions (id, owner_id, chat_id, bot_id, profile_id, runtime_session_id, current_url, controller, status, pending_approval_id, created_at_ms, updated_at_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+            .bind(session.id.to_string()).bind(session.owner_id.to_string())
+            .bind(session.chat_id.to_string()).bind(session.bot_id.to_string())
+            .bind(session.profile_id.to_string())
+            .bind(session.runtime_session_id.map(|id| id.to_string())).bind(&session.current_url)
+            .bind(&session.controller).bind(&session.status)
+            .bind(session.pending_approval_id.map(|id| id.to_string()))
+            .bind(session.created_at_ms).bind(session.updated_at_ms)
+            .execute(&mut *transaction).await?;
+        transaction.commit().await?;
+        self.browser_session(session.owner_id, session.id).await
+    }
+
+    /// Lists owner-scoped browser sessions, optionally narrowed to one chat.
+    ///
+    /// # Errors
+    /// Returns database or integrity errors.
+    pub async fn browser_sessions(
+        &self,
+        owner_id: Uuid,
+        chat_id: Option<Uuid>,
+    ) -> Result<Vec<BrowserSessionRecord>, StorageError> {
+        let rows = sqlx::query("SELECT s.*, p.display_name AS profile_name, p.directory_ref FROM browser_sessions s JOIN browser_profiles p ON p.id = s.profile_id AND p.owner_id = s.owner_id WHERE s.owner_id = ? AND (? IS NULL OR s.chat_id = ?) ORDER BY s.updated_at_ms DESC, s.id")
+            .bind(owner_id.to_string()).bind(chat_id.map(|id| id.to_string()))
+            .bind(chat_id.map(|id| id.to_string())).fetch_all(&self.pool).await?;
+        rows.iter().map(browser_session_from_row).collect()
+    }
+
+    /// Replaces the mutable safe projection for an owner-scoped browser session.
+    ///
+    /// # Errors
+    /// Returns state, ownership, or database errors.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn update_browser_session(
+        &self,
+        owner_id: Uuid,
+        session_id: Uuid,
+        controller: &str,
+        status: &str,
+        current_url: Option<&str>,
+        pending_approval_id: Option<Uuid>,
+        now_ms: i64,
+    ) -> Result<BrowserSessionRecord, StorageError> {
+        validate_browser_state(controller, status)?;
+        let updated = sqlx::query("UPDATE browser_sessions SET controller = ?, status = ?, current_url = COALESCE(?, current_url), pending_approval_id = ?, updated_at_ms = ? WHERE id = ? AND owner_id = ?")
+            .bind(controller).bind(status).bind(current_url)
+            .bind(pending_approval_id.map(|id| id.to_string())).bind(now_ms)
+            .bind(session_id.to_string()).bind(owner_id.to_string())
+            .execute(&self.pool).await?;
+        if updated.rows_affected() != 1 {
+            return Err(StorageError::Integrity(
+                "browser session was not found".to_owned(),
+            ));
+        }
+        self.browser_session(owner_id, session_id).await
+    }
+
+    /// Attaches a live runtime target to an existing durable browser projection.
+    ///
+    /// # Errors
+    /// Returns ownership or database errors.
+    pub async fn activate_browser_session(
+        &self,
+        owner_id: Uuid,
+        session_id: Uuid,
+        runtime_session_id: Uuid,
+        now_ms: i64,
+    ) -> Result<BrowserSessionRecord, StorageError> {
+        let updated = sqlx::query("UPDATE browser_sessions SET runtime_session_id = ?, status = 'active', pending_approval_id = NULL, updated_at_ms = ? WHERE id = ? AND owner_id = ?")
+            .bind(runtime_session_id.to_string()).bind(now_ms)
+            .bind(session_id.to_string()).bind(owner_id.to_string())
+            .execute(&self.pool).await?;
+        if updated.rows_affected() != 1 {
+            return Err(StorageError::Integrity(
+                "browser session was not found".to_owned(),
+            ));
+        }
+        self.browser_session(owner_id, session_id).await
+    }
+
+    async fn browser_profile(
+        &self,
+        owner_id: Uuid,
+        profile_id: Uuid,
+    ) -> Result<BrowserProfileRecord, StorageError> {
+        let row = sqlx::query("SELECT * FROM browser_profiles WHERE id = ? AND owner_id = ?")
+            .bind(profile_id.to_string())
+            .bind(owner_id.to_string())
+            .fetch_optional(&self.pool)
+            .await?
+            .ok_or_else(|| StorageError::Integrity("browser profile was not found".to_owned()))?;
+        Ok(BrowserProfileRecord {
+            id: parse_uuid(row.try_get("id")?)?,
+            owner_id: parse_uuid(row.try_get("owner_id")?)?,
+            display_name: row.try_get("display_name")?,
+            directory_ref: row.try_get("directory_ref")?,
+            created_at_ms: row.try_get("created_at_ms")?,
+            updated_at_ms: row.try_get("updated_at_ms")?,
+        })
+    }
+
+    /// Loads one owner-scoped browser session.
+    ///
+    /// # Errors
+    /// Returns not-found, database, or integrity errors.
+    pub async fn browser_session(
+        &self,
+        owner_id: Uuid,
+        session_id: Uuid,
+    ) -> Result<BrowserSessionRecord, StorageError> {
+        let row = sqlx::query("SELECT s.*, p.display_name AS profile_name, p.directory_ref FROM browser_sessions s JOIN browser_profiles p ON p.id = s.profile_id AND p.owner_id = s.owner_id WHERE s.id = ? AND s.owner_id = ?")
+            .bind(session_id.to_string()).bind(owner_id.to_string())
+            .fetch_optional(&self.pool).await?
+            .ok_or_else(|| StorageError::Integrity("browser session was not found".to_owned()))?;
+        browser_session_from_row(&row)
+    }
+
     /// Creates the stable assistant message that receives provider deltas.
     ///
     /// # Errors
@@ -4627,7 +4838,7 @@ impl Storage {
         owner_id: Uuid,
         activity: &ExecutionActivity,
     ) -> Result<(), StorageError> {
-        let _ = self.get_direct_chat(owner_id, activity.chat_id).await?;
+        self.require_owned_chat(owner_id, activity.chat_id).await?;
         sqlx::query(
             "INSERT INTO execution_activities (
                 id, chat_id, message_id, kind, status, detail_json, title, detail,
@@ -4668,7 +4879,7 @@ impl Storage {
         owner_id: Uuid,
         chat_id: Uuid,
     ) -> Result<Vec<ExecutionActivity>, StorageError> {
-        let _ = self.get_direct_chat(owner_id, chat_id).await?;
+        self.require_owned_chat(owner_id, chat_id).await?;
         let rows = sqlx::query(
             "SELECT * FROM execution_activities
              WHERE chat_id = ? ORDER BY started_at_ms, id",
@@ -4685,8 +4896,7 @@ impl Storage {
     ///
     /// Returns ownership, database, or integrity errors.
     pub async fn create_chat_approval(&self, approval: &ChatApproval) -> Result<(), StorageError> {
-        let _ = self
-            .get_direct_chat(approval.owner_id, approval.chat_id)
+        self.require_owned_chat(approval.owner_id, approval.chat_id)
             .await?;
         sqlx::query(
             "INSERT INTO approvals (
@@ -4749,7 +4959,7 @@ impl Storage {
         owner_id: Uuid,
         chat_id: Uuid,
     ) -> Result<Vec<ChatApproval>, StorageError> {
-        let _ = self.get_direct_chat(owner_id, chat_id).await?;
+        self.require_owned_chat(owner_id, chat_id).await?;
         let rows = sqlx::query(
             "SELECT * FROM approvals WHERE owner_id = ? AND chat_id = ?
              ORDER BY created_at_ms, id",
@@ -4778,6 +4988,20 @@ impl Storage {
             .await?
             .ok_or(StorageError::ApprovalNotFound)?;
         approval_from_row(&row)
+    }
+
+    async fn require_owned_chat(&self, owner_id: Uuid, chat_id: Uuid) -> Result<(), StorageError> {
+        let exists: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM chats WHERE id = ? AND owner_id = ?")
+                .bind(chat_id.to_string())
+                .bind(owner_id.to_string())
+                .fetch_one(&self.pool)
+                .await?;
+        if exists == 1 {
+            Ok(())
+        } else {
+            Err(StorageError::ChatNotFound)
+        }
     }
 
     /// Runs `SQLite` structural and foreign-key checks without attempting repair.
@@ -5170,6 +5394,22 @@ impl Storage {
         Ok(outcome)
     }
 
+    /// Releases a just-claimed mutation that stopped at a structured approval boundary.
+    ///
+    /// Callers must only release keys they claimed in the same server operation before any
+    /// external side effect. This permits an approval-bearing retry to claim the canonical
+    /// mutation without treating the approval token itself as product input.
+    ///
+    /// # Errors
+    /// Returns a database error if the release cannot be persisted.
+    pub async fn release_idempotency(&self, key: Uuid) -> Result<(), StorageError> {
+        sqlx::query("DELETE FROM idempotency_records WHERE key = ?")
+            .bind(key.to_string())
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
     /// Claims an attachment-create key and durably stores pending metadata.
     ///
     /// # Errors
@@ -5288,8 +5528,7 @@ impl Storage {
     ///
     /// Returns an ownership, range, or database error.
     pub async fn insert_artifact(&self, artifact: &ArtifactRecord) -> Result<(), StorageError> {
-        let _ = self
-            .get_direct_chat(artifact.owner_id, artifact.chat_id)
+        self.require_owned_chat(artifact.owner_id, artifact.chat_id)
             .await?;
         let size_bytes = i64::try_from(artifact.size_bytes).map_err(|_| {
             StorageError::Integrity("artifact size exceeds SQLite range".to_owned())
@@ -6089,6 +6328,46 @@ fn capability_audit_from_row(
         action: row.try_get("action")?,
         snapshot: row.try_get("snapshot_json")?,
         created_at_ms: row.try_get("created_at_ms")?,
+    })
+}
+
+fn validate_browser_state(controller: &str, status: &str) -> Result<(), StorageError> {
+    if !matches!(controller, "bot" | "user")
+        || !matches!(status, "active" | "awaiting_approval" | "closed" | "failed")
+    {
+        return Err(StorageError::Integrity(
+            "invalid browser session state".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn browser_session_from_row(
+    row: &sqlx::sqlite::SqliteRow,
+) -> Result<BrowserSessionRecord, StorageError> {
+    Ok(BrowserSessionRecord {
+        id: parse_uuid(row.try_get("id")?)?,
+        owner_id: parse_uuid(row.try_get("owner_id")?)?,
+        chat_id: parse_uuid(row.try_get("chat_id")?)?,
+        bot_id: parse_uuid(row.try_get("bot_id")?)?,
+        profile_id: parse_uuid(row.try_get("profile_id")?)?,
+        runtime_session_id: row
+            .try_get::<Option<String>, _>("runtime_session_id")?
+            .as_deref()
+            .map(parse_uuid)
+            .transpose()?,
+        profile_name: row.try_get("profile_name")?,
+        directory_ref: row.try_get("directory_ref")?,
+        current_url: row.try_get("current_url")?,
+        controller: row.try_get("controller")?,
+        status: row.try_get("status")?,
+        pending_approval_id: row
+            .try_get::<Option<String>, _>("pending_approval_id")?
+            .as_deref()
+            .map(parse_uuid)
+            .transpose()?,
+        created_at_ms: row.try_get("created_at_ms")?,
+        updated_at_ms: row.try_get("updated_at_ms")?,
     })
 }
 

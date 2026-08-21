@@ -3,6 +3,7 @@
 pub mod artifacts;
 mod attachments;
 mod bots;
+mod browser_sessions;
 mod capability_rules;
 mod chats;
 mod checkpoints;
@@ -38,7 +39,7 @@ use homebot_protocol::{
 use homebot_providers::{ProviderAdapterId, ProviderRuntime};
 use homebot_secrets::{OsSecretVault, SecretVault};
 use homebot_storage::{IdempotencyClaim, ReplayWindow, Storage};
-use homebot_tools::{NoopActivitySink, PolicyEngine};
+use homebot_tools::{ActivitySink, BrowserService, NoopActivitySink, PolicyEngine};
 use homebot_vcs::GitRuntime;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -62,6 +63,18 @@ const LIVE_EVENT_CAPACITY: usize = 1_024;
 const MAX_WEBSOCKET_MESSAGE_BYTES: usize = 256 * 1024;
 const MAX_WEBSOCKET_FRAME_BYTES: usize = 64 * 1024;
 const COMMAND_DELAY: std::time::Duration = std::time::Duration::from_millis(5);
+
+fn configured_browser_runtime(
+    policy: Arc<PolicyEngine>,
+    activities: Arc<dyn ActivitySink>,
+) -> Option<Arc<dyn browser_sessions::BrowserRuntime>> {
+    let endpoint = std::env::var("HOMEBOT_BROWSER_CDP_ENDPOINT").ok()?;
+    let profile_root = std::env::var_os("HOMEBOT_BROWSER_PROFILE_ROOT")?;
+    let endpoint = url::Url::parse(&endpoint).ok()?;
+    BrowserService::new(endpoint, PathBuf::from(profile_root), policy, activities)
+        .ok()
+        .map(|runtime| Arc::new(runtime) as Arc<dyn browser_sessions::BrowserRuntime>)
+}
 
 #[derive(Debug)]
 struct OperationControl {
@@ -107,6 +120,7 @@ pub struct AppState {
     policy_engine: Arc<PolicyEngine>,
     policy_loaded: Arc<AtomicBool>,
     policy_hydration: Arc<Mutex<()>>,
+    browser_runtime: Option<Arc<dyn browser_sessions::BrowserRuntime>>,
     worktree_root: PathBuf,
 }
 
@@ -116,6 +130,12 @@ impl AppState {
         let (live_events, _) = broadcast::channel(LIVE_EVENT_CAPACITY);
         let (server_shutdown, _) = watch::channel(false);
         let (trigger_events, _) = broadcast::channel(1_024);
+        let activities: Arc<dyn ActivitySink> = Arc::new(NoopActivitySink);
+        let policy_engine = Arc::new(PolicyEngine::new(
+            std::time::Duration::from_secs(300),
+            Arc::clone(&activities),
+        ));
+        let browser_runtime = configured_browser_runtime(Arc::clone(&policy_engine), activities);
         Self {
             storage,
             bearer_digest: Sha256::digest(bearer_token.as_bytes()).into(),
@@ -136,12 +156,10 @@ impl AppState {
             routine_cancellations: Arc::new(Mutex::new(HashMap::new())),
             trigger_events,
             git_runtime: GitRuntime::discover().ok().map(Arc::new),
-            policy_engine: Arc::new(PolicyEngine::new(
-                std::time::Duration::from_secs(300),
-                Arc::new(NoopActivitySink),
-            )),
+            policy_engine,
             policy_loaded: Arc::new(AtomicBool::new(false)),
             policy_hydration: Arc::new(Mutex::new(())),
+            browser_runtime,
             worktree_root: std::env::temp_dir().join("homebot-worktrees"),
         }
     }
@@ -207,6 +225,15 @@ impl AppState {
         self
     }
 
+    #[must_use]
+    pub fn with_browser_runtime(
+        mut self,
+        browser_runtime: Arc<dyn browser_sessions::BrowserRuntime>,
+    ) -> Self {
+        self.browser_runtime = Some(browser_runtime);
+        self
+    }
+
     async fn ensure_policy_loaded(&self) -> Result<(), homebot_storage::StorageError> {
         if self.policy_loaded.load(Ordering::Acquire) {
             return Ok(());
@@ -236,6 +263,30 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/v1/capability-rules/{rule_id}",
             put(capability_rules::upsert).delete(capability_rules::delete),
+        )
+        .route(
+            "/api/v1/browser-sessions",
+            get(browser_sessions::list).post(browser_sessions::create),
+        )
+        .route(
+            "/api/v1/browser-sessions/{session_id}",
+            get(browser_sessions::get),
+        )
+        .route(
+            "/api/v1/browser-sessions/{session_id}/takeover",
+            post(browser_sessions::takeover),
+        )
+        .route(
+            "/api/v1/browser-sessions/{session_id}/return",
+            post(browser_sessions::return_to_bot),
+        )
+        .route(
+            "/api/v1/browser-sessions/{session_id}/actions",
+            post(browser_sessions::execute),
+        )
+        .route(
+            "/api/v1/browser-sessions/{session_id}/close",
+            post(browser_sessions::close),
         )
         .route("/api/v1/device", get(pairing::current_device))
         .route(
@@ -835,6 +886,14 @@ async fn current_snapshot(state: &AppState) -> Snapshot {
         .into_iter()
         .filter_map(|rule| capability_rules::summary(rule).ok())
         .collect();
+    let browser_sessions = state
+        .storage
+        .browser_sessions(state.owner_id, None)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|session| browser_sessions::summary(session).ok())
+        .collect();
     Snapshot {
         bots: summaries,
         chats,
@@ -843,6 +902,7 @@ async fn current_snapshot(state: &AppState) -> Snapshot {
         repository_workspaces,
         chat_workspaces,
         capability_rules,
+        browser_sessions,
     }
 }
 

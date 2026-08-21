@@ -3,6 +3,11 @@ package dev.homebot.android.connection
 import dev.homebot.protocol.BotSummary
 import dev.homebot.protocol.BotMutationRequest
 import dev.homebot.protocol.BotResponse
+import dev.homebot.protocol.BrowserActionRequest
+import dev.homebot.protocol.BrowserActionResponse
+import dev.homebot.protocol.BrowserCommand
+import dev.homebot.protocol.BrowserMutationRequest
+import dev.homebot.protocol.BrowserSessionSummary
 import dev.homebot.protocol.ChatSummary
 import dev.homebot.protocol.ChatTimelineResponse
 import dev.homebot.protocol.CheckpointDiffResponse
@@ -512,6 +517,26 @@ class HomeBotClient(
         get("api/v1/secrets", ListSerializer(SecretSummary.serializer()))
     }
 
+    suspend fun browserSessions(chatId: String? = null): Result<List<BrowserSessionSummary>> = authenticated {
+        val suffix = chatId?.let { "?chat_id=$it" } ?: ""
+        get("api/v1/browser-sessions$suffix", ListSerializer(BrowserSessionSummary.serializer()))
+    }
+
+    suspend fun takeOverBrowser(sessionId: String, approvalId: String? = null): Result<BrowserActionResponse> = authenticated {
+        val request = BrowserMutationRequest(ids(), ids(), approvalId)
+        post("api/v1/browser-sessions/$sessionId/takeover", request, BrowserMutationRequest.serializer(), BrowserActionResponse.serializer())
+    }
+
+    suspend fun returnBrowserToBot(sessionId: String): Result<BrowserActionResponse> = authenticated {
+        val request = BrowserMutationRequest(ids(), ids(), null)
+        post("api/v1/browser-sessions/$sessionId/return", request, BrowserMutationRequest.serializer(), BrowserActionResponse.serializer())
+    }
+
+    suspend fun watchBrowser(sessionId: String): Result<BrowserActionResponse> = authenticated {
+        val request = BrowserActionRequest(ids(), ids(), BrowserCommand.CaptureScreenshot, null)
+        post("api/v1/browser-sessions/$sessionId/actions", request, BrowserActionRequest.serializer(), BrowserActionResponse.serializer())
+    }
+
     suspend fun currentDevice(): Result<DeviceSessionSummary> = authenticated {
         get("api/v1/device", DeviceSessionSummary.serializer())
     }
@@ -804,6 +829,11 @@ class HomeBotClient(
                 capability_rules = projection.capability_rules.filterNot {
                     it.id == event.requiredString("rule_id")
                 },
+            )
+            "browser_session_changed" -> projection.copy(
+                browser_sessions = projection.browser_sessions.upsert(
+                    json.decodeFromJsonElement<BrowserSessionSummary>(event.getValue("session")),
+                ) { it.id },
             )
             else -> projection
         }

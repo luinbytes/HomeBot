@@ -466,6 +466,27 @@ private fun ConnectedSettings(viewModel: MainViewModel, live: ConnectionState.Li
                 "${rule.effect.name.lowercase().replace('_', ' ')}${rule.action_prefix?.let { " • $it" } ?: ""}",
             )
         }
+        item {
+            SectionTitle("Shared browser")
+            Text("Login state stays on your HomeBot server. Watch, take over, and return control without exposing cookies or credentials.", color = Muted)
+        }
+        items(live.snapshot.browser_sessions, key = { it.id }) { session ->
+            Card(shape = CardShape) {
+                Column(Modifier.fillMaxWidth().padding(14.dp)) {
+                    Text(session.profile_name, fontWeight = FontWeight.Bold)
+                    Text("${session.status.name.lowercase().replace('_', ' ')} • ${session.controller.name.lowercase()} control", color = Muted)
+                    session.current_url?.let { Text(it, maxLines = 1) }
+                    Row {
+                        TextButton(onClick = { viewModel.watchBrowser(session.id) }) { Text("Watch") }
+                        if (session.controller.name == "BOT") {
+                            TextButton(onClick = { viewModel.takeOverBrowser(session.id, session.pending_approval_id) }) { Text(if (session.pending_approval_id == null) "Take over" else "Resume takeover") }
+                        } else {
+                            TextButton(onClick = { viewModel.returnBrowserToBot(session.id) }) { Text("Return to Bot") }
+                        }
+                    }
+                }
+            }
+        }
         item { SectionTitle("Routines") }
         items(state.routines, key = { it.id }) { routine ->
             Card(shape = CardShape) {

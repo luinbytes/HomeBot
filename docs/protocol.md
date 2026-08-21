@@ -70,6 +70,8 @@ Authenticated chat-scoped VCS endpoints return normalized porcelain status, stag
 
 Owner-authenticated capability-rule endpoints list, upsert, delete, and audit narrow allow/require-approval/deny policy. Current safe rule summaries are included in reconnect snapshots and reconciled through sequenced `capability_rule_changed` and `capability_rule_removed` events. Android treats this projection as read-only because a paired device session cannot grant itself authority; the owner desktop performs administration through the same server contract.
 
+Authenticated browser-session endpoints expose an owner-scoped safe projection of server-local profiles and live targets. Clients may list/watch sessions, request takeover, return control to a Bot, navigate, capture a screenshot artifact, and close through normalized commands. Cookies, login values, CDP addresses, profile paths, and evaluated page data never cross this contract. `browser_session_changed` is durable and sequenced, and browser sessions are included in reconnect snapshots so desktop and Android reconcile the same controller/status/current-URL projection. Sensitive actions return the ordinary structured approval and resume only with its digest-bound ID.
+
 ## Attachments
 
 Attachments are uploaded over authenticated HTTP with size/type limits, streaming digest verification, an idempotency key, and an explicit finalise step. WebSocket messages refer to completed attachment IDs. Partial uploads expire and cannot be consumed.

@@ -556,6 +556,26 @@ pub struct MessageReactionRecord {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SearchRecord {
+    pub kind: SearchRecordKind,
+    pub title: String,
+    pub snippet: String,
+    pub chat_id: Option<Uuid>,
+    pub message_id: Option<Uuid>,
+    pub artifact_id: Option<Uuid>,
+    pub routine_id: Option<Uuid>,
+    pub created_at_ms: i64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SearchRecordKind {
+    Message,
+    File,
+    Link,
+    Routine,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum RoutineJobClaim {
     Claimed,
     Replayed,
@@ -577,6 +597,163 @@ pub enum AttachmentClaim {
 }
 
 impl Storage {
+    /// Searches owner-authorised durable content in stable recency order.
+    ///
+    /// Links are derived from matching message text without changing the transcript. Results
+    /// retain immutable IDs so renames cannot make a previously returned target ambiguous.
+    ///
+    /// # Errors
+    /// Returns database, UUID, or JSON integrity errors.
+    #[allow(clippy::too_many_lines)]
+    pub async fn search(
+        &self,
+        owner_id: Uuid,
+        query: &str,
+        limit: u32,
+    ) -> Result<Vec<SearchRecord>, StorageError> {
+        let query = query.trim();
+        if query.is_empty() {
+            return Ok(Vec::new());
+        }
+        let pattern = format!("%{}%", query.to_lowercase());
+        let candidate_limit = i64::from(limit.clamp(1, 100)).saturating_mul(4);
+        let rows = sqlx::query(
+            "SELECT m.id AS message_id, m.chat_id, m.created_at_ms,
+                    json_extract(p.content_json, '$.text') AS body
+             FROM message_parts p
+             JOIN messages m ON m.id = p.message_id
+             JOIN chats c ON c.id = m.chat_id
+             WHERE c.owner_id = ? AND p.kind IN ('text', 'notice')
+               AND lower(CAST(json_extract(p.content_json, '$.text') AS TEXT)) LIKE ?
+             ORDER BY m.created_at_ms DESC, m.id, p.ordinal LIMIT ?",
+        )
+        .bind(owner_id.to_string())
+        .bind(&pattern)
+        .bind(candidate_limit)
+        .fetch_all(&self.pool)
+        .await?;
+        let mut results = Vec::new();
+        for row in rows {
+            let message_id = parse_uuid(&row.try_get::<String, _>("message_id")?)?;
+            let chat_id = parse_uuid(&row.try_get::<String, _>("chat_id")?)?;
+            let created_at_ms = row.try_get("created_at_ms")?;
+            let body: String = row.try_get("body")?;
+            results.push(SearchRecord {
+                kind: SearchRecordKind::Message,
+                title: "Message".to_owned(),
+                snippet: search_snippet(&body, query),
+                chat_id: Some(chat_id),
+                message_id: Some(message_id),
+                artifact_id: None,
+                routine_id: None,
+                created_at_ms,
+            });
+            for link in
+                links_in(&body).filter(|link| link.to_lowercase().contains(&query.to_lowercase()))
+            {
+                results.push(SearchRecord {
+                    kind: SearchRecordKind::Link,
+                    title: link.clone(),
+                    snippet: search_snippet(&body, &link),
+                    chat_id: Some(chat_id),
+                    message_id: Some(message_id),
+                    artifact_id: None,
+                    routine_id: None,
+                    created_at_ms,
+                });
+            }
+        }
+        let rows = sqlx::query(
+            "SELECT id, chat_id, message_id, name, kind, created_at_ms FROM artifacts
+             WHERE owner_id = ? AND (lower(name) LIKE ? OR lower(kind) LIKE ?)
+             ORDER BY created_at_ms DESC, id LIMIT ?",
+        )
+        .bind(owner_id.to_string())
+        .bind(&pattern)
+        .bind(&pattern)
+        .bind(candidate_limit)
+        .fetch_all(&self.pool)
+        .await?;
+        for row in rows {
+            results.push(SearchRecord {
+                kind: SearchRecordKind::File,
+                title: row.try_get("name")?,
+                snippet: row.try_get("kind")?,
+                chat_id: Some(parse_uuid(&row.try_get::<String, _>("chat_id")?)?),
+                message_id: row
+                    .try_get::<Option<String>, _>("message_id")?
+                    .map(|value| parse_uuid(&value))
+                    .transpose()?,
+                artifact_id: Some(parse_uuid(&row.try_get::<String, _>("id")?)?),
+                routine_id: None,
+                created_at_ms: row.try_get("created_at_ms")?,
+            });
+        }
+        let rows = sqlx::query(
+            "SELECT a.id, a.filename, a.media_type, m.id AS message_id, m.chat_id,
+                    m.created_at_ms
+             FROM message_parts p
+             JOIN messages m ON m.id = p.message_id
+             JOIN chats c ON c.id = m.chat_id
+             JOIN attachments a ON a.id = json_extract(p.content_json, '$.attachment_id')
+             WHERE c.owner_id = ? AND a.owner_id = ? AND p.kind = 'attachment'
+               AND a.status = 'ready'
+               AND (lower(a.filename) LIKE ? OR lower(a.media_type) LIKE ?)
+             ORDER BY m.created_at_ms DESC, a.id LIMIT ?",
+        )
+        .bind(owner_id.to_string())
+        .bind(owner_id.to_string())
+        .bind(&pattern)
+        .bind(&pattern)
+        .bind(candidate_limit)
+        .fetch_all(&self.pool)
+        .await?;
+        for row in rows {
+            results.push(SearchRecord {
+                kind: SearchRecordKind::File,
+                title: row.try_get("filename")?,
+                snippet: row.try_get("media_type")?,
+                chat_id: Some(parse_uuid(&row.try_get::<String, _>("chat_id")?)?),
+                message_id: Some(parse_uuid(&row.try_get::<String, _>("message_id")?)?),
+                artifact_id: None,
+                routine_id: None,
+                created_at_ms: row.try_get("created_at_ms")?,
+            });
+        }
+        let rows = sqlx::query(
+            "SELECT id, name, description, updated_at_ms FROM routines
+             WHERE owner_id = ? AND bot_id IS NOT NULL
+               AND (lower(name) LIKE ? OR lower(description) LIKE ?)
+             ORDER BY updated_at_ms DESC, id LIMIT ?",
+        )
+        .bind(owner_id.to_string())
+        .bind(&pattern)
+        .bind(&pattern)
+        .bind(candidate_limit)
+        .fetch_all(&self.pool)
+        .await?;
+        for row in rows {
+            results.push(SearchRecord {
+                kind: SearchRecordKind::Routine,
+                title: row.try_get("name")?,
+                snippet: row.try_get("description")?,
+                chat_id: None,
+                message_id: None,
+                artifact_id: None,
+                routine_id: Some(parse_uuid(&row.try_get::<String, _>("id")?)?),
+                created_at_ms: row.try_get("updated_at_ms")?,
+            });
+        }
+        results.sort_by(|left, right| {
+            right
+                .created_at_ms
+                .cmp(&left.created_at_ms)
+                .then_with(|| left.title.cmp(&right.title))
+        });
+        results.truncate(limit.clamp(1, 100) as usize);
+        Ok(results)
+    }
+
     /// Lists owner-scoped routines at their active immutable versions.
     ///
     /// # Errors
@@ -5975,6 +6152,41 @@ fn trigger_kind(definition: &RoutineTriggerDefinition) -> &'static str {
 fn parse_uuid(value: &str) -> Result<Uuid, StorageError> {
     Uuid::parse_str(value)
         .map_err(|_| StorageError::Integrity("database contains an invalid UUID".to_owned()))
+}
+
+fn links_in(text: &str) -> impl Iterator<Item = String> + '_ {
+    text.split_whitespace().filter_map(|word| {
+        let candidate = word.trim_matches(|character: char| {
+            matches!(
+                character,
+                '(' | ')' | '[' | ']' | '{' | '}' | '<' | '>' | ',' | ';' | '!' | '?'
+            )
+        });
+        (candidate.starts_with("https://") || candidate.starts_with("http://"))
+            .then(|| candidate.trim_end_matches(['.', ':']).to_owned())
+    })
+}
+
+fn search_snippet(text: &str, needle: &str) -> String {
+    const LIMIT: usize = 180;
+    let characters = text.chars().collect::<Vec<_>>();
+    if characters.len() <= LIMIT {
+        return text.to_owned();
+    }
+    let lower = text.to_lowercase();
+    let byte_position = lower.find(&needle.to_lowercase()).unwrap_or(0);
+    let character_position = text
+        .char_indices()
+        .take_while(|(index, _)| *index < byte_position)
+        .count();
+    let start = character_position.saturating_sub(LIMIT / 3);
+    let end = (start + LIMIT).min(characters.len());
+    format!(
+        "{}{}{}",
+        if start == 0 { "" } else { "…" },
+        characters[start..end].iter().collect::<String>(),
+        if end == characters.len() { "" } else { "…" }
+    )
 }
 
 #[cfg(test)]

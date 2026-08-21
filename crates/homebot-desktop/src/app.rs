@@ -52,6 +52,12 @@ struct PendingPullRequest {
     approval_id: Option<uuid::Uuid>,
 }
 
+#[derive(Clone, Debug, Default)]
+struct SearchProjection {
+    query: String,
+    results: Vec<homebot_protocol::SearchResultSummary>,
+}
+
 pub struct HomeBotApp {
     pub roster: BotRosterModel,
     pub theme: HomeBotTheme,
@@ -75,6 +81,7 @@ pub struct HomeBotApp {
     notification_sink: SystemNotificationSink,
     deep_link_receiver: Receiver<DeepLink>,
     settings_open: bool,
+    search: Option<SearchProjection>,
     editor_error: Option<EditorError>,
     composer_error: Option<ComposerError>,
     transport_error: Option<String>,
@@ -113,6 +120,7 @@ impl Default for HomeBotApp {
             notification_sink: SystemNotificationSink::new(deep_link_sender),
             deep_link_receiver,
             settings_open: false,
+            search: None,
             editor_error: None,
             composer_error: None,
             transport_error: None,
@@ -184,6 +192,8 @@ impl HomeBotApp {
                 if self.settings.section == SettingsSection::Devices {
                     self.device_pairing_controls(ui);
                 }
+            } else if self.search.is_some() {
+                self.search_content(ui);
             } else {
                 self.content(ui);
             }
@@ -377,6 +387,7 @@ impl HomeBotApp {
                 DesktopEvent::PairingOffer(offer) => self.pairing_offer = Some(offer),
                 DesktopEvent::DeviceRevoked(device) => self.apply_device_revoked(device),
                 DesktopEvent::CheckpointDiff(diff) => self.checkpoint_diff = Some(diff),
+                DesktopEvent::Search(response) => self.apply_search(response),
                 DesktopEvent::MutationFailed(error) => {
                     self.transport_error = Some(error.to_string());
                 }
@@ -389,6 +400,13 @@ impl HomeBotApp {
         self.roster.apply_delete(bot_id);
         self.chats.retain(|chat| chat.bot_id != bot_id);
         None
+    }
+
+    fn apply_search(&mut self, response: homebot_protocol::GlobalSearchResponse) {
+        self.search = Some(SearchProjection {
+            query: response.query,
+            results: response.results,
+        });
     }
 
     fn apply_devices(&mut self, devices: Vec<homebot_protocol::DeviceSessionSummary>) {
@@ -598,6 +616,10 @@ impl HomeBotApp {
             self.roster.selected = Some(bot_id);
         }
         self.settings_open = false;
+        self.search = None;
+        if self.transport.is_some() {
+            self.send_transport(DesktopCommand::LoadTimeline(deep_link.chat_id));
+        }
         self.active_deep_link = Some(deep_link);
     }
 
@@ -641,6 +663,11 @@ impl HomeBotApp {
                     let _ = ui.checkbox(&mut self.roster.show_archived, "Show archived Bots");
                     if ui.button("Settings").clicked() {
                         self.settings_open = true;
+                        self.search = None;
+                    }
+                    if ui.button("Search").clicked() {
+                        self.settings_open = false;
+                        self.search.get_or_insert_with(SearchProjection::default);
                     }
                 });
             });
@@ -657,6 +684,8 @@ impl HomeBotApp {
                         .and_then(|id| self.roster.bots.iter().find(|bot| bot.id == id));
                     ui.label(if self.settings_open {
                         "Settings"
+                    } else if self.search.is_some() {
+                        "Search"
                     } else {
                         selected.map_or("Bots", |bot| bot.name.as_str())
                     });
@@ -664,6 +693,14 @@ impl HomeBotApp {
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                             if ui.button("Done").clicked() {
                                 self.settings_open = false;
+                            }
+                        });
+                        return;
+                    }
+                    if self.search.is_some() {
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            if ui.button("Done").clicked() {
+                                self.search = None;
                             }
                         });
                         return;
@@ -731,6 +768,60 @@ impl HomeBotApp {
                         self.timeline_content(ui, &bot);
                     } else {
                         ui.heading("Choose a Bot");
+                    }
+                }
+            }
+        });
+    }
+
+    fn search_content(&mut self, ui: &mut egui::Ui) {
+        let search = self.search.get_or_insert_with(SearchProjection::default);
+        ui.set_max_width(self.theme.layout.content_max_width);
+        ui.heading("Search HomeBot");
+        ui.label("Find messages, files, links and routines on your server.");
+        let mut submit = false;
+        ui.horizontal(|ui| {
+            let response = ui.add(
+                egui::TextEdit::singleline(&mut search.query)
+                    .hint_text("Search HomeBot")
+                    .desired_width(f32::INFINITY),
+            );
+            submit = response.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
+            submit |= ui.button("Search").clicked();
+        });
+        let submitted_query = submit.then(|| search.query.trim().to_owned());
+        let query_is_empty = search.query.is_empty();
+        let results = search.results.clone();
+        if let Some(query) = submitted_query.filter(|query| !query.is_empty()) {
+            self.send_transport(DesktopCommand::Search(query));
+        }
+        ui.add_space(self.theme.spacing.lg);
+        if !query_is_empty && results.is_empty() {
+            ui.label("No matching results.");
+        }
+        egui::ScrollArea::vertical().show(ui, |ui| {
+            for result in results {
+                let kind = format!("{:?}", result.kind);
+                if ui
+                    .button(format!("{}  ·  {kind}\n{}", result.title, result.snippet))
+                    .clicked()
+                {
+                    if let Some(chat_id) = result.chat_id {
+                        let bot_id = self
+                            .chats
+                            .iter()
+                            .find(|chat| chat.id == chat_id)
+                            .map(|chat| chat.bot_id);
+                        self.open_deep_link(DeepLink {
+                            bot_id,
+                            chat_id,
+                            message_id: result.message_id,
+                            activity_id: None,
+                        });
+                    } else if result.routine_id.is_some() {
+                        self.search = None;
+                        self.settings_open = true;
+                        self.settings.section = SettingsSection::General;
                     }
                 }
             }

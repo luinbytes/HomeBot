@@ -614,6 +614,36 @@ pub struct ReactionSummary {
     pub reacted_by_user: bool,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SearchResultKind {
+    Message,
+    File,
+    Link,
+    Routine,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SearchResultSummary {
+    pub kind: SearchResultKind,
+    pub title: String,
+    pub snippet: String,
+    pub deep_link: String,
+    pub chat_id: Option<Uuid>,
+    pub message_id: Option<Uuid>,
+    pub artifact_id: Option<Uuid>,
+    pub routine_id: Option<Uuid>,
+    pub created_at_ms: i64,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct GlobalSearchResponse {
+    pub query: String,
+    pub results: Vec<SearchResultSummary>,
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ActivityStatus {
@@ -1604,6 +1634,7 @@ pub struct ProtocolV1Schema {
     pub send_message_response: SendMessageResponse,
     pub message_mutation_request: MessageMutationRequest,
     pub chat_timeline_response: ChatTimelineResponse,
+    pub global_search_response: GlobalSearchResponse,
     pub working_context: WorkingContextSummary,
     pub set_interaction_mode_request: SetInteractionModeRequest,
     pub compact_working_context_request: CompactWorkingContextRequest,

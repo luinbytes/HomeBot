@@ -109,6 +109,9 @@
     "finalize_attachment_request": {
       "$ref": "#/$defs/FinalizeAttachmentRequest"
     },
+    "global_search_response": {
+      "$ref": "#/$defs/GlobalSearchResponse"
+    },
     "import_skill_request": {
       "$ref": "#/$defs/ImportSkillRequest"
     },
@@ -306,6 +309,7 @@
     "send_message_response",
     "message_mutation_request",
     "chat_timeline_response",
+    "global_search_response",
     "working_context",
     "set_interaction_mode_request",
     "compact_working_context_request",
@@ -2113,6 +2117,25 @@
         "sha256"
       ]
     },
+    "GlobalSearchResponse": {
+      "type": "object",
+      "properties": {
+        "query": {
+          "type": "string"
+        },
+        "results": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SearchResultSummary"
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "query",
+        "results"
+      ]
+    },
     "GroupBotStatus": {
       "type": "string",
       "enum": [
@@ -3867,6 +3890,72 @@
       "required": [
         "request_id",
         "idempotency_key"
+      ]
+    },
+    "SearchResultKind": {
+      "type": "string",
+      "enum": [
+        "message",
+        "file",
+        "link",
+        "routine"
+      ]
+    },
+    "SearchResultSummary": {
+      "type": "object",
+      "properties": {
+        "artifact_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid"
+        },
+        "chat_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid"
+        },
+        "created_at_ms": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "deep_link": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/SearchResultKind"
+        },
+        "message_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid"
+        },
+        "routine_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid"
+        },
+        "snippet": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "title",
+        "snippet",
+        "deep_link",
+        "created_at_ms"
       ]
     },
     "SecretStatus": {

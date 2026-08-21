@@ -17,13 +17,13 @@ use homebot_protocol::{
     CreateBotRequest, CreateDirectChatRequest, CreateDirectChatResponse, CreatePairingRequest,
     CreatePullRequestRequest, CreateRepositoryWorkspaceRequest, DeleteBotRequest,
     DetachChatWorkspaceRequest, DeviceSessionSummary, ErrorEnvelope, FinalizeAttachmentRequest,
-    MIN_COMPATIBLE_PROTOCOL_VERSION, MessageMutationRequest, PROTOCOL_VERSION, PairingOffer,
-    ProtocolRange, PullRequestMetadata, PullRequestMutationResponse, ReactionMutationRequest,
-    RepositoryWorkspaceSummary, RestoreCheckpointRequest, RevokeDeviceSessionRequest,
-    SendMessageRequest, ServerEvent, ServerEventBody, SetInteractionModeRequest, Snapshot,
-    UpdateBotRequest, VcsCommitRequest, VcsCommitResult, VcsCreateBranchRequest, VcsPushRequest,
-    VcsRemoteMutationResponse, VcsStatus, WorkingContextSummary, WorkingTreeDiffResponse,
-    WorkspaceBranchesResponse,
+    GlobalSearchResponse, MIN_COMPATIBLE_PROTOCOL_VERSION, MessageMutationRequest,
+    PROTOCOL_VERSION, PairingOffer, ProtocolRange, PullRequestMetadata,
+    PullRequestMutationResponse, ReactionMutationRequest, RepositoryWorkspaceSummary,
+    RestoreCheckpointRequest, RevokeDeviceSessionRequest, SendMessageRequest, ServerEvent,
+    ServerEventBody, SetInteractionModeRequest, Snapshot, UpdateBotRequest, VcsCommitRequest,
+    VcsCommitResult, VcsCreateBranchRequest, VcsPushRequest, VcsRemoteMutationResponse, VcsStatus,
+    WorkingContextSummary, WorkingTreeDiffResponse, WorkspaceBranchesResponse,
 };
 use reqwest::{Client, Method, StatusCode};
 use serde::Deserialize;
@@ -158,6 +158,7 @@ pub enum DesktopEvent {
     PairingOffer(PairingOffer),
     DeviceRevoked(DeviceSessionSummary),
     CheckpointDiff(CheckpointDiffResponse),
+    Search(GlobalSearchResponse),
     MutationFailed(TransportFailure),
 }
 
@@ -182,6 +183,7 @@ pub enum DesktopCommand {
         allow_insecure_private_network: bool,
     },
     RevokeDevice(Uuid),
+    Search(String),
     Shutdown,
 }
 

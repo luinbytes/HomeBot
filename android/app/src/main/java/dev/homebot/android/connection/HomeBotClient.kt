@@ -18,6 +18,7 @@ import dev.homebot.protocol.ErrorEnvelope
 import dev.homebot.protocol.ExchangePairingRequest
 import dev.homebot.protocol.GroupChatSummary
 import dev.homebot.protocol.GroupTimelineResponse
+import dev.homebot.protocol.GlobalSearchResponse
 import dev.homebot.protocol.HandoffGroupRequest
 import dev.homebot.protocol.MessageMutationRequest
 import dev.homebot.protocol.MessageSummary
@@ -408,6 +409,10 @@ class HomeBotClient(
         get("api/v1/routines", ListSerializer(RoutineSummary.serializer()))
     }
 
+    suspend fun search(query: String): Result<GlobalSearchResponse> = authenticated {
+        search(query)
+    }
+
     suspend fun routineRuns(routineId: String): Result<List<RoutineRunSummary>> = authenticated {
         get("api/v1/routines/$routineId/runs", ListSerializer(RoutineRunSummary.serializer()))
     }
@@ -788,6 +793,17 @@ class HomeBotClient(
         private val endpoint: HttpUrl,
         private val session: SessionCredentials,
     ) {
+        suspend fun search(query: String): GlobalSearchResponse {
+            val request = Request.Builder()
+                .url(endpoint.newBuilder().addPathSegments("api/v1/search").addQueryParameter("q", query).build())
+                .header("Authorization", "Bearer ${session.deviceSession}")
+                .header("X-HomeBot-Protocol", PROTOCOL_VERSION.toString())
+                .header("Cache-Control", "no-store")
+                .get()
+                .build()
+            return executeJson(request, GlobalSearchResponse.serializer())
+        }
+
         suspend fun <RequestType, ResponseType> post(
             path: String,
             payload: RequestType,

@@ -221,6 +221,15 @@ data class MessageSummary(
 data class ReactionSummary(val emoji: String, val count: Int, val reacted_by_user: Boolean)
 
 @Serializable
+enum class SearchResultKind { @SerialName("message") MESSAGE, @SerialName("file") FILE, @SerialName("link") LINK, @SerialName("routine") ROUTINE }
+
+@Serializable
+data class SearchResultSummary(val kind: SearchResultKind, val title: String, val snippet: String, val deep_link: String, val chat_id: String? = null, val message_id: String? = null, val artifact_id: String? = null, val routine_id: String? = null, val created_at_ms: Long)
+
+@Serializable
+data class GlobalSearchResponse(val query: String, val results: List<SearchResultSummary>)
+
+@Serializable
 data class ReactionMutationRequest(val request_id: String, val idempotency_key: String, val emoji: String)
 
 @Serializable

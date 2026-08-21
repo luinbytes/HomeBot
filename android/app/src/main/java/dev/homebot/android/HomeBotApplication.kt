@@ -8,6 +8,8 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import okhttp3.OkHttpClient
+import dev.homebot.android.notifications.AndroidNotificationCoordinator
+import dev.homebot.android.notifications.NetworkReconnectObserver
 
 class HomeBotApplication : Application() {
     private val applicationScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -20,5 +22,11 @@ class HomeBotApplication : Application() {
             sessions = sessionStore,
             scope = applicationScope,
         )
+    }
+
+    override fun onCreate() {
+        super.onCreate()
+        AndroidNotificationCoordinator(this, client, applicationScope).start()
+        NetworkReconnectObserver(this, client).start()
     }
 }

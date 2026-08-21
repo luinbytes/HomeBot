@@ -37,6 +37,7 @@ data class AndroidProductState(
     val secrets: List<SecretSummary> = emptyList(),
     val currentDevice: DeviceSessionSummary? = null,
     val selectedRoutineId: String? = null,
+    val highlightedActivityId: String? = null,
     val loading: Boolean = false,
     val error: String? = null,
 )

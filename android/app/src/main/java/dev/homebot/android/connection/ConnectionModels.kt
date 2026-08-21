@@ -3,6 +3,33 @@ package dev.homebot.android.connection
 import dev.homebot.protocol.ErrorEnvelope
 import dev.homebot.protocol.Snapshot
 
+enum class ClientAlertKind { BOT_FINISHED, APPROVAL_REQUIRED, ROUTINE_RESULT, ERROR }
+
+data class ClientAlert(
+    val eventId: String,
+    val kind: ClientAlertKind,
+    val title: String,
+    val detail: String,
+    val chatId: String? = null,
+    val botId: String? = null,
+    val activityId: String? = null,
+    val routineId: String? = null,
+    val runId: String? = null,
+)
+
+internal fun ClientAlert.deepLink(): String = when {
+    chatId != null -> buildString {
+        append("homebot://chat/").append(chatId)
+        val parameters = listOfNotNull(botId?.let { "bot=$it" }, activityId?.let { "activity=$it" })
+        if (parameters.isNotEmpty()) append('?').append(parameters.joinToString("&"))
+    }
+    routineId != null -> buildString {
+        append("homebot://routine/").append(routineId)
+        runId?.let { append("?run=").append(it) }
+    }
+    else -> "homebot://settings"
+}
+
 data class SessionCredentials(
     val endpoint: String,
     val deviceId: String,

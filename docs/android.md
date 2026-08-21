@@ -27,6 +27,12 @@ The Android document picker feeds the three-stage authenticated attachment contr
 
 The settings and automations surface fetches routine definitions, run history and triggers; it supports Run now, enable/disable and explicit one-shot scheduling. Skills assignment and plugin/MCP health and enablement use the same authenticated mutation contract. Secret rows contain only label and availability status—values are never returned or rendered. A paired device can inspect and revoke only its own session; owner-wide session listing and revocation remain forbidden to paired-device credentials.
 
+## Notifications and background behavior
+
+While the app process is alive, the authenticated WebSocket remains the only live notification source. Terminal Bot messages, pending approvals, terminal routine runs and attention-required activities are mapped from sequenced events into Android notification channels. Notification intents use exact `homebot://chat/<id>?activity=<id>` or `homebot://routine/<id>?run=<id>` targets; reopening hydrates the authoritative timeline before highlighting the target.
+
+Android connectivity callbacks nudge the existing bounded reconnect state machine when a usable network returns. HomeBot does not permanently poll, schedule periodic background work, or claim an always-on foreground service. If Android stops the process, live delivery pauses until the user reopens HomeBot; a future optional push relay can extend public-internet delivery without weakening the self-hosted server contract.
+
 ## Credentials and endpoints
 
 The persistent device-session credential is AES-256-GCM encrypted with a non-exportable Android Keystore key before storage. Logs and `toString` output redact it. DataStore contains only non-secret preferences such as the selected endpoint and device name. Room is intentionally absent in v1 groundwork because there is no offline-editing contract yet; adding a second cache now would create an unjustified source of truth.

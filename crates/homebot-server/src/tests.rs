@@ -2522,7 +2522,10 @@ async fn wait_for_timeline(
     chat_id: Uuid,
     ready: impl Fn(&ChatTimelineResponse) -> bool,
 ) -> Result<ChatTimelineResponse, Box<dyn std::error::Error>> {
-    for _ in 0..500 {
+    // Provider turns share constrained CI runners with Android and cross-target
+    // builds. Preserve the short polling cadence but allow a genuinely slow
+    // scheduled task to reach its durable approval boundary before failing.
+    for _ in 0..2_000 {
         let timeline = fetch_timeline(app, chat_id).await?;
         if ready(&timeline) {
             return Ok(timeline);

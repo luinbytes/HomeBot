@@ -33,6 +33,10 @@ import dev.homebot.protocol.UpdateBotRequest
 import dev.homebot.protocol.VcsStatus
 import dev.homebot.protocol.WorkingTreeDiffResponse
 import dev.homebot.protocol.ApprovalDecisionRequest
+import dev.homebot.protocol.Attachment
+import dev.homebot.protocol.CreateAttachmentRequest
+import dev.homebot.protocol.CreateAttachmentResponse
+import dev.homebot.protocol.FinalizeAttachmentRequest
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -65,6 +69,7 @@ import okhttp3.WebSocketListener
 import java.net.URI
 import java.net.URLDecoder
 import java.util.UUID
+import java.security.MessageDigest
 import kotlin.coroutines.cancellation.CancellationException
 
 class HomeBotClient(
@@ -186,13 +191,38 @@ class HomeBotClient(
         post("api/v1/groups", request, CreateGroupChatRequest.serializer(), CreateGroupChatResponse.serializer())
     }
 
-    suspend fun sendMessage(chatId: String, content: String, steering: Boolean = false): Result<SendMessageResponse> = authenticated {
-        val request = SendMessageRequest(ids(), ids(), content, emptyList(), null, emptyList())
+    suspend fun sendMessage(
+        chatId: String,
+        content: String,
+        steering: Boolean = false,
+        attachmentIds: List<String> = emptyList(),
+    ): Result<SendMessageResponse> = authenticated {
+        val request = SendMessageRequest(ids(), ids(), content, attachmentIds, null, emptyList())
         post(
             "api/v1/chats/$chatId/${if (steering) "steer" else "messages"}",
             request,
             SendMessageRequest.serializer(),
             SendMessageResponse.serializer(),
+        )
+    }
+
+    suspend fun uploadAttachment(filename: String, mediaType: String, bytes: ByteArray): Result<Attachment> = authenticated {
+        require(bytes.size <= MAX_ATTACHMENT_BYTES) { "Attachments may not exceed 25 MiB" }
+        val sha256 = MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
+        val create = CreateAttachmentRequest(ids(), ids(), filename, mediaType, bytes.size.toLong(), sha256)
+        val offer = post(
+            "api/v1/attachments",
+            create,
+            CreateAttachmentRequest.serializer(),
+            CreateAttachmentResponse.serializer(),
+        )
+        upload(offer.upload_url, mediaType, bytes)
+        val finalize = FinalizeAttachmentRequest(ids(), ids(), sha256)
+        post(
+            "api/v1/attachments/${offer.attachment_id}/finalize",
+            finalize,
+            FinalizeAttachmentRequest.serializer(),
+            Attachment.serializer(),
         )
     }
 
@@ -560,6 +590,14 @@ class HomeBotClient(
             executeDiscarding(request)
         }
 
+        suspend fun upload(path: String, mediaType: String, bytes: ByteArray) {
+            val relative = path.removePrefix("/")
+            val request = requestBuilder(relative)
+                .put(bytes.toRequestBody(mediaType.toMediaType()))
+                .build()
+            executeDiscarding(request)
+        }
+
         private suspend fun <ResponseType> request(
             method: String,
             path: String,
@@ -655,6 +693,7 @@ class HomeBotClient(
 
     private companion object {
         const val CLIENT_VERSION = "homebot-android/0.1.0"
+        const val MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024
         val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
     }
 }

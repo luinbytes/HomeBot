@@ -231,6 +231,30 @@ class HomeBotClientTest {
         assertTrue(payload.contains("idempotency_key"))
     }
 
+    @Test
+    fun attachmentUsesAuthenticatedCreateUploadFinalizeTransport() = runBlocking {
+        server.enqueue(jsonResponse(ATTACHMENT_OFFER))
+        server.enqueue(MockResponse().setResponseCode(204))
+        server.enqueue(jsonResponse(ATTACHMENT_RESPONSE))
+        server.start()
+        sessions.save(credentials())
+
+        val attachment = client().uploadAttachment("notes.txt", "text/plain", "home".toByteArray()).getOrThrow()
+
+        assertEquals("notes.txt", attachment.filename)
+        val create = server.takeRequest()
+        assertEquals("/api/v1/attachments", create.path)
+        assertTrue(create.body.readUtf8().contains("text/plain"))
+        val upload = server.takeRequest()
+        assertEquals("PUT", upload.method)
+        assertEquals("/api/v1/attachments/$ATTACHMENT_ID/content", upload.path)
+        assertEquals("home", upload.body.readUtf8())
+        assertEquals("Bearer hbds_fixture_session", upload.getHeader("Authorization"))
+        val finalize = server.takeRequest()
+        assertEquals("/api/v1/attachments/$ATTACHMENT_ID/finalize", finalize.path)
+        assertTrue(finalize.body.readUtf8().contains("sha256"))
+    }
+
     private fun client(reconnectDelayMs: (Int) -> Long = { 1 }) = HomeBotClient(
         http = OkHttpClient.Builder().build(),
         sessions = sessions,
@@ -258,11 +282,14 @@ class HomeBotClientTest {
     private companion object {
         const val DEVICE_ID = "018f47b8-c9aa-7c6f-b9e1-111111111111"
         const val CHAT_ID = "00000000-0000-0000-0000-000000000030"
+        const val ATTACHMENT_ID = "00000000-0000-0000-0000-000000000050"
         const val VERSION_RESPONSE = """{"server_version":"0.1.0","protocol":{"minimum":1,"maximum":1}}"""
         const val ERROR_RESPONSE = """{"code":"unauthenticated","message":"Device session is invalid","retryable":false,"request_id":null}"""
         const val PAIRING_RESPONSE = """{"device":{"id":"$DEVICE_ID","name":"Pixel 9","endpoint_kind":"loopback","created_at_unix_ms":1,"last_seen_at_unix_ms":null,"revoked_at_unix_ms":null},"device_session":"hbds_fixture_session"}"""
         const val BOT_RESPONSE = """{"bot":{"id":"00000000-0000-0000-0000-000000000010","name":"Nova","title":"Researcher","description":"","shape":"circle","color":"violet","archived":false,"unread_count":0,"attention":"none","provider":"not_configured","advanced":{"provider_profile_id":null,"permission_profile":"ask_before_changes"}}}"""
         const val QUEUED_RESPONSE = """{"kind":"queued","prompt":{"id":"00000000-0000-0000-0000-000000000040","chat_id":"$CHAT_ID","content":"Follow up","attachment_ids":[],"skill_ids":[],"kind":"steering","position":0,"created_at_ms":1}}"""
+        const val ATTACHMENT_OFFER = """{"attachment_id":"$ATTACHMENT_ID","upload_url":"/api/v1/attachments/$ATTACHMENT_ID/content","expires_at_unix_ms":9999999999999}"""
+        const val ATTACHMENT_RESPONSE = """{"id":"$ATTACHMENT_ID","filename":"notes.txt","media_type":"text/plain","size_bytes":4,"sha256":"4740ae6347b0172c98f8364c3e4b3e45a69e2afc6f6f6f24913a24f2c8472a8"}"""
 
         fun hello(resume: String) = """{"protocol_version":1,"sequence":0,"event_id":"00000000-0000-0000-0000-000000000001","kind":"hello","server_version":"0.1.0","supported_protocols":{"minimum":1,"maximum":1},"resume":"$resume","heartbeat_interval_ms":30000,"heartbeat_timeout_ms":60000}"""
         fun snapshot(sequence: Int) = """{"protocol_version":1,"sequence":$sequence,"event_id":"00000000-0000-0000-0000-000000000002","kind":"snapshot","boundary_sequence":$sequence,"snapshot":{"bots":[],"chats":[]}}"""

@@ -109,7 +109,7 @@ class HomeBotClientTest {
             client.state.filterIsInstance<ConnectionState.Live>().first { it.cursor == 9L }
         }
         assertTrue(recovered.snapshot.bots.isEmpty())
-        assertTrue(hellos.first().contains("\"resume_after\":null"))
+        assertFalse(hellos.first().contains("\"resume_after\""))
         assertTrue(hellos.drop(1).first().contains("\"resume_after\":5"))
         assertEquals(2, sockets.get())
         client.stop()

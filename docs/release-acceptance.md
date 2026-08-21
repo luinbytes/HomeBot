@@ -65,6 +65,26 @@ Evidence must include OS/architecture, package hash, CLI version, HomeBot profil
 
 ## Physical platform matrix
 
+Build the Android candidate with the production keystore supplied only through local environment references:
+
+```sh
+(cd android && ./gradlew clean assembleRelease \
+  -PhomebotVersionName="$HOMEBOT_VERSION" -PhomebotVersionCode=1000000)
+export HOMEBOT_ANDROID_KEYSTORE=/absolute/path/to/release.keystore
+export HOMEBOT_ANDROID_KEY_ALIAS=homebot
+export HOMEBOT_ANDROID_STORE_PASSWORD_NAME=HOMEBOT_ANDROID_STORE_PASSWORD
+export HOMEBOT_ANDROID_KEY_PASSWORD_NAME=HOMEBOT_ANDROID_KEY_PASSWORD
+apksigner sign --ks "$HOMEBOT_ANDROID_KEYSTORE" --ks-key-alias "$HOMEBOT_ANDROID_KEY_ALIAS" \
+  --ks-pass "env:$HOMEBOT_ANDROID_STORE_PASSWORD_NAME" \
+  --key-pass "env:$HOMEBOT_ANDROID_KEY_PASSWORD_NAME" \
+  --out /tmp/HomeBot-release-signed.apk android/app/build/outputs/apk/release/app-release-unsigned.apk
+HOMEBOT_ANDROID_SIGNING=android-release \
+  scripts/package-android.sh /tmp/HomeBot-release-signed.apk dist
+(cd dist && sha256sum -c "HomeBot-$HOMEBOT_VERSION-android.SHA256SUMS")
+```
+
+Expected files are `HomeBot-1.0.0-android.apk`, `HomeBot-1.0.0-android.manifest.json`, `HomeBot-1.0.0-android.signature.json`, and `HomeBot-1.0.0-android.SHA256SUMS`. Record the final certificate SHA-256 digest from the signature evidence. Delete the temporary signed input after the release assets are safely staged; do not delete or export the production keystore.
+
 Install from the candidate artifact on clean Intel macOS, Apple Silicon macOS, Arch/Omarchy, and Android. On each platform verify first launch, server discovery, upgrade from the latest supported pre-v1 fixture, Bot create/edit/archive/restore, direct and group chat, streaming, approval, attachment, queue/steer/cancel, routine run/history, Skill/plugin state, remote pairing/revocation, reconnect, workspace/checkpoint/diff/restore, and source-control read surfaces. Confirm uninstall preserves user data by default.
 
 On both Macs run the complete flow with keyboard-only navigation and VoiceOver. On Android run it with TalkBack, system text scaling, notification permission denied and allowed, background reconnect, and exact deep links. Record device/OS versions, artifact hash, UTC timestamps, and pass/fail per parity row. Screenshots must exclude secrets and private transcript/repository content.

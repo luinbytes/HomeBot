@@ -138,6 +138,8 @@ Default to `HOMEBOT_BIND=127.0.0.1:7123`. For an explicitly requested private li
 
 Create, inspect, and revoke pairing/device state with the deterministic owner-authenticated commands in [docs/remote-access.md](docs/remote-access.md). Verify that the offer expires within five minutes, the deep link contains an `hbpair_` token rather than an `hbds_` session, a second exchange fails, the new named device appears in `GET /api/v1/devices`, and authenticated access fails after revocation. Never print a persistent device session in diagnostic output.
 
+For a published Android release, download the APK, manifest, signature evidence, and checksum file into one empty directory. Run `sha256sum -c HomeBot-1.0.0-android.SHA256SUMS`, verify the certificate digest from `apksigner verify --print-certs HomeBot-1.0.0-android.apk` exactly matches `HomeBot-1.0.0-android.signature.json`, then install with `adb install HomeBot-1.0.0-android.apk`. For an upgrade fixture use `adb install -r` and verify the paired session remains usable. Never install the `HomeBot-Android-debug` or `HomeBot-Android-release-pipeline-ci-only` workflow artifact as a release.
+
 ## 8. Troubleshooting
 
 ```bash

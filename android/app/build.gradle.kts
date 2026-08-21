@@ -1,5 +1,8 @@
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
+val homebotVersionName = providers.gradleProperty("homebotVersionName").orElse("0.1.0-dev")
+val homebotVersionCode = providers.gradleProperty("homebotVersionCode").orElse("1")
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -15,8 +18,8 @@ android {
         applicationId = "dev.homebot.android"
         minSdk = 26
         targetSdk = 36
-        versionCode = 1
-        versionName = "0.1.0-dev"
+        versionCode = homebotVersionCode.get().toInt()
+        versionName = homebotVersionName.get()
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables.useSupportLibrary = true
     }

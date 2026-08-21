@@ -65,3 +65,25 @@ if PATH="$temporary/bin:$PATH" scripts/notarize-macos-app.sh \
   exit 1
 fi
 test ! -e "$temporary/rejected.json"
+
+cat > "$temporary/bin/apksigner" <<'SH'
+#!/bin/sh
+printf '%s\n' 'Verifies' 'Signer #1 certificate SHA-256 digest: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef'
+SH
+cat > "$temporary/bin/aapt" <<'SH'
+#!/bin/sh
+printf "%s\n" "package: name='dev.homebot.android' versionCode='1000000' versionName='1.0.0'"
+SH
+chmod 755 "$temporary/bin/apksigner" "$temporary/bin/aapt"
+printf 'signed-apk-fixture' > "$temporary/signed.apk"
+PATH="$temporary/bin:$PATH" HOMEBOT_VERSION=1.0.0 HOMEBOT_ANDROID_SIGNING=ci-ephemeral \
+  scripts/package-android.sh "$temporary/signed.apk" "$temporary/android-dist"
+(cd "$temporary/android-dist" && sha256sum -c HomeBot-1.0.0-android.SHA256SUMS)
+python3 - "$temporary/android-dist/HomeBot-1.0.0-android.signature.json" <<'PY'
+import json
+import sys
+with open(sys.argv[1], encoding="utf-8") as source:
+    evidence = json.load(source)
+assert evidence["signing"] == "ci-ephemeral"
+assert len(evidence["certificate_sha256"]) == 64
+PY

@@ -23,6 +23,15 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -116,7 +125,7 @@ private fun RosterScreen(viewModel: MainViewModel, live: ConnectionState.Live) {
         item {
             Row(Modifier.fillMaxWidth().padding(top = 18.dp), verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
-                    Text("Your Bots", fontSize = 28.sp, fontWeight = FontWeight.Bold)
+                    Text("Your Bots", fontSize = 28.sp, fontWeight = FontWeight.Bold, modifier = Modifier.semantics { heading() })
                     Text("Persistent teammates on your HomeBot server.", color = Muted)
                 }
                 Button(onClick = { create = !create }, colors = ButtonDefaults.buttonColors(containerColor = Violet)) {
@@ -279,10 +288,10 @@ private fun ChatLayout(
         LazyColumn(Modifier.weight(1f).padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             items(messages, key = { it.id }) { MessageCard(it, onRetry) }
             items(activities, key = { it.id }) {
-                HomeBotCard(it.title, "${it.detail}\n${it.status}", if (it.id == highlightedActivityId) Violet else Color.Unspecified) {}
+                HomeBotCard(it.title, "${it.detail}\n${it.status}", if (it.id == highlightedActivityId) Violet else Color.Unspecified)
             }
             items(approvals.filter { it.status == "pending" }, key = { it.id }) { ApprovalCard(it, onDecision) }
-            items(queue) { HomeBotCard("Queued", it) {} }
+            items(queue) { HomeBotCard("Queued", it) }
             item { extras(); Spacer(Modifier.height(8.dp)) }
         }
         Column(Modifier.background(Color.White).padding(12.dp)) {
@@ -387,7 +396,7 @@ private fun ConnectedSettings(viewModel: MainViewModel, live: ConnectionState.Li
                 Text("${state.routineTriggers.size} schedules/triggers", color = Muted)
             }
             items(state.routineRuns, key = { it.id }) { run ->
-                HomeBotCard(run.status, "Attempt ${run.attempt_count}${run.error_message?.let { error -> " • $error" } ?: ""}") {}
+                HomeBotCard(run.status, "Attempt ${run.attempt_count}${run.error_message?.let { error -> " • $error" } ?: ""}")
             }
         }
         item { SectionTitle("Skills") }
@@ -425,12 +434,12 @@ private fun ConnectedSettings(viewModel: MainViewModel, live: ConnectionState.Li
         }
         item { SectionTitle("Provider status") }
         items(live.snapshot.bots, key = { "provider-${it.id}" }) { bot ->
-            HomeBotCard(bot.name, "${bot.provider} • profile ${bot.advanced.provider_profile_id?.take(8) ?: "not configured"}") {}
+            HomeBotCard(bot.name, "${bot.provider} • profile ${bot.advanced.provider_profile_id?.take(8) ?: "not configured"}")
         }
         item { SectionTitle("Secret references") }
         if (state.secrets.isEmpty()) item { Text("No secret references configured.", color = Muted) }
         items(state.secrets, key = { it.id }) { secret ->
-            HomeBotCard(secret.label, "${secret.status} • value is never displayed") {}
+            HomeBotCard(secret.label, "${secret.status} • value is never displayed")
         }
         item { SectionTitle("This paired device") }
         state.currentDevice?.let { device ->
@@ -448,7 +457,7 @@ private fun ConnectedSettings(viewModel: MainViewModel, live: ConnectionState.Li
     }
 }
 
-@Composable private fun SectionTitle(title: String) { Text(title, fontSize = 20.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 12.dp)) }
+@Composable private fun SectionTitle(title: String) { Text(title, fontSize = 20.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 12.dp).semantics { heading() }) }
 
 @Composable
 private fun PairingScreen(viewModel: MainViewModel, connection: ConnectionState, incomingPairing: String?) {
@@ -501,12 +510,19 @@ private fun ConnectionCard(connection: ConnectionState) {
         ConnectionState.Revoked -> Triple("Device revoked", "Pair again from an owner device.", Danger)
         is ConnectionState.Offline -> Triple("Offline", connection.failure.toString(), Warning)
     }
-    HomeBotCard(values.first, values.second, values.third) {}
+    Box(Modifier.semantics { liveRegion = LiveRegionMode.Polite }) {
+        HomeBotCard(values.first, values.second, values.third)
+    }
 }
 
 @Composable
-private fun HomeBotCard(title: String, detail: String, color: Color = Color.Unspecified, onClick: () -> Unit) {
-    Card(shape = CardShape, modifier = Modifier.fillMaxWidth().clickable(onClick = onClick)) {
+private fun HomeBotCard(title: String, detail: String, color: Color = Color.Unspecified, onClick: (() -> Unit)? = null) {
+    val modifier = if (onClick == null) {
+        Modifier.fillMaxWidth()
+    } else {
+        Modifier.fillMaxWidth().clickable(role = Role.Button, onClick = onClick)
+    }
+    Card(shape = CardShape, modifier = modifier) {
         Column(Modifier.padding(16.dp)) {
             Text(title, color = color, fontWeight = FontWeight.Bold)
             Text(detail, color = Muted, modifier = Modifier.padding(top = 4.dp))
@@ -515,9 +531,9 @@ private fun HomeBotCard(title: String, detail: String, color: Color = Color.Unsp
 }
 
 @Composable private fun EmptyLoading(message: String) { Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Text(message, color = Muted) } }
-@Composable private fun ErrorBanner(message: String, dismiss: () -> Unit) { Card(Modifier.fillMaxWidth().padding(12.dp), shape = CardShape) { Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) { Text(message, color = Danger, modifier = Modifier.weight(1f)); TextButton(onClick = dismiss) { Text("Dismiss") } } } }
-@Composable private fun HomeBotMark() { Box(Modifier.background(Violet, RoundedCornerShape(14.dp)).padding(13.dp, 9.dp)) { Text("H", color = Color.White, fontWeight = FontWeight.Black, fontSize = 20.sp) } }
-@Composable private fun NavButton(label: String, selected: Boolean, onClick: () -> Unit) { TextButton(onClick = onClick) { Text(label, color = if (selected) Violet else Muted, fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal) } }
+@Composable private fun ErrorBanner(message: String, dismiss: () -> Unit) { Card(Modifier.fillMaxWidth().padding(12.dp).semantics { liveRegion = LiveRegionMode.Assertive }, shape = CardShape) { Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) { Text(message, color = Danger, modifier = Modifier.weight(1f)); TextButton(onClick = dismiss) { Text("Dismiss") } } } }
+@Composable private fun HomeBotMark() { Box(Modifier.background(Violet, RoundedCornerShape(14.dp)).padding(13.dp, 9.dp).clearAndSetSemantics { contentDescription = "HomeBot" }) { Text("H", color = Color.White, fontWeight = FontWeight.Black, fontSize = 20.sp) } }
+@Composable private fun NavButton(label: String, selected: Boolean, onClick: () -> Unit) { TextButton(onClick = onClick, modifier = Modifier.semantics { role = Role.Tab; this.selected = selected }) { Text(label, color = if (selected) Violet else Muted, fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal) } }
 @Composable private fun HomeBotTheme(content: @Composable () -> Unit) { MaterialTheme(content = content) }
 
 private val Canvas = Color(0xFFF7F6F9)

@@ -364,7 +364,11 @@ pub enum ComposerError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::performance::{
+        CHAT_OPEN_BUDGET, CONCURRENT_BOT_BUDGET, LARGE_TRANSCRIPT_MESSAGES, STREAM_FRAME_BUDGET,
+    };
     use homebot_protocol::{MessageAuthor, PROTOCOL_VERSION, QueuedPromptKind};
+    use std::time::Instant;
 
     fn chat(id: Uuid, running: bool) -> ChatSummary {
         ChatSummary {
@@ -646,5 +650,83 @@ mod tests {
                 && *to_checkpoint_id == after_id
                 && *checkpoint_id == before_id
         ));
+    }
+
+    #[test]
+    fn large_transcript_and_concurrent_stream_projections_meet_release_budgets() {
+        let chat_id = Uuid::now_v7();
+        let messages = (0..LARGE_TRANSCRIPT_MESSAGES)
+            .rev()
+            .map(|index| {
+                let mut value = message(chat_id, Uuid::now_v7(), MessageStatus::Completed);
+                value.created_at_ms = i64::try_from(index).unwrap_or(i64::MAX);
+                value
+            })
+            .collect();
+        let started = Instant::now();
+        let mut large = TimelineModel::default();
+        large.hydrate(ChatTimelineResponse {
+            chat: chat(chat_id, false),
+            messages,
+            activities: Vec::new(),
+            approvals: Vec::new(),
+            queued_prompts: Vec::new(),
+            working_context: None,
+            checkpoints: Vec::new(),
+            boundary_sequence: 0,
+        });
+        assert!(
+            started.elapsed() <= CHAT_OPEN_BUDGET,
+            "10,000-message projection exceeded the chat-open budget"
+        );
+        assert_eq!(large.messages.len(), LARGE_TRANSCRIPT_MESSAGES);
+        assert!(
+            large
+                .messages
+                .windows(2)
+                .all(|pair| pair[0].created_at_ms <= pair[1].created_at_ms)
+        );
+
+        let mut projections = (0..CONCURRENT_BOT_BUDGET)
+            .map(|_| {
+                let chat_id = Uuid::now_v7();
+                let message_id = Uuid::now_v7();
+                let mut model = TimelineModel::default();
+                model.hydrate(ChatTimelineResponse {
+                    chat: chat(chat_id, true),
+                    messages: vec![message(chat_id, message_id, MessageStatus::Streaming)],
+                    activities: Vec::new(),
+                    approvals: Vec::new(),
+                    queued_prompts: Vec::new(),
+                    working_context: None,
+                    checkpoints: Vec::new(),
+                    boundary_sequence: 0,
+                });
+                (model, chat_id, message_id)
+            })
+            .collect::<Vec<_>>();
+        let frames_per_bot = 250_u64;
+        let streaming_started = Instant::now();
+        for sequence in 1..=frames_per_bot {
+            for (model, chat_id, message_id) in &mut projections {
+                assert_eq!(
+                    model.apply_event(event(
+                        sequence,
+                        ServerEventBody::MessageDelta {
+                            chat_id: *chat_id,
+                            message_id: *message_id,
+                            delta: "x".to_owned(),
+                        },
+                    )),
+                    ReconcileOutcome::Applied
+                );
+            }
+        }
+        let operations = frames_per_bot * u64::try_from(CONCURRENT_BOT_BUDGET).unwrap_or(u64::MAX);
+        assert!(
+            streaming_started.elapsed()
+                <= STREAM_FRAME_BUDGET * u32::try_from(operations).unwrap_or(u32::MAX),
+            "multi-Bot streaming projection exceeded the per-frame budget"
+        );
     }
 }

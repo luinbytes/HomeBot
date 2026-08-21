@@ -112,6 +112,7 @@ Read the deeper contracts:
 - [Queued work and provider context](docs/working-context.md)
 - [Updates, migration backup, and recovery](docs/recovery.md)
 - [Security and threat model](docs/security.md)
+- [Performance and accessibility](docs/performance-accessibility.md)
 - [Android](docs/android.md)
 - [Routines](docs/routines.md)
 - [Skills](docs/skills.md)

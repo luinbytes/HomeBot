@@ -25,6 +25,7 @@ jobs:
       - run: cargo run -p homebot-protocol --example export_schema -- --check
       - run: cargo run -p homebot-protocol --example export_android -- --check
       - run: ./scripts/security-gate.sh
+      - run: ./scripts/performance-accessibility-gate.sh
 
   rust-build:
     name: Rust build (${{ matrix.target }})
@@ -69,6 +70,29 @@ jobs:
         with:
           key: visual-${{ matrix.platform }}
       - run: cargo test -p homebot-desktop --all-features --test visual_goldens
+
+  performance-resource:
+    name: Performance/resource (${{ matrix.platform }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            platform: Linux
+          - os: macos-15-intel
+            platform: macOS-Intel
+          - os: macos-14
+            platform: macOS-Apple-Silicon
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: performance-${{ matrix.platform }}
+      - run: ./scripts/performance-accessibility-gate.sh
+      - run: cargo build --release -p homebot-server
+      - run: ./scripts/process-resource-budget.sh
 
   dependency-audit:
     name: Dependency audit
@@ -157,7 +181,7 @@ jobs:
     steps:
       - name: Install Arch build and verification dependencies
         run: >-
-          pacman -Syu --noconfirm --needed rustup git python desktop-file-utils systemd dbus fontconfig
+          pacman -Syu --noconfirm --needed rustup git python curl procps-ng desktop-file-utils systemd dbus fontconfig
           libx11 libxcursor libxi libxkbcommon libxrandr mesa wayland
       - uses: actions/checkout@v4
       - name: Configure Rust and unprivileged package builder

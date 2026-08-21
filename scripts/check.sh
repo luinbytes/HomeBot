@@ -8,3 +8,4 @@ cargo run -p homebot-protocol --example export_schema -- --check
 cargo run -p homebot-protocol --example export_android -- --check
 ./scripts/check-packaging.sh
 ./scripts/security-gate.sh
+./scripts/performance-accessibility-gate.sh

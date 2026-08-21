@@ -2,6 +2,8 @@
 
 HomeBot Android is a native Kotlin and Jetpack Compose application. It is a client of the authoritative HomeBot server, never a second runtime. The application module lives in `android/app`; Rust-owned generated protocol bindings remain in `android/protocol` and are compiled directly into the app.
 
+Compose uses native roles, selected-state semantics, headings and live regions; informational cards are not exposed as no-op controls, and typography uses scalable `sp` units. Cross-platform budgets and the TalkBack release checklist are defined in [performance-accessibility.md](performance-accessibility.md).
+
 ## Runtime and state
 
 `HomeBotClient` uses OkHttp for version negotiation, pairing exchange, and the authenticated WebSocket event stream. A single FIFO event processor applies stream messages in arrival order. It rejects sequence gaps, ignores already-applied sequences, retains the last safe projection during a disconnect, and sends the last cursor when reconnecting. The server may replay events or require a fresh snapshot when that cursor has expired.

@@ -168,7 +168,7 @@ pub enum StorageError {
     MessageNotFound,
     #[error("Approval was not found or is no longer pending")]
     ApprovalNotFound,
-    #[error("Group chat requires at least three distinct active Bots")]
+    #[error("Group chat requires two to six distinct active Bots")]
     InvalidGroupParticipants,
     #[error("Group coordination turn limit was reached or the group was stopped")]
     CoordinationLimitReached,
@@ -2760,7 +2760,7 @@ impl Storage {
     ///
     /// # Errors
     ///
-    /// Rejects fewer than three distinct active owned Bots, an invalid owner, unsafe policy
+    /// Rejects fewer than two or more than six distinct active owned Bots, an invalid owner, unsafe policy
     /// bounds, or database failures.
     #[allow(clippy::too_many_arguments)]
     pub async fn create_group_chat(
@@ -2775,7 +2775,7 @@ impl Storage {
         now_ms: i64,
     ) -> Result<GroupChat, StorageError> {
         let distinct = bot_ids.iter().copied().collect::<HashSet<_>>();
-        if distinct.len() < 3
+        if !(2..=6).contains(&distinct.len())
             || !distinct.contains(&ownership_bot_id)
             || !(1..=64).contains(&coordination_max_turns)
             || !(1..=8).contains(&max_parallel_bots)
@@ -2880,6 +2880,30 @@ impl Storage {
         rows.iter().map(group_chat_from_row).collect()
     }
 
+    /// Renames an owner-scoped group without changing its identity or history.
+    ///
+    /// # Errors
+    /// Returns validation, ownership, or database errors.
+    pub async fn rename_group_chat(
+        &self,
+        owner_id: Uuid,
+        chat_id: Uuid,
+        title: &str,
+        now_ms: i64,
+    ) -> Result<GroupChat, StorageError> {
+        let title = title.trim();
+        if title.is_empty() || title.chars().count() > 120 {
+            return Err(StorageError::InvalidGroupParticipants);
+        }
+        let changed = sqlx::query("UPDATE chats SET title = ?, updated_at_ms = ? WHERE owner_id = ? AND id = ? AND kind = 'group'")
+            .bind(title).bind(now_ms).bind(owner_id.to_string()).bind(chat_id.to_string())
+            .execute(&self.pool).await?;
+        if changed.rows_affected() != 1 {
+            return Err(StorageError::ChatNotFound);
+        }
+        self.get_group_chat(owner_id, chat_id).await
+    }
+
     /// Lists durable participants and their parallel execution state.
     ///
     /// # Errors
@@ -2917,16 +2941,26 @@ impl Storage {
     ) -> Result<GroupParticipant, StorageError> {
         let _ = self.get_group_chat(owner_id, chat_id).await?;
         let bot = self.get_bot(owner_id, bot_id).await?;
-        if bot.archived_at_ms.is_some()
-            || self
-                .group_participants(owner_id, chat_id)
-                .await?
-                .iter()
-                .any(|participant| participant.bot_id == bot_id)
-        {
+        if bot.archived_at_ms.is_some() {
             return Err(StorageError::InvalidGroupParticipants);
         }
         let mut transaction = self.pool.begin().await?;
+        sqlx::query(
+            "UPDATE chats SET updated_at_ms = ? WHERE owner_id = ? AND id = ? AND kind = 'group'",
+        )
+        .bind(now_ms)
+        .bind(owner_id.to_string())
+        .bind(chat_id.to_string())
+        .execute(&mut *transaction)
+        .await?;
+        let count: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM chat_participants WHERE chat_id = ?")
+                .bind(chat_id.to_string())
+                .fetch_one(&mut *transaction)
+                .await?;
+        if count >= 6 {
+            return Err(StorageError::InvalidGroupParticipants);
+        }
         sqlx::query(
             "INSERT INTO chat_participants (chat_id, bot_id, role) VALUES (?, ?, 'member')",
         )
@@ -2951,11 +2985,11 @@ impl Storage {
             .ok_or(StorageError::InvalidGroupParticipants)
     }
 
-    /// Removes a non-owner Bot while preserving the three-Bot minimum.
+    /// Removes a non-owner Bot while preserving the two-Bot minimum.
     ///
     /// # Errors
     ///
-    /// Rejects owner removal, fewer than three remaining Bots, or database failures.
+    /// Rejects owner removal, fewer than two remaining Bots, or database failures.
     pub async fn remove_group_participant(
         &self,
         owner_id: Uuid,
@@ -2963,20 +2997,29 @@ impl Storage {
         bot_id: Uuid,
     ) -> Result<(), StorageError> {
         let group = self.get_group_chat(owner_id, chat_id).await?;
-        let participants = self.group_participants(owner_id, chat_id).await?;
-        if group.ownership_bot_id == bot_id
-            || participants.len() <= 3
-            || !participants
-                .iter()
-                .any(|participant| participant.bot_id == bot_id)
-        {
+        if group.ownership_bot_id == bot_id {
             return Err(StorageError::InvalidGroupParticipants);
         }
-        sqlx::query("DELETE FROM chat_participants WHERE chat_id = ? AND bot_id = ?")
+        let mut transaction = self.pool.begin().await?;
+        sqlx::query("UPDATE chats SET updated_at_ms = updated_at_ms WHERE owner_id = ? AND id = ? AND kind = 'group'")
+            .bind(owner_id.to_string()).bind(chat_id.to_string()).execute(&mut *transaction).await?;
+        let count: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM chat_participants WHERE chat_id = ?")
+                .bind(chat_id.to_string())
+                .fetch_one(&mut *transaction)
+                .await?;
+        if count <= 2 {
+            return Err(StorageError::InvalidGroupParticipants);
+        }
+        let removed = sqlx::query("DELETE FROM chat_participants WHERE chat_id = ? AND bot_id = ?")
             .bind(chat_id.to_string())
             .bind(bot_id.to_string())
-            .execute(&self.pool)
+            .execute(&mut *transaction)
             .await?;
+        if removed.rows_affected() != 1 {
+            return Err(StorageError::InvalidGroupParticipants);
+        }
+        transaction.commit().await?;
         Ok(())
     }
 
@@ -8132,7 +8175,7 @@ mod tests {
                     owner,
                     Uuid::now_v7(),
                     "Too small",
-                    &bot_ids[..2],
+                    &bot_ids[..1],
                     bot_ids[0],
                     2,
                     2,
@@ -8276,6 +8319,83 @@ mod tests {
                 .await,
             Err(StorageError::CoordinationLimitReached)
         ));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn group_membership_concurrency_preserves_two_to_six_bounds() -> Result<(), StorageError>
+    {
+        let directory = tempfile::tempdir()?;
+        let storage = Storage::open(&directory.path().join("homebot.db")).await?;
+        let owner = Uuid::now_v7();
+        let mut bot_ids = Vec::new();
+        for index in 0..7 {
+            bot_ids.push(
+                storage
+                    .create_bot(
+                        owner,
+                        Bot::create(format!("Bot {index}"), "Member")?,
+                        i64::from(index),
+                    )
+                    .await?
+                    .id
+                    .0,
+            );
+        }
+        let chat_id = Uuid::now_v7();
+        storage
+            .create_group_chat(owner, chat_id, "Pair", &bot_ids[..2], bot_ids[0], 8, 2, 1)
+            .await?;
+        storage
+            .rename_group_chat(owner, chat_id, "Renamed pair", 2)
+            .await?;
+        let additions = tokio::join!(
+            storage.add_group_participant(owner, chat_id, bot_ids[2], 3),
+            storage.add_group_participant(owner, chat_id, bot_ids[3], 4),
+            storage.add_group_participant(owner, chat_id, bot_ids[4], 5),
+            storage.add_group_participant(owner, chat_id, bot_ids[5], 6),
+            storage.add_group_participant(owner, chat_id, bot_ids[6], 7),
+        );
+        assert_eq!(
+            [
+                additions.0,
+                additions.1,
+                additions.2,
+                additions.3,
+                additions.4
+            ]
+            .iter()
+            .filter(|result| result.is_ok())
+            .count(),
+            4
+        );
+        assert_eq!(storage.group_participants(owner, chat_id).await?.len(), 6);
+
+        let members = storage
+            .group_participants(owner, chat_id)
+            .await?
+            .into_iter()
+            .filter(|participant| participant.bot_id != bot_ids[0])
+            .map(|participant| participant.bot_id)
+            .collect::<Vec<_>>();
+        for bot_id in &members[..3] {
+            storage
+                .remove_group_participant(owner, chat_id, *bot_id)
+                .await?;
+        }
+        let (left, right) = tokio::join!(
+            storage.remove_group_participant(owner, chat_id, members[3]),
+            storage.remove_group_participant(owner, chat_id, members[4]),
+        );
+        assert_eq!(
+            [left, right].iter().filter(|result| result.is_ok()).count(),
+            1
+        );
+        assert_eq!(storage.group_participants(owner, chat_id).await?.len(), 2);
+        assert_eq!(
+            storage.get_group_chat(owner, chat_id).await?.title,
+            "Renamed pair"
+        );
         Ok(())
     }
 

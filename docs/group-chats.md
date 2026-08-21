@@ -1,6 +1,6 @@
 # Group chats and coordination
 
-Group chats are durable, server-owned conversations with at least three Bots. The server persists participants, one explicit current owner, per-Bot execution state, a maximum parallel-Bot limit and a finite coordination-turn budget. These constraints remain authoritative after every client disconnect and server restart.
+Group chats are durable, server-owned conversations with two to six Bots. The server persists the editable name, participants, one explicit current owner, per-Bot execution state, a maximum parallel-Bot limit and a finite coordination-turn budget. Concurrent member edits reserve the SQLite writer before checking bounds, so racing clients cannot reduce a group below two or grow it beyond six. These constraints remain authoritative after every client disconnect and server restart.
 
 ## Coordination policy
 
@@ -23,6 +23,7 @@ Every participant has a durable normalized state: idle, running, waiting, comple
 The authenticated v1 API exposes group creation, durable timeline loading, user messages with mentions/shared context, participant status changes, coordination-turn claims, ownership handoff and visible stop:
 
 - `POST /api/v1/groups`
+- `PUT /api/v1/groups/{chat_id}`
 - `GET /api/v1/groups/{chat_id}/timeline`
 - `POST /api/v1/groups/{chat_id}/messages`
 - `PUT /api/v1/groups/{chat_id}/participants/{bot_id}/status`

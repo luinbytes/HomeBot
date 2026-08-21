@@ -319,6 +319,27 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         refreshSelection(showLoading = false)
     }
 
+    fun renameGroup(title: String) = perform {
+        val group = mutableProduct.value.destination as? ProductDestination.GroupChat
+            ?: error("Open a group chat before renaming it")
+        homeBot.client.renameGroup(group.chatId, title.trim()).getOrThrow()
+        refreshSelection(showLoading = false)
+    }
+
+    fun addGroupParticipant(botId: String) = perform {
+        val group = mutableProduct.value.destination as? ProductDestination.GroupChat
+            ?: error("Open a group chat before adding a Bot")
+        homeBot.client.addGroupParticipant(group.chatId, botId).getOrThrow()
+        refreshSelection(showLoading = false)
+    }
+
+    fun removeGroupParticipant(botId: String) = perform {
+        val group = mutableProduct.value.destination as? ProductDestination.GroupChat
+            ?: error("Open a group chat before removing a Bot")
+        homeBot.client.removeGroupParticipant(group.chatId, botId).getOrThrow()
+        refreshSelection(showLoading = false)
+    }
+
     fun loadCodingWorkspace() = perform {
         val chat = (mutableProduct.value.destination as? ProductDestination.DirectChat)?.chatId
             ?: error("Coding workspace details are available in direct chats")

@@ -4,6 +4,9 @@
   "description": "Root exported to the committed machine-readable JSON Schema.",
   "type": "object",
   "properties": {
+    "add_group_participant_request": {
+      "$ref": "#/$defs/AddGroupParticipantRequest"
+    },
     "append_routine_recording_request": {
       "$ref": "#/$defs/AppendRoutineRecordingRequest"
     },
@@ -61,6 +64,12 @@
     "create_direct_chat_response": {
       "$ref": "#/$defs/CreateDirectChatResponse"
     },
+    "create_group_chat_request": {
+      "$ref": "#/$defs/CreateGroupChatRequest"
+    },
+    "create_group_chat_response": {
+      "$ref": "#/$defs/CreateGroupChatResponse"
+    },
     "create_local_mcp_plugin_request": {
       "$ref": "#/$defs/CreateLocalMcpPluginRequest"
     },
@@ -112,6 +121,12 @@
     "global_search_response": {
       "$ref": "#/$defs/GlobalSearchResponse"
     },
+    "group_timeline_response": {
+      "$ref": "#/$defs/GroupTimelineResponse"
+    },
+    "handoff_group_request": {
+      "$ref": "#/$defs/HandoffGroupRequest"
+    },
     "import_skill_request": {
       "$ref": "#/$defs/ImportSkillRequest"
     },
@@ -138,6 +153,9 @@
     },
     "pull_request_mutation_response": {
       "$ref": "#/$defs/PullRequestMutationResponse"
+    },
+    "rename_group_chat_request": {
+      "$ref": "#/$defs/RenameGroupChatRequest"
     },
     "repository_workspace": {
       "$ref": "#/$defs/RepositoryWorkspaceSummary"
@@ -168,6 +186,9 @@
     },
     "secret": {
       "$ref": "#/$defs/SecretSummary"
+    },
+    "send_group_message_request": {
+      "$ref": "#/$defs/SendGroupMessageRequest"
     },
     "send_message_request": {
       "$ref": "#/$defs/SendMessageRequest"
@@ -201,6 +222,9 @@
     },
     "update_bot_request": {
       "$ref": "#/$defs/UpdateBotRequest"
+    },
+    "update_group_participant_request": {
+      "$ref": "#/$defs/UpdateGroupParticipantRequest"
     },
     "update_routine_request": {
       "$ref": "#/$defs/UpdateRoutineRequest"
@@ -309,6 +333,14 @@
     "bot_response",
     "create_direct_chat_request",
     "create_direct_chat_response",
+    "create_group_chat_request",
+    "create_group_chat_response",
+    "rename_group_chat_request",
+    "group_timeline_response",
+    "send_group_message_request",
+    "handoff_group_request",
+    "update_group_participant_request",
+    "add_group_participant_request",
     "send_message_request",
     "send_message_response",
     "message_mutation_request",
@@ -583,6 +615,29 @@
         "status",
         "requires_attention",
         "started_at_ms"
+      ]
+    },
+    "AddGroupParticipantRequest": {
+      "type": "object",
+      "properties": {
+        "bot_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "idempotency_key": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "request_id": {
+          "type": "string",
+          "format": "uuid"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "request_id",
+        "idempotency_key",
+        "bot_id"
       ]
     },
     "AppendRoutineRecordingRequest": {
@@ -1576,6 +1631,72 @@
         "chat"
       ]
     },
+    "CreateGroupChatRequest": {
+      "type": "object",
+      "properties": {
+        "bot_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        "coordination_max_turns": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "idempotency_key": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "max_parallel_bots": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "ownership_bot_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "request_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "title": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "request_id",
+        "idempotency_key",
+        "title",
+        "bot_ids",
+        "ownership_bot_id",
+        "coordination_max_turns",
+        "max_parallel_bots"
+      ]
+    },
+    "CreateGroupChatResponse": {
+      "type": "object",
+      "properties": {
+        "group": {
+          "$ref": "#/$defs/GroupChatSummary"
+        },
+        "participants": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/GroupParticipantSummary"
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "group",
+        "participants"
+      ]
+    },
     "CreateLocalMcpPluginRequest": {
       "type": "object",
       "properties": {
@@ -2238,6 +2359,84 @@
         "role",
         "status",
         "updated_at_ms"
+      ]
+    },
+    "GroupTimelineResponse": {
+      "type": "object",
+      "properties": {
+        "boundary_sequence": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "group": {
+          "$ref": "#/$defs/GroupChatSummary"
+        },
+        "handoffs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/OwnershipHandoffSummary"
+          }
+        },
+        "messages": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/MessageSummary"
+          }
+        },
+        "participants": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/GroupParticipantSummary"
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "group",
+        "participants",
+        "messages",
+        "handoffs",
+        "boundary_sequence"
+      ]
+    },
+    "HandoffGroupRequest": {
+      "type": "object",
+      "properties": {
+        "from_bot_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "idempotency_key": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "message_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "request_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "to_bot_id": {
+          "type": "string",
+          "format": "uuid"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "request_id",
+        "idempotency_key",
+        "from_bot_id",
+        "to_bot_id",
+        "reason"
       ]
     },
     "ImportSkillRequest": {
@@ -3125,6 +3324,28 @@
       "enum": [
         "user",
         "bot"
+      ]
+    },
+    "RenameGroupChatRequest": {
+      "type": "object",
+      "properties": {
+        "idempotency_key": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "request_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "title": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "request_id",
+        "idempotency_key",
+        "title"
       ]
     },
     "RepositoryWorkspaceSummary": {
@@ -4063,6 +4284,59 @@
         "status",
         "created_at_unix_ms",
         "updated_at_unix_ms"
+      ]
+    },
+    "SendGroupMessageRequest": {
+      "type": "object",
+      "properties": {
+        "content": {
+          "type": "string"
+        },
+        "idempotency_key": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "mentioned_bot_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        "references": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/MessageReferenceInput"
+          }
+        },
+        "reply_to_message_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid",
+          "default": null
+        },
+        "request_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "shared_context_message_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "request_id",
+        "idempotency_key",
+        "content",
+        "mentioned_bot_ids",
+        "shared_context_message_ids"
       ]
     },
     "SendMessageRequest": {
@@ -5317,6 +5591,35 @@
         "shape",
         "color",
         "permission_profile"
+      ]
+    },
+    "UpdateGroupParticipantRequest": {
+      "type": "object",
+      "properties": {
+        "idempotency_key": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "operation_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid"
+        },
+        "request_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "status": {
+          "$ref": "#/$defs/GroupBotStatus"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "request_id",
+        "idempotency_key",
+        "status"
       ]
     },
     "UpdateRoutineRequest": {

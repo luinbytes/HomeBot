@@ -18,6 +18,9 @@ pub struct GroupComposerDraft {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum GroupTimelineCommand {
     Send(GroupComposerDraft),
+    Rename(String),
+    AddParticipant(Uuid),
+    RemoveParticipant(Uuid),
     Handoff {
         from_bot_id: Uuid,
         to_bot_id: Uuid,
@@ -155,6 +158,42 @@ impl GroupTimelineModel {
             .is_some_and(|group| !group.stop_requested)
         {
             self.commands.push(GroupTimelineCommand::Stop);
+        }
+    }
+
+    pub fn rename(&mut self, title: &str) {
+        let title = title.trim();
+        if !title.is_empty() && title.chars().count() <= 120 {
+            self.commands
+                .push(GroupTimelineCommand::Rename(title.to_owned()));
+        }
+    }
+
+    pub fn add_participant(&mut self, bot_id: Uuid) {
+        if self.participants.len() < 6
+            && !self
+                .participants
+                .iter()
+                .any(|participant| participant.bot_id == bot_id)
+        {
+            self.commands
+                .push(GroupTimelineCommand::AddParticipant(bot_id));
+        }
+    }
+
+    pub fn remove_participant(&mut self, bot_id: Uuid) {
+        if self.participants.len() > 2
+            && self
+                .group
+                .as_ref()
+                .is_some_and(|group| group.ownership_bot_id != bot_id)
+            && self
+                .participants
+                .iter()
+                .any(|participant| participant.bot_id == bot_id)
+        {
+            self.commands
+                .push(GroupTimelineCommand::RemoveParticipant(bot_id));
         }
     }
 

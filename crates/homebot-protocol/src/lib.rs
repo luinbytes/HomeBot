@@ -499,6 +499,14 @@ pub struct CreateGroupChatResponse {
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
+pub struct RenameGroupChatRequest {
+    pub request_id: Uuid,
+    pub idempotency_key: Uuid,
+    pub title: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct GroupTimelineResponse {
     pub group: GroupChatSummary,
     pub participants: Vec<GroupParticipantSummary>,
@@ -1672,6 +1680,14 @@ pub struct ProtocolV1Schema {
     pub bot_response: BotResponse,
     pub create_direct_chat_request: CreateDirectChatRequest,
     pub create_direct_chat_response: CreateDirectChatResponse,
+    pub create_group_chat_request: CreateGroupChatRequest,
+    pub create_group_chat_response: CreateGroupChatResponse,
+    pub rename_group_chat_request: RenameGroupChatRequest,
+    pub group_timeline_response: GroupTimelineResponse,
+    pub send_group_message_request: SendGroupMessageRequest,
+    pub handoff_group_request: HandoffGroupRequest,
+    pub update_group_participant_request: UpdateGroupParticipantRequest,
+    pub add_group_participant_request: AddGroupParticipantRequest,
     pub send_message_request: SendMessageRequest,
     pub send_message_response: SendMessageResponse,
     pub message_mutation_request: MessageMutationRequest,

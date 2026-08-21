@@ -13,7 +13,7 @@ use homebot_protocol::{
     AddGroupParticipantRequest, BotMutationRequest, CreateGroupChatRequest,
     CreateGroupChatResponse, GroupBotStatus, GroupChatSummary, GroupParticipantRole,
     GroupParticipantSummary, GroupTimelineResponse, HandoffGroupRequest, MessageSummary,
-    OwnershipHandoffSummary, SendGroupMessageRequest, ServerEventBody,
+    OwnershipHandoffSummary, RenameGroupChatRequest, SendGroupMessageRequest, ServerEventBody,
     UpdateGroupParticipantRequest,
 };
 use homebot_storage::IdempotencyClaim;
@@ -96,6 +96,46 @@ pub(super) async fn create(
             participants: participants.iter().map(participant_summary).collect(),
         }),
     ))
+}
+
+pub(super) async fn rename(
+    State(state): State<AppState>,
+    Path(chat_id): Path<Uuid>,
+    Json(request): Json<RenameGroupChatRequest>,
+) -> Result<Json<GroupChatSummary>, ApiError> {
+    let replayed = matches!(
+        claim(
+            &state,
+            request.idempotency_key,
+            &format!("rename_group:{chat_id}"),
+            &request
+        )
+        .await?,
+        IdempotencyClaim::Replayed { .. }
+    );
+    let group = if replayed {
+        state
+            .storage
+            .get_group_chat(state.owner_id, chat_id)
+            .await?
+    } else {
+        state
+            .storage
+            .rename_group_chat(state.owner_id, chat_id, &request.title, unix_time_ms())
+            .await?
+    };
+    let group = group_summary(group);
+    if !replayed {
+        publish(
+            &state,
+            "group_chat_changed",
+            ServerEventBody::GroupChatChanged {
+                group: group.clone(),
+            },
+        )
+        .await?;
+    }
+    Ok(Json(group))
 }
 
 pub(super) async fn timeline(

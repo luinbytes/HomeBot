@@ -265,6 +265,7 @@ pub fn router(state: AppState) -> Router {
             post(chats::decide_approval),
         )
         .route("/api/v1/groups", post(groups::create))
+        .route("/api/v1/groups/{chat_id}", put(groups::rename))
         .route("/api/v1/groups/{chat_id}/timeline", get(groups::timeline))
         .route(
             "/api/v1/groups/{chat_id}/messages",

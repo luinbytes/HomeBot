@@ -108,7 +108,7 @@ private fun ProductShell(viewModel: MainViewModel, live: ConnectionState.Live, s
             when (state.destination) {
                 ProductDestination.Bots -> RosterScreen(viewModel, live)
                 is ProductDestination.DirectChat -> DirectChatScreen(viewModel, state.directTimeline, state)
-                is ProductDestination.GroupChat -> GroupChatScreen(viewModel, state.groupTimeline)
+                is ProductDestination.GroupChat -> GroupChatScreen(viewModel, state.groupTimeline, live.snapshot.bots)
                 ProductDestination.Search -> SearchScreen(viewModel, state)
                 ProductDestination.Settings -> ConnectedSettings(viewModel, live, state)
             }
@@ -263,9 +263,11 @@ private fun DirectChatScreen(viewModel: MainViewModel, timeline: ChatTimelineRes
 }
 
 @Composable
-private fun GroupChatScreen(viewModel: MainViewModel, timeline: GroupTimelineResponse?) {
+private fun GroupChatScreen(viewModel: MainViewModel, timeline: GroupTimelineResponse?, bots: List<BotSummary>) {
     if (timeline == null) return EmptyLoading("Loading group…")
     var mentionAll by remember { mutableStateOf(false) }
+    var editingGroup by remember { mutableStateOf(false) }
+    var groupTitle by remember(timeline.group.id) { mutableStateOf(timeline.group.title) }
     val mentions = if (mentionAll) timeline.participants.map { it.bot_id } else emptyList()
     ChatLayout(
         title = timeline.group.title,
@@ -278,6 +280,24 @@ private fun GroupChatScreen(viewModel: MainViewModel, timeline: GroupTimelineRes
         onAttachment = {},
         onReaction = viewModel::setReaction,
         extras = {
+            TextButton(onClick = { editingGroup = !editingGroup }) { Text(if (editingGroup) "Close group editor" else "Edit group") }
+            if (editingGroup) {
+                OutlinedTextField(groupTitle, { groupTitle = it }, label = { Text("Group name") }, modifier = Modifier.fillMaxWidth())
+                Button(onClick = { viewModel.renameGroup(groupTitle); editingGroup = false }, enabled = groupTitle.isNotBlank()) { Text("Save group name") }
+                Text("Members (${timeline.participants.size}/6)", fontWeight = FontWeight.SemiBold)
+                timeline.participants.forEach { participant ->
+                    val bot = bots.firstOrNull { it.id == participant.bot_id }
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        Text(bot?.name ?: participant.bot_id.take(8), modifier = Modifier.weight(1f))
+                        if (participant.bot_id != timeline.group.ownership_bot_id) {
+                            TextButton(onClick = { viewModel.removeGroupParticipant(participant.bot_id) }, enabled = timeline.participants.size > 2) { Text("Remove") }
+                        }
+                    }
+                }
+                bots.filter { bot -> !bot.archived && timeline.participants.none { it.bot_id == bot.id } }.forEach { bot ->
+                    TextButton(onClick = { viewModel.addGroupParticipant(bot.id) }, enabled = timeline.participants.size < 6) { Text("Add ${bot.name}") }
+                }
+            }
             TextButton(onClick = { mentionAll = !mentionAll }) { Text(if (mentionAll) "@All Bots selected" else "Mention all Bots") }
             val owner = timeline.group.ownership_bot_id
             timeline.participants.firstOrNull { it.bot_id != owner }?.let { next ->

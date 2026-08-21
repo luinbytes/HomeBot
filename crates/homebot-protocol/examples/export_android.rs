@@ -182,6 +182,9 @@ data class UpdateGroupParticipantRequest(val request_id: String, val idempotency
 data class AddGroupParticipantRequest(val request_id: String, val idempotency_key: String, val bot_id: String)
 
 @Serializable
+data class Attachment(val id: String, val filename: String, val media_type: String, val size_bytes: Long, val sha256: String)
+
+@Serializable
 sealed interface MessagePart {
     @Serializable @SerialName("text")
     data class Text(val id: String, val ordinal: Int, val text: String) : MessagePart
@@ -456,6 +459,9 @@ data class ChatTimelineResponse(val chat: ChatSummary, val messages: List<Messag
 
 @Serializable
 data class CreateAttachmentRequest(val request_id: String, val idempotency_key: String, val filename: String, val media_type: String, val size_bytes: Long, val sha256: String)
+
+@Serializable
+data class CreateAttachmentResponse(val attachment_id: String, val upload_url: String, val expires_at_unix_ms: Long)
 
 @Serializable
 data class FinalizeAttachmentRequest(val request_id: String, val idempotency_key: String, val sha256: String)

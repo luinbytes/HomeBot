@@ -58,7 +58,10 @@ scripts/verify-macos-bundle.sh "$app" "$target" "$identity"
 # notarisation service; the tarball is the reproducible release payload.
 epoch_stamp=$(date -u -r "$source_date_epoch" +%Y%m%d%H%M.%S)
 find "$app" -exec touch -h -t "$epoch_stamp" {} +
-arch=$(case "$target" in x86_64-*) echo x86_64;; aarch64-*) echo arm64;; esac)
+case "$target" in
+  x86_64-*) arch=x86_64 ;;
+  aarch64-*) arch=arm64 ;;
+esac
 basename="HomeBot-$version-macos-$arch"
 archive="$output_dir/$basename.tar.gz"
 notary_zip="$output_dir/$basename-notarization.zip"

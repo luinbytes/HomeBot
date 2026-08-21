@@ -199,8 +199,11 @@ class HomeBotClientTest {
             }
         }
 
-        val result = withTimeout(10_000) { client().connectOnce() }
-        assertTrue(result is DisconnectReason.Retry)
+        repeat(5) {
+            val result = withTimeout(10_000) { client().connectOnce() }
+            assertTrue(result is DisconnectReason.Retry)
+            assertTrue((result as DisconnectReason.Retry).failure is ClientFailure.Protocol)
+        }
     }
 
     @Test

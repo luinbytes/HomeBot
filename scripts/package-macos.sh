@@ -20,11 +20,16 @@ target_dir=${CARGO_TARGET_DIR:-target}
 source_date_epoch=${SOURCE_DATE_EPOCH:-1704067200}
 identity=${HOMEBOT_SIGN_IDENTITY:--}
 require_release_signing=${HOMEBOT_REQUIRE_RELEASE_SIGNING:-0}
+notary_profile=${HOMEBOT_NOTARY_PROFILE:-}
 
 case "$version" in *[!0-9A-Za-z.+-]*) echo "invalid version" >&2; exit 2;; esac
 case "$build_version" in ''|*[!0-9]*) echo "build version must be numeric" >&2; exit 2;; esac
 if [ "$require_release_signing" = 1 ] && [ "$identity" = - ]; then
   echo "a Developer ID Application identity is required for release packaging" >&2
+  exit 3
+fi
+if [ "$require_release_signing" = 1 ] && [ -z "$notary_profile" ]; then
+  echo "HOMEBOT_NOTARY_PROFILE is required for release packaging" >&2
   exit 3
 fi
 
@@ -45,11 +50,13 @@ sed -e "s/@VERSION@/$version/g" -e "s/@BUILD_VERSION@/$build_version/g" \
   packaging/macos/Info.plist.in > "$app/Contents/Info.plist"
 printf 'APPL????' > "$app/Contents/PkgInfo"
 
-codesign --force --timestamp=none --options runtime --entitlements packaging/macos/HomeBot.entitlements \
+timestamp=--timestamp=none
+if [ "$identity" != - ]; then timestamp=--timestamp; fi
+codesign --force "$timestamp" --options runtime --entitlements packaging/macos/HomeBot.entitlements \
   --sign "$identity" "$app/Contents/Resources/bin/homebot-server"
-codesign --force --timestamp=none --options runtime --entitlements packaging/macos/HomeBot.entitlements \
+codesign --force "$timestamp" --options runtime --entitlements packaging/macos/HomeBot.entitlements \
   --sign "$identity" "$app/Contents/MacOS/HomeBot"
-codesign --force --timestamp=none --options runtime --entitlements packaging/macos/HomeBot.entitlements \
+codesign --force "$timestamp" --options runtime --entitlements packaging/macos/HomeBot.entitlements \
   --sign "$identity" "$app"
 
 scripts/verify-macos-bundle.sh "$app" "$target" "$identity"
@@ -65,8 +72,14 @@ esac
 basename="HomeBot-$version-macos-$arch"
 archive="$output_dir/$basename.tar.gz"
 notary_zip="$output_dir/$basename-notarization.zip"
-(cd "$stage" && find HomeBot.app -print | LC_ALL=C sort | tar --no-recursion --format ustar --uid 0 --gid 0 --uname root --gname wheel -cf - -T -) | gzip -n > "$archive"
 ditto -c -k --keepParent "$app" "$notary_zip"
+notary_evidence="$output_dir/$basename.notarization.json"
+if [ "$require_release_signing" = 1 ]; then
+  scripts/notarize-macos-app.sh "$app" "$notary_zip" "$notary_profile" "$notary_evidence"
+fi
+
+# The release tarball is created after stapling so users receive the accepted ticket.
+(cd "$stage" && find HomeBot.app -print | LC_ALL=C sort | tar --no-recursion --format ustar --uid 0 --gid 0 --uname root --gname wheel -cf - -T -) | gzip -n > "$archive"
 
 signing=adhoc
 if [ "$identity" != - ]; then signing=developer-id; fi
@@ -74,6 +87,10 @@ python3 scripts/release-manifest.py \
   --output "$output_dir/$basename.manifest.json" \
   --artifact "$archive" --platform macos --architecture "$arch" \
   --version "$version" --signing "$signing"
-(cd "$output_dir" && shasum -a 256 "$basename.tar.gz" "$basename-notarization.zip" "$basename.manifest.json" > "$basename.SHA256SUMS")
+checksum_inputs="$basename.tar.gz $basename-notarization.zip $basename.manifest.json"
+if [ -f "$notary_evidence" ]; then checksum_inputs="$checksum_inputs $basename.notarization.json"; fi
+# shellcheck disable=SC2086 # Deliberately checksum the validated fixed filenames above.
+(cd "$output_dir" && shasum -a 256 $checksum_inputs > "$basename.SHA256SUMS")
 
 printf '%s\n' "$archive" "$notary_zip" "$output_dir/$basename.manifest.json" "$output_dir/$basename.SHA256SUMS"
+if [ -f "$notary_evidence" ]; then printf '%s\n' "$notary_evidence"; fi

@@ -10,6 +10,39 @@ The server persists each chat's `default`/`plan` choice independently from the p
 
 `ProviderRuntime` rejects duplicate adapter and active-operation IDs, verifies that adapters preserve the requested operation ID, and remembers which adapter owns cancellation. Approval decisions are routed back through the adapter as `allow_once`, `allow_for_session`, `deny`, or `cancel`; provider-native decision payloads never enter the server API. The server calls `finish` only after the terminal provider event is durable. Recovery asks every adapter for interrupted operation IDs; provider-native recovery tokens remain inside the adapter and provider-conversation mapping layers.
 
+## Production configuration
+
+The production server—not either client—constructs the provider registry. With no explicit configuration it creates stable Codex CLI and Claude Code profiles, searches the server's allowlisted `PATH`, persists only safe profile metadata, and reports `not_installed` or `authentication_required` instead of substituting a fixture. Desktop and Android receive safe profile IDs, capabilities, and health in the authenticated snapshot; executable paths, environment values, and secret references remain server-only.
+
+Set `HOMEBOT_PROVIDER_CONFIG` to a JSON file to replace those defaults with multiple named profiles. The file is bounded to 1 MiB, rejects unknown fields, and never accepts credential values. Example:
+
+```json
+{
+  "profiles": [
+    {
+      "id": "ecb670a1-ad4b-46b3-827a-60f2ed88cb92",
+      "adapter_id": "codex-work",
+      "kind": "codex",
+      "display_name": "Codex · Work",
+      "binary": "codex",
+      "model": null
+    },
+    {
+      "id": "c151dc0e-d57c-47f9-ae6f-64490258a79a",
+      "adapter_id": "private-api",
+      "kind": "open-ai-compatible",
+      "display_name": "Private API",
+      "model": "model-name",
+      "base_url": "https://models.example.com/v1",
+      "api_style": "responses",
+      "secret_reference_id": "09f43a83-a11b-49c7-b97f-013615af2bd2"
+    }
+  ]
+}
+```
+
+Kinds are `codex`, `claude-code`, `open-ai-compatible`, and the opt-in `generic-process` JSONL bridge. OpenAI-compatible profiles require `api_style` (`responses` or `chat-completions`) and an opaque secret reference previously created through HomeBot's secret API. Remote URLs must use HTTPS; loopback HTTP remains available for local model servers. A malformed profile aborts startup with a specific configuration error. It is never silently ignored.
+
 ## Process supervision
 
 Structured CLI adapters launch through `SupervisedProcess`. It clears the inherited environment, passes only adapter-selected variables, pipes stdin/stdout/stderr, and kills the child if the supervisor is dropped. Adapters consume structured stdout inside this crate. Stderr is kept as a byte-bounded tail, explicit secret values are redacted before retention, and reports use a diagnostic ID plus normalized exit classification.

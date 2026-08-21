@@ -10,6 +10,7 @@ mod checkpoints;
 mod groups;
 mod pairing;
 mod plugins;
+pub mod provider_bootstrap;
 mod provider_turn;
 mod routines;
 mod scheduler;
@@ -33,8 +34,8 @@ use axum::{
 };
 use futures_util::{SinkExt, StreamExt};
 use homebot_protocol::{
-    ClientMessage, ErrorCode, ErrorEnvelope, ProtocolRange, ResumeDisposition, ServerEvent,
-    ServerEventBody, Snapshot,
+    ClientMessage, ErrorCode, ErrorEnvelope, ProtocolRange, ProviderProfileSummary,
+    ResumeDisposition, ServerEvent, ServerEventBody, Snapshot,
 };
 use homebot_providers::{ProviderAdapterId, ProviderRuntime};
 use homebot_secrets::{OsSecretVault, SecretVault};
@@ -173,6 +174,11 @@ impl AppState {
     pub fn with_provider_runtime(mut self, provider_runtime: Arc<ProviderRuntime>) -> Self {
         self.provider_runtime = provider_runtime;
         self
+    }
+
+    #[must_use]
+    pub fn provider_runtime(&self) -> &Arc<ProviderRuntime> {
+        &self.provider_runtime
     }
 
     #[must_use]
@@ -894,6 +900,7 @@ async fn current_snapshot(state: &AppState) -> Snapshot {
         .into_iter()
         .filter_map(|session| browser_sessions::summary(session).ok())
         .collect();
+    let provider_profiles = provider_profile_summaries(state).await;
     Snapshot {
         bots: summaries,
         chats,
@@ -903,7 +910,58 @@ async fn current_snapshot(state: &AppState) -> Snapshot {
         chat_workspaces,
         capability_rules,
         browser_sessions,
+        provider_profiles,
     }
+}
+
+async fn provider_profile_summaries(state: &AppState) -> Vec<ProviderProfileSummary> {
+    let health = state
+        .provider_runtime
+        .health()
+        .await
+        .into_iter()
+        .collect::<std::collections::HashMap<_, _>>();
+    let mut provider_profiles = Vec::new();
+    for profile in state.storage.provider_profiles().await.unwrap_or_default() {
+        let Ok(adapter_id) = ProviderAdapterId::new(profile.adapter_kind.clone()) else {
+            continue;
+        };
+        let descriptor = state.provider_runtime.descriptor(&adapter_id).await.ok();
+        let provider_health = health.get(&adapter_id);
+        let availability = provider_health
+            .and_then(|value| serde_json::to_value(value.availability).ok())
+            .and_then(|value| value.as_str().map(str::to_owned))
+            .unwrap_or_else(|| "unavailable".to_owned());
+        let capabilities = descriptor
+            .map(|value| {
+                value
+                    .capabilities
+                    .supported
+                    .into_iter()
+                    .filter_map(|capability| serde_json::to_value(capability).ok())
+                    .filter_map(|value| value.as_str().map(str::to_owned))
+                    .collect()
+            })
+            .unwrap_or_default();
+        provider_profiles.push(ProviderProfileSummary {
+            id: profile.id,
+            adapter_id: profile.adapter_kind,
+            kind: profile
+                .configuration
+                .get("provider_kind")
+                .and_then(Value::as_str)
+                .unwrap_or("custom")
+                .to_owned(),
+            display_name: profile.display_name,
+            availability,
+            status_message: provider_health.map_or_else(
+                || "Provider is not registered".to_owned(),
+                |value| value.message.clone(),
+            ),
+            capabilities,
+        });
+    }
+    provider_profiles
 }
 
 async fn send_json_sink<S>(sink: &mut S, value: &impl serde::Serialize) -> Result<(), ()>

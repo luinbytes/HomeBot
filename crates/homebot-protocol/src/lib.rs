@@ -239,6 +239,25 @@ pub struct Snapshot {
     pub capability_rules: Vec<CapabilityRuleSummary>,
     #[serde(default)]
     pub browser_sessions: Vec<BrowserSessionSummary>,
+    #[serde(default)]
+    pub provider_profiles: Vec<ProviderProfileSummary>,
+}
+
+/// Safe, server-authoritative provider configuration exposed to clients.
+///
+/// Executable paths, environment variables, and secret references intentionally
+/// remain server-only.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProviderProfileSummary {
+    pub id: Uuid,
+    pub adapter_id: String,
+    pub kind: String,
+    pub display_name: String,
+    pub availability: String,
+    pub status_message: String,
+    #[serde(default)]
+    pub capabilities: Vec<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]

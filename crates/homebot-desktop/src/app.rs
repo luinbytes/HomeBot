@@ -2,7 +2,7 @@ use eframe::egui;
 use egui::{Align, CentralPanel, Layout, RichText, SidePanel, TopBottomPanel};
 use homebot_protocol::{
     BotAttention, BotColor, BotProviderStatus, BotShape, BotSummary, ChatSummary,
-    PullRequestMetadata, ServerEvent, ServerEventBody, VcsStatus,
+    ProviderProfileSummary, PullRequestMetadata, ServerEvent, ServerEventBody, VcsStatus,
 };
 use std::sync::mpsc::{Receiver, channel};
 use std::time::Instant;
@@ -70,6 +70,7 @@ pub struct HomeBotApp {
     pub pairing_offer: Option<homebot_protocol::PairingOffer>,
     pub capability_rules: Vec<homebot_protocol::CapabilityRuleSummary>,
     pub browser_sessions: Vec<homebot_protocol::BrowserSessionSummary>,
+    pub provider_profiles: Vec<ProviderProfileSummary>,
     pairing_endpoint: String,
     pairing_insecure_private_acknowledged: bool,
     vcs_commit_message: String,
@@ -111,6 +112,7 @@ impl Default for HomeBotApp {
             pairing_offer: None,
             capability_rules: Vec::new(),
             browser_sessions: Vec::new(),
+            provider_profiles: Vec::new(),
             pairing_endpoint: "http://127.0.0.1:7123".to_owned(),
             pairing_insecure_private_acknowledged: false,
             vcs_commit_message: String::new(),
@@ -432,6 +434,7 @@ impl HomeBotApp {
             .hydrate(snapshot.repository_workspaces, snapshot.chat_workspaces);
         self.capability_rules = snapshot.capability_rules;
         self.browser_sessions = snapshot.browser_sessions;
+        self.provider_profiles = snapshot.provider_profiles;
     }
 
     fn apply_device_revoked(&mut self, device: homebot_protocol::DeviceSessionSummary) {
@@ -1449,7 +1452,33 @@ impl HomeBotApp {
             ui.text_edit_multiline(&mut draft.description);
             identity_picker(ui, &mut draft);
             ui.collapsing("Advanced settings", |ui| {
-                ui.label("Provider profile and permissions are configured here.");
+                let selected = draft
+                    .provider_profile_id
+                    .and_then(|id| {
+                        self.provider_profiles
+                            .iter()
+                            .find(|profile| profile.id == id)
+                    })
+                    .map_or("Not configured", |profile| profile.display_name.as_str());
+                egui::ComboBox::from_label("Provider")
+                    .selected_text(selected)
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(&mut draft.provider_profile_id, None, "Not configured");
+                        for profile in &self.provider_profiles {
+                            ui.selectable_value(
+                                &mut draft.provider_profile_id,
+                                Some(profile.id),
+                                format!("{} · {}", profile.display_name, profile.availability),
+                            );
+                        }
+                    });
+                if let Some(profile) = draft.provider_profile_id.and_then(|id| {
+                    self.provider_profiles
+                        .iter()
+                        .find(|profile| profile.id == id)
+                }) {
+                    ui.small(&profile.status_message);
+                }
             });
             if let Some(error) = self.editor_error {
                 ui.colored_label(self.theme.palette.danger, editor_message(error));

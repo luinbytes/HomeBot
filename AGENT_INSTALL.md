@@ -130,7 +130,7 @@ command -v codex || true
 command -v claude || true
 ```
 
-Do not print provider configuration or tokens. Codex, Claude Code, and OpenAI-compatible adapters are implemented, but this environment may only run their protocol-faithful fixtures. Never place BYOK values in command-line arguments, repository files, SQLite, logs, or this verification transcript. On Linux, verify a Secret Service without displaying entries using `busctl --user status org.freedesktop.secrets >/dev/null`; a missing or locked service is a fail-closed provider blocker, not a reason to use plaintext storage.
+Do not print provider configuration or tokens. The production server automatically registers stable Codex CLI and Claude Code profiles. For multiple accounts or an OpenAI-compatible endpoint, create the secret reference through the authenticated HomeBot API, write only the secret-free JSON shape documented in `docs/providers.md`, set `HOMEBOT_PROVIDER_CONFIG` to its absolute path, and restart the service. Never place BYOK values in command-line arguments, repository files, SQLite, logs, or this verification transcript. On Linux, verify a Secret Service without displaying entries using `busctl --user status org.freedesktop.secrets >/dev/null`; a missing or locked service is a fail-closed provider blocker, not a reason to use plaintext storage.
 
 ## 7. Networking and Android pairing
 

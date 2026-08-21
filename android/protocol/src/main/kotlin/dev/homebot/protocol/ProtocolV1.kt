@@ -64,6 +64,18 @@ data class Snapshot(
     val chat_workspaces: List<ChatWorkspaceSummary> = emptyList(),
     val capability_rules: List<CapabilityRuleSummary> = emptyList(),
     val browser_sessions: List<BrowserSessionSummary> = emptyList(),
+    val provider_profiles: List<ProviderProfileSummary> = emptyList(),
+)
+
+@Serializable
+data class ProviderProfileSummary(
+    val id: String,
+    val adapter_id: String,
+    val kind: String,
+    val display_name: String,
+    val availability: String,
+    val status_message: String,
+    val capabilities: List<String> = emptyList(),
 )
 
 @Serializable

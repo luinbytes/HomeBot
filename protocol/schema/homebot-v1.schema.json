@@ -3507,6 +3507,47 @@
         "maximum"
       ]
     },
+    "ProviderProfileSummary": {
+      "description": "Safe, server-authoritative provider configuration exposed to clients.\n\nExecutable paths, environment variables, and secret references intentionally\nremain server-only.",
+      "type": "object",
+      "properties": {
+        "adapter_id": {
+          "type": "string"
+        },
+        "availability": {
+          "type": "string"
+        },
+        "capabilities": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "display_name": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "kind": {
+          "type": "string"
+        },
+        "status_message": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "adapter_id",
+        "kind",
+        "display_name",
+        "availability",
+        "status_message"
+      ]
+    },
     "PullRequestMetadata": {
       "type": "object",
       "properties": {
@@ -5922,6 +5963,13 @@
           "default": [],
           "items": {
             "$ref": "#/$defs/GroupChatSummary"
+          }
+        },
+        "provider_profiles": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ProviderProfileSummary"
           }
         },
         "repository_workspaces": {

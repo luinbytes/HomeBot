@@ -7,10 +7,10 @@ This file is operational state for coding agents. It is not user-facing product 
 ## Current state
 
 - Current milestone: M6, packaging, hardening and the v1 parity gate. M0 through M5 are verified complete.
-- Current Linear issue: 6C7-70, performance, resource and accessibility budgets (`In Progress`).
-- Current Git branch: `feat/6c7-70-performance-accessibility`.
-- Latest public and verified implementation commit: `4c65711ca271f341b05355178b7998977bcd59af` (6C7-69 security hardening on public `main`).
-- Latest verified GitHub Actions run: `32458792462`, all thirteen jobs passed, including Rust quality, Android, dependency gates, Linux, both macOS builds/goldens/packages, and the Arch clean package lifecycle.
+- Current Linear issue: 6C7-74, Bot lifecycle, conversation semantics and search parity (`In Progress`).
+- Current Git branch: `feat/6c7-74-lifecycle-conversation-parity`.
+- Latest public and verified implementation commit: `bf1a613019ee02b10ee0c7d4a4e0f685003fc78b` (6C7-70 performance/resource/accessibility gates on public `main`).
+- Latest verified GitHub Actions run: `32461879059`, all sixteen jobs passed, including Rust quality, Android, dependency gates, Linux and Arch resource probes, both macOS architectures' builds/goldens/packages, and Intel/Apple Silicon resource probes.
 - Public repository: `https://github.com/luinbytes/HomeBot`.
 - Required commit identity: `luinbytes <42706009+luinbytes@users.noreply.github.com>`.
 
@@ -36,7 +36,7 @@ Current blockers:
 
 - Final release blockers remain external to this environment: neither Codex nor Claude is installed/authenticated for genuine provider smoke tests, and Apple Developer ID/notarisation credentials plus physical clean Intel/Apple Silicon verification machines are unavailable. Continue every other unblocked gate.
 - No active M2 blocker. Corrective issue 6C7-73 and epic 6C7-41 are verified Done.
-- `egui` 0.32.3 transitively uses unmaintained `ttf-parser` 0.25.1. RUSTSEC-2026-0192 reports no known vulnerability or safe upgrade; review remains mandatory in 6C7-69.
+- `egui` 0.32.3 transitively uses unmaintained `ttf-parser` 0.25.1. RUSTSEC-2026-0192 reports no known vulnerability or safe upgrade; the exact-revision 6C7-69 review accepted the warning with a required pre-v1 dependency recheck.
 
 ## Completed work
 
@@ -63,19 +63,21 @@ Current blockers:
 - 6C7-67, AUR-ready Arch/Omarchy desktop and headless packaging with a clean install/update/uninstall CI lifecycle.
 - 6C7-68, explicit manifest-driven desktop update staging, verified pre-migration backups, too-new-schema refusal and deterministic recovery coverage.
 - 6C7-69, repository-wide security hardening, parser/resource bounds, hostile repository/MCP/provider fixtures, all-capability negative approvals and a clean exact-revision security scan.
-- Most recent completed issue: 6C7-69.
+- 6C7-70, measurable startup/reconnect/chat/stream/concurrency/CPU/RSS budgets, bounded local telemetry, desktop keyboard/text scaling, Android screen-reader semantics and cross-platform CI resource gates.
+- Most recent completed issue: 6C7-70.
 - Focused repository presentation pass: README badges and real desktop previews added from checked-in visual goldens; tracked-file hygiene audited with no junk removals required and `.gitignore` expanded for common Rust, Android, editor, environment, Python, Node, log and temporary outputs.
 
 ## Immediate next work
 
-1. Finish 6C7-70's full workspace and three-platform performance/resource CI, Android semantics/lint and updated desktop golden verification; publish only after the complete remote gate.
-2. Execute 6C7-71's complete cross-platform parity gate.
-3. Keep real authenticated Codex/Claude smoke tests and final Apple signing/notarisation as explicit release blockers until suitable credentials and machines are available.
+1. Implement 6C7-74's verified Bot lifecycle, typed reference, thread/reaction, search and demonstrated-Skill parity gaps across server, desktop and Android.
+2. Implement 6C7-76's group rename/2-to-6 membership, shared browser/takeover and durable capability-rule parity gaps.
+3. Execute 6C7-75's physical platforms, assistive technologies, signing/notarisation and live Codex/Claude acceptance, then finish 6C7-71 and publish v1.0.0 only if every row passes.
 
 ## Verification state
 
 Verified at the latest remote baseline:
 
+- GitHub Actions run `32461879059` passed all sixteen jobs for public 6C7-70 commit `bf1a613`. Android lint/tests/APK, the five-cycle rejected-event cleanup stress test, strict Rust/workspace gates, fresh Arch package lifecycle and Linux/macOS Intel/macOS Apple Silicon process-resource budgets all passed.
 - GitHub Actions run `32458792462` passed all thirteen jobs for public 6C7-69 commit `4c65711`. The exact-revision canonical security scan reports complete repository coverage, zero surviving findings and no unresolved high/critical issue.
 - GitHub Actions run `32456932817` passed all thirteen jobs for public 6C7-68 commit `e52bdbc`. It verified updater/migration recovery, Android, dependency policy/audit, Linux, both macOS builds and packages/goldens, and the Arch clean package lifecycle.
 - GitHub Actions run `32455982765` passed all thirteen jobs for the final 6C7-67 tree, including source-archive creation, package build, clean install, update, uninstall, manifest/checksum generation and artifact upload in a fresh Arch container.
@@ -130,7 +132,7 @@ Verified locally at the current baseline:
 ## Known failures and incomplete implementation
 
 - macOS Developer ID signing/notarisation credentials and clean Intel/Apple Silicon test machines are unavailable in this environment. CI can verify reproducible ad-hoc-signed bundles, but those checks do not satisfy final release signing acceptance.
-- 6C7-70 remote platform/resource and Android verification plus the final parity/release artifacts remain incomplete roadmap work.
+- Concrete final-parity gaps are tracked in urgent 6C7-74 (Bot/chat/search), 6C7-76 (groups/shared computer/policy) and 6C7-75 (physical/live-provider/signing acceptance); each blocks 6C7-71.
 - Real authenticated Codex/Claude round trips are unavailable in this environment. OpenAI-compatible and CDP behavior use protocol-faithful local fixtures.
 - No release artifact exists. Do not describe HomeBot as installable or v1-ready.
 

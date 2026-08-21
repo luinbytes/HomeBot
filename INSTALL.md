@@ -40,7 +40,7 @@ The unit binds to loopback, stores data beneath `~/.local/share/homebot`, and ob
 
 ## Android and pairing
 
-The native Android application and authoritative protocol client build in CI, but no public release APK exists yet. The desktop Devices screen creates a five-minute, single-use QR/deep-link credential, which is exchanged for a named and revocable device session. Permanent credentials never appear in the QR code. See [Remote access and device pairing](docs/remote-access.md) for endpoint and revocation rules.
+The native Android application and authoritative protocol client build in CI, but no public release APK exists yet. CI's debug and ephemeral-key release-pipeline APKs are not public release candidates. Once v1 acceptance is complete, install only `HomeBot-1.0.0-android.apk` after verifying `HomeBot-1.0.0-android.SHA256SUMS` and the published signing-certificate SHA-256 digest, then use `adb install HomeBot-1.0.0-android.apk` (or open the file on-device). Upgrades use `adb install -r` and must preserve the Keystore-backed device session. The desktop Devices screen creates a five-minute, single-use QR/deep-link credential, which is exchanged for a named and revocable device session. Permanent credentials never appear in the QR code. See [Remote access and device pairing](docs/remote-access.md) for endpoint and revocation rules.
 
 ## Headless and remote access
 

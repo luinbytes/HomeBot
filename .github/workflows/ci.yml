@@ -127,11 +127,34 @@ jobs:
       - uses: android-actions/setup-android@v3
       - name: Lint, test, and assemble Android
         working-directory: android
-        run: ./gradlew lintDebug testDebugUnitTest assembleDebug --stacktrace
+        run: >-
+          ./gradlew lintDebug testDebugUnitTest assembleDebug assembleRelease
+          -PhomebotVersionName=1.0.0 -PhomebotVersionCode=1000000 --stacktrace
+      - name: Exercise signed Android release packaging with CI-only key
+        env:
+          HOMEBOT_VERSION: 1.0.0
+          HOMEBOT_ANDROID_SIGNING: ci-ephemeral
+        run: |
+          export HOMEBOT_CI_KEY_PASSWORD="$(openssl rand -hex 24)"
+          keytool -genkeypair -keystore "$RUNNER_TEMP/homebot-ci.keystore" \
+            -storepass:env HOMEBOT_CI_KEY_PASSWORD -keypass:env HOMEBOT_CI_KEY_PASSWORD \
+            -alias homebot-ci -keyalg RSA -keysize 2048 \
+            -validity 1 -dname 'CN=HomeBot CI only,OU=Not for release,O=HomeBot,C=US'
+          apksigner=$(find "$ANDROID_HOME/build-tools" -mindepth 2 -maxdepth 2 -type f -name apksigner -print | sort -V | tail -1)
+          "$apksigner" sign --ks "$RUNNER_TEMP/homebot-ci.keystore" \
+            --ks-pass env:HOMEBOT_CI_KEY_PASSWORD --key-pass env:HOMEBOT_CI_KEY_PASSWORD \
+            --out "$RUNNER_TEMP/HomeBot-ci-signed.apk" \
+            android/app/build/outputs/apk/release/app-release-unsigned.apk
+          scripts/package-android.sh "$RUNNER_TEMP/HomeBot-ci-signed.apk" android/app/build/release-dist
       - uses: actions/upload-artifact@v4
         with:
           name: HomeBot-Android-debug
           path: android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: HomeBot-Android-release-pipeline-ci-only
+          path: android/app/build/release-dist/*
           if-no-files-found: error
 
   macos-package:

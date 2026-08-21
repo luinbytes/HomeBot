@@ -15,7 +15,9 @@ def main() -> None:
     parser.add_argument("--architecture", required=True)
     parser.add_argument("--version", required=True)
     parser.add_argument(
-        "--signing", required=True, choices=("unsigned", "adhoc", "developer-id", "package")
+        "--signing",
+        required=True,
+        choices=("unsigned", "adhoc", "developer-id", "package", "android-release", "ci-ephemeral"),
     )
     parser.add_argument("--protocol-minimum", type=int, default=1)
     parser.add_argument("--protocol-maximum", type=int, default=1)

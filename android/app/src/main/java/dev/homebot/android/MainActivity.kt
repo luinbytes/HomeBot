@@ -6,6 +6,8 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -121,7 +123,12 @@ private fun RosterScreen(viewModel: MainViewModel, live: ConnectionState.Live) {
             }
         }
         items(live.snapshot.bots.filter { it.archived == archived }, key = { it.id }) { bot ->
-            BotRow(bot, { viewModel.openBot(bot.id) }, { viewModel.setBotArchived(bot.id, !bot.archived) })
+            BotRow(
+                bot,
+                { viewModel.openBot(bot.id) },
+                { viewModel.setBotArchived(bot.id, !bot.archived) },
+                { name, role -> viewModel.updateBot(bot, name, role) },
+            )
         }
         item {
             TextButton(onClick = { archived = !archived }) { Text(if (archived) "Show active Bots" else "Show archived Bots") }
@@ -143,18 +150,31 @@ private fun RosterScreen(viewModel: MainViewModel, live: ConnectionState.Live) {
 }
 
 @Composable
-private fun BotRow(bot: BotSummary, onOpen: () -> Unit, onArchive: () -> Unit) {
+private fun BotRow(bot: BotSummary, onOpen: () -> Unit, onArchive: () -> Unit, onUpdate: (String, String) -> Unit) {
+    var editing by remember(bot.id) { mutableStateOf(false) }
+    var name by remember(bot.id) { mutableStateOf(bot.name) }
+    var role by remember(bot.id) { mutableStateOf(bot.title) }
     Card(shape = CardShape) {
-        Row(Modifier.fillMaxWidth().clickable(onClick = onOpen).padding(15.dp), verticalAlignment = Alignment.CenterVertically) {
-            Box(Modifier.background(Violet.copy(alpha = .14f), CircleShape).padding(12.dp)) {
-                Text(bot.name.take(1).uppercase(), color = Violet, fontWeight = FontWeight.Black)
+        Column(Modifier.fillMaxWidth().padding(15.dp)) {
+            Row(Modifier.fillMaxWidth().clickable(onClick = onOpen), verticalAlignment = Alignment.CenterVertically) {
+                Box(Modifier.background(Violet.copy(alpha = .14f), CircleShape).padding(12.dp)) {
+                    Text(bot.name.take(1).uppercase(), color = Violet, fontWeight = FontWeight.Black)
+                }
+                Column(Modifier.weight(1f).padding(start = 12.dp)) {
+                    Text(bot.name + if (bot.unread_count > 0) "  ${bot.unread_count}" else "", fontWeight = FontWeight.Bold)
+                    Text(bot.title, color = Muted)
+                    Text(bot.provider, color = Muted, fontSize = 12.sp)
+                }
+                TextButton(onClick = { editing = !editing }) { Text("Edit") }
+                TextButton(onClick = onArchive) { Text(if (bot.archived) "Restore" else "Archive") }
             }
-            Column(Modifier.weight(1f).padding(start = 12.dp)) {
-                Text(bot.name + if (bot.unread_count > 0) "  ${bot.unread_count}" else "", fontWeight = FontWeight.Bold)
-                Text(bot.title, color = Muted)
-                Text(bot.provider, color = Muted, fontSize = 12.sp)
+            if (editing) {
+                OutlinedTextField(name, { name = it }, label = { Text("Name") }, modifier = Modifier.fillMaxWidth())
+                OutlinedTextField(role, { role = it }, label = { Text("Role") }, modifier = Modifier.fillMaxWidth())
+                Button(onClick = { onUpdate(name, role); editing = false }, enabled = name.isNotBlank() && role.isNotBlank()) {
+                    Text("Save changes")
+                }
             }
-            TextButton(onClick = onArchive) { Text(if (bot.archived) "Restore" else "Archive") }
         }
     }
 }
@@ -173,8 +193,15 @@ private fun DirectChatScreen(viewModel: MainViewModel, timeline: ChatTimelineRes
         onStop = viewModel::stopWorking,
         onRetry = viewModel::retry,
         onDecision = viewModel::decide,
+        onAttachment = viewModel::sendAttachment,
         extras = {
             OutlinedButton(onClick = viewModel::loadCodingWorkspace) { Text("Workspace & diff") }
+            if (timeline.checkpoints.size >= 2) {
+                TextButton(onClick = viewModel::compareRecentCheckpoints) { Text("Compare latest checkpoints") }
+            }
+            if (timeline.checkpoints.isNotEmpty()) {
+                TextButton(onClick = viewModel::restoreLatestCheckpoint) { Text("Restore latest checkpoint safely") }
+            }
             state.coding.status?.let { Text("${it.branch ?: "detached"} • ${it.entries.size} changed files", color = Muted, fontSize = 12.sp) }
             state.coding.diff?.let { Text(it.patch.take(1_200), fontSize = 11.sp) }
         },
@@ -193,6 +220,7 @@ private fun GroupChatScreen(viewModel: MainViewModel, timeline: GroupTimelineRes
         activities = emptyList(), approvals = emptyList(), queue = emptyList(),
         onSend = { text, _ -> viewModel.send(text, mentions = mentions) },
         onStop = viewModel::stopWorking, onRetry = {}, onDecision = { _, _ -> },
+        onAttachment = {},
         extras = {
             TextButton(onClick = { mentionAll = !mentionAll }) { Text(if (mentionAll) "@All Bots selected" else "Mention all Bots") }
             val owner = timeline.group.ownership_bot_id
@@ -215,10 +243,14 @@ private fun ChatLayout(
     onStop: () -> Unit,
     onRetry: (MessageSummary) -> Unit,
     onDecision: (ApprovalSummary, Boolean) -> Unit,
+    onAttachment: (android.net.Uri) -> Unit,
     extras: @Composable () -> Unit,
 ) {
     var composer by remember { mutableStateOf("") }
     var steering by remember { mutableStateOf(false) }
+    val attachmentPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+        if (uri != null) onAttachment(uri)
+    }
     Column(Modifier.fillMaxSize()) {
         Row(Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
@@ -243,6 +275,7 @@ private fun ChatLayout(
                 TextButton(onClick = { steering = !steering }, enabled = running) {
                     Text(if (steering) "Steering" else if (running) "Queue follow-up" else "Message")
                 }
+                TextButton(onClick = { attachmentPicker.launch("*/*") }) { Text("Attach") }
                 Spacer(Modifier.weight(1f))
                 Button(
                     onClick = { onSend(composer.trim(), steering); composer = "" }, enabled = composer.isNotBlank(),

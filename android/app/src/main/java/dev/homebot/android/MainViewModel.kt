@@ -1,6 +1,8 @@
 package dev.homebot.android
 
 import android.app.Application
+import android.net.Uri
+import android.provider.OpenableColumns
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import dev.homebot.android.connection.ConnectionState
@@ -133,6 +135,42 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             is ProductDestination.GroupChat -> homeBot.client.sendGroupMessage(destination.chatId, content, mentions).getOrThrow()
             else -> error("Open a chat before sending a message")
         }
+        refreshSelection(showLoading = false)
+    }
+
+    fun sendAttachment(uri: Uri) = perform {
+        val resolver = getApplication<Application>().contentResolver
+        val mediaType = resolver.getType(uri) ?: "application/octet-stream"
+        var filename = "attachment"
+        resolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
+            if (cursor.moveToFirst()) filename = cursor.getString(0) ?: filename
+        }
+        val bytes = resolver.openInputStream(uri)?.use { it.readBytes() }
+            ?: error("Android could not read this attachment")
+        val attachment = homeBot.client.uploadAttachment(filename, mediaType, bytes).getOrThrow()
+        val chat = (mutableProduct.value.destination as? ProductDestination.DirectChat)?.chatId
+            ?: error("Attachments are currently supported in direct chats")
+        homeBot.client.sendMessage(chat, "", attachmentIds = listOf(attachment.id)).getOrThrow()
+        refreshSelection(showLoading = false)
+    }
+
+    fun compareRecentCheckpoints() = perform {
+        val timeline = mutableProduct.value.directTimeline ?: error("Open a direct chat first")
+        require(timeline.checkpoints.size >= 2) { "At least two checkpoints are required for an exact diff" }
+        val from = timeline.checkpoints[timeline.checkpoints.lastIndex - 1]
+        val to = timeline.checkpoints.last()
+        val diff = homeBot.client.checkpointDiff(timeline.chat.id, from.id, to.id).getOrThrow()
+        mutableProduct.value = mutableProduct.value.copy(
+            coding = mutableProduct.value.coding.copy(
+                diff = dev.homebot.protocol.WorkingTreeDiffResponse(false, diff.patch, diff.files),
+            ),
+        )
+    }
+
+    fun restoreLatestCheckpoint() = perform {
+        val checkpoint = mutableProduct.value.directTimeline?.checkpoints?.lastOrNull()
+            ?: error("No checkpoint is available to restore")
+        homeBot.client.restoreCheckpoint(checkpoint.id).getOrThrow()
         refreshSelection(showLoading = false)
     }
 

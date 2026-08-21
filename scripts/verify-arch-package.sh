@@ -16,9 +16,9 @@ systemd-analyze verify /usr/lib/systemd/user/homebot.service
 pacman -U --noconfirm "$update_package"
 pacman -Q homebot | grep -q -- '-2$'
 
-data_sentinel=/tmp/homebot-package-user-data
-mkdir -p "$data_sentinel"
-printf 'preserve\n' > "$data_sentinel/sentinel"
+data_sentinel=/home/builder/.local/share/homebot
+install -d -o builder -g builder -m 700 "$data_sentinel"
+runuser -u builder -- sh -c 'printf "preserve\n" > "$HOME/.local/share/homebot/sentinel"'
 pacman -Rns --noconfirm homebot
 test ! -e /usr/bin/homebot-desktop
 test ! -e /usr/bin/homebot-server

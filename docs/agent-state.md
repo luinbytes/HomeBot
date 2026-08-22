@@ -6,10 +6,10 @@ This file is operational state for coding agents. It is not user-facing product 
 
 ## Current state
 
-- Current milestone: M6 packaging, hardening and the v1 parity gate. M0 through M5 are verified complete again after the production desktop corrections.
-- Current Linear issues: 6C7-66 and 6C7-75 remain externally blocked `In Progress`; final gate 6C7-71 remains Todo and blocked by them. 6C7-80, 6C7-81, 6C7-45, 6C7-52, M2 epic 6C7-41 and M3 epic 6C7-48 are verified Done.
-- Current Git branch: public `main` is authoritative. Local continuity work uses `audit/6c7-75-release-readiness`; this state-only handoff follows the verified public implementation and documentation trees without changing product code.
-- Latest public and verified implementation commit: `9ba660df513b2de0d2f3d02b8501b955ad4714e2` (exact implementation tree `29958ae7bdc4bf4c9560e2be2a8cb883f8cdd03f`). It includes production provider/release work, the real `HomeBotApp` visual/group correction, and the complete authenticated desktop routine workflow.
+- Current milestone: M6 packaging, hardening and the v1 parity gate. M1, M2 and M5 are temporarily reopened while the final coherence corrections receive remote verification; the implementation is on public `main`.
+- Current Linear issues: 6C7-66 and 6C7-75 remain externally blocked `In Progress`; final gate 6C7-71 remains Todo and blocked by them plus the active corrective issues 6C7-80, 6C7-82, 6C7-88 and 6C7-89 until their exact tree passes remote CI.
+- Current Git branch: public `main` is authoritative. Local audit commits may have different metadata when authenticated publication uses GitHub's blob/tree/commit/ref API; compare exact trees rather than local commit IDs.
+- Latest public implementation commit: `6e98b9a8f05ac417fd0e26651523ebb674c24bb0` (exact implementation tree `b12e53dec734f8ad438924479d68410148098304`). It adds complete Android Bot/routine management parity, restores safe simple-command resolution for production generic-process profiles, and removes an unsupported desktop reaction glyph from the production path and checked-in screenshots.
 - Latest verified GitHub Actions run: `32575392734`, all sixteen jobs passed for documentation tree `90039323c7b9ea6509a8cb9013961239a141bd0e`, merged as public `main` commit `a523c55b2ae4548b93ed49493dd45499571854c2`. The latest product implementation remains `9ba660df513b2de0d2f3d02b8501b955ad4714e2` (tree `29958ae7bdc4bf4c9560e2be2a8cb883f8cdd03f`).
 - Public repository: `https://github.com/luinbytes/HomeBot`.
 - Required commit identity: `luinbytes <42706009+luinbytes@users.noreply.github.com>`.
@@ -38,7 +38,7 @@ Architecture decisions currently frozen:
 
 Current blockers:
 
-- No known non-external v1 work remains open after the production visual, authoritative group, complete routine, and documentation reconciliations passed remote CI. A fresh repository scan found no `TODO`, `FIXME`, `todo!()` or `unimplemented!()` implementation marker requiring a new issue.
+- The coherence audit found three non-external gaps and tracks them narrowly: Android lacked reachable complete Bot and routine management controls (6C7-82/89), production generic-process profiles could not resolve a configured simple command after clearing their child environment (6C7-88), and the default desktop reaction control rendered an unsupported glyph (reopened 6C7-80). Corrections are public on `main`; keep these issues and their M1/M2/M5 epics open until remote CI verifies the exact tree.
 - External final-release blockers remain: neither Codex nor Claude is installed/authenticated for genuine provider smoke tests; Apple Developer ID/notarisation credentials and clean Intel/Apple Silicon machines are unavailable; and physical Arch/Omarchy and Android devices with VoiceOver/TalkBack-equivalent acceptance facilities are unavailable.
 - `egui` 0.32.3 transitively uses unmaintained `ttf-parser` 0.25.1. RUSTSEC-2026-0192 reports no known vulnerability or safe upgrade; the exact-revision 6C7-69 review accepted the warning with a required pre-v1 dependency recheck.
 
@@ -64,6 +64,8 @@ Current blockers:
 - 6C7-63, Android routine/run/trigger controls, Skills assignment, plugin/MCP controls, provider/endpoint settings, opaque secret references and paired-device self management with owner administration still denied.
 - 6C7-64, event-driven Android Bot/approval/routine/error notifications, exact deep links and connectivity-driven reconnect without permanent polling.
 - M5 epic 6C7-59: native Android and secure remote parity verified complete.
+- 6C7-82 and 6C7-89 corrective implementation: Android now reaches every authoritative routine create/edit/duplicate/delete/dry-run/recording mutation and every Bot pin/hide/review-hidden/duplicate/archive/delete mutation, with exact route/authentication tests and server-projection refresh after success. Completion awaits remote CI.
+- 6C7-88 corrective implementation: a production generic-process profile seeds only the selected executable search path into its otherwise cleared environment, resolves before launch, and remains shell-free. Completion awaits remote CI.
 - 6C7-67, AUR-ready Arch/Omarchy desktop and headless packaging with a clean install/update/uninstall CI lifecycle.
 - 6C7-68, explicit manifest-driven desktop update staging, verified pre-migration backups, too-new-schema refusal and deterministic recovery coverage.
 - 6C7-69, repository-wide security hardening, parser/resource bounds, hostile repository/MCP/provider fixtures, all-capability negative approvals and a clean exact-revision security scan.
@@ -116,6 +118,9 @@ Verified at the latest remote baseline:
 
 Verified locally at the current baseline:
 
+- The final coherence tree passes `./scripts/check.sh`, including formatting, strict all-target/all-feature clippy, the complete Rust workspace suite, protocol schema and generated Android drift checks, all production desktop visual goldens, packaging contracts, the security gate, dependency policy/audit, and the performance/accessibility gate. The generic-process selected-search-path regression test and production visual-golden suite also pass independently.
+- Updated production screenshots were manually inspected after regeneration. The unsupported reaction glyph is gone, and the audited chat, approval, contextual-computer and provider-unavailable layouts show no clipping, overlap or accidental always-open developer controls.
+- Local Android Gradle execution is unavailable because this container has no cached Gradle 8.13 distribution and cannot reach the distribution host. Android compile, lint, JVM tests and debug/minified builds therefore require the repository's remote CI before the corrective Android issues can close.
 - 6C7-70 targeted budgets pass: real cold start/authenticated probes, replay and stale-cursor reconnect, 10,000-message chat hydration, eight-Bot/2,000-event streaming projection, bounded local-only telemetry and 80%-200% text scaling. Desktop/Android accessibility semantics and cross-platform process-resource CI are implemented; the Appearance visual golden was intentionally updated and reverified.
 - 6C7-69's Rust security gate passes: bounded protocol/WebSocket/MCP inputs, hostile Git configuration denial, provider URL credential rejection, all capability-class approval negatives, deterministic parser properties, secret-leak scanning, strict clippy, schema/Android drift and visual goldens. The authenticated invalid-token fixture passes five consecutive runs after keeping its temporary SQLite directory alive for the Router lifetime.
 - 6C7-68's complete `./scripts/check.sh` gate passes with 169 Rust tests, strict clippy, all visual goldens, schema/Android drift checks and deterministic packaging-contract checks. A follow-up symlink-negative test also passes, bringing the targeted current total to 170. Storage coverage upgrades and verifies backups for every prior schema v1–v16, reuses an interrupted-launch backup, refuses v18, fails closed on corruption/backup failure/symlink substitution and preserves transactional rollback. Desktop coverage proves compatible same-origin manifests, explicit staging, exact streamed size/SHA-256, traversal denial and partial-file cleanup.
@@ -143,7 +148,7 @@ Verified locally at the current baseline:
 - 6C7-58's complete local gate passes: strict all-target clippy, every workspace test suite, all 15 visual fixtures, schema drift, generated Android binding drift and cargo-deny advisories/bans/licenses/sources.
 - Its server fixtures prove typed steering priority/FIFO follow-ups, duplicate replay, cancel-order stability, restart durability, three automatic queued turns, default/plan/default capability routing, unsupported-mode denial, compaction/reset concurrency exclusion, transcript preservation, fresh provider-context isolation and restart recovery. The 32-test server suite passed three consecutive 16-thread stress runs after the SQLite write-reservation fix.
 
-6C7-73 remains verified Done. M2 epic 6C7-41 and M3 epic 6C7-48 are verified Done again after the production visual/group/routine corrections passed remote CI. M4 and M5 remain verified Done. M6 epic 6C7-65 and macOS packaging issue 6C7-66 are In Progress.
+6C7-73 and M3/M4 remain verified Done. M1 epic 6C7-34, M2 epic 6C7-41 and M5 epic 6C7-59 are temporarily In Progress for the coherence corrections above. M6 epic 6C7-65 and macOS packaging issue 6C7-66 are In Progress.
 
 ## Known failures and incomplete implementation
 
@@ -155,7 +160,7 @@ Verified locally at the current baseline:
 
 ## Environment notes
 
-- Workspace: `/workspace/scratch/e0bbfdbe8a8b/HomeBot`.
+- Workspace: `/workspace/scratch/efbaf46a098b/HomeBot`.
 - Rust commands require `RUSTUP_HOME=/tmp/homebot-rustup`, `CARGO_HOME=/tmp/homebot-cargo`, and `/tmp/homebot-cargo/bin` first in `PATH`.
 - Rust 1.98's bundled `rust-lld` fails to link the large server test binary in this container. Local verification uses `CARGO_TARGET_DIR=/tmp/homebot-target` and `RUSTFLAGS='-C linker=cc -C link-arg=-fuse-ld=bfd -C codegen-units=1'`; GitHub CI uses the normal stable toolchain and is green.
 - Local cargo-deny binary: `/tmp/cargo-deny-0.20.2-x86_64-unknown-linux-musl/cargo-deny`.

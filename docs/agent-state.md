@@ -7,10 +7,10 @@ This file is operational state for coding agents. It is not user-facing product 
 ## Current state
 
 - Current milestone: M6 packaging, hardening and the v1 parity gate. M0 through M5 are verified complete again after the production desktop corrections.
-- Current Linear issues: 6C7-81, README/agent-state reconciliation (`In Progress`, active); 6C7-66 and 6C7-75 remain externally blocked `In Progress`. 6C7-80, 6C7-45, 6C7-52, M2 epic 6C7-41 and M3 epic 6C7-48 are verified Done. Final gate 6C7-71 remains Todo.
-- Current Git branch: local `audit/6c7-75-release-readiness`; its verified implementation tree matches public `main`, with this documentation reconciliation pending publication.
+- Current Linear issues: 6C7-66 and 6C7-75 remain externally blocked `In Progress`; final gate 6C7-71 remains Todo and blocked by them. 6C7-80, 6C7-81, 6C7-45, 6C7-52, M2 epic 6C7-41 and M3 epic 6C7-48 are verified Done.
+- Current Git branch: public `main` is authoritative. Local continuity work uses `audit/6c7-75-release-readiness`; this state-only handoff follows the verified public implementation and documentation trees without changing product code.
 - Latest public and verified implementation commit: `9ba660df513b2de0d2f3d02b8501b955ad4714e2` (exact implementation tree `29958ae7bdc4bf4c9560e2be2a8cb883f8cdd03f`). It includes production provider/release work, the real `HomeBotApp` visual/group correction, and the complete authenticated desktop routine workflow.
-- Latest verified GitHub Actions run: `32574801691`, all sixteen jobs passed for the routine-corrected tree, including Rust/release-version quality, Android, dependency, Linux/Arch packaging, both macOS architectures' ten production-app goldens/packages, and resource probes.
+- Latest verified GitHub Actions run: `32575392734`, all sixteen jobs passed for documentation tree `90039323c7b9ea6509a8cb9013961239a141bd0e`, merged as public `main` commit `a523c55b2ae4548b93ed49493dd45499571854c2`. The latest product implementation remains `9ba660df513b2de0d2f3d02b8501b955ad4714e2` (tree `29958ae7bdc4bf4c9560e2be2a8cb883f8cdd03f`).
 - Public repository: `https://github.com/luinbytes/HomeBot`.
 - Required commit identity: `luinbytes <42706009+luinbytes@users.noreply.github.com>`.
 
@@ -38,7 +38,7 @@ Architecture decisions currently frozen:
 
 Current blockers:
 
-- The only active non-external work is this 6C7-81 documentation reconciliation. Production visual parity, authoritative group transport, and the complete routine workflow are remote-verified Done.
+- No known non-external v1 work remains open after the production visual, authoritative group, complete routine, and documentation reconciliations passed remote CI. A fresh repository scan found no `TODO`, `FIXME`, `todo!()` or `unimplemented!()` implementation marker requiring a new issue.
 - External final-release blockers remain: neither Codex nor Claude is installed/authenticated for genuine provider smoke tests; Apple Developer ID/notarisation credentials and clean Intel/Apple Silicon machines are unavailable; and physical Arch/Omarchy and Android devices with VoiceOver/TalkBack-equivalent acceptance facilities are unavailable.
 - `egui` 0.32.3 transitively uses unmaintained `ttf-parser` 0.25.1. RUSTSEC-2026-0192 reports no known vulnerability or safe upgrade; the exact-revision 6C7-69 review accepted the warning with a required pre-v1 dependency recheck.
 
@@ -78,8 +78,8 @@ Current blockers:
 
 ## Immediate next work
 
-1. Publish and remote-verify this final 6C7-81 documentation reconciliation, then close it with exact commit/CI evidence.
-2. On a macOS release host with Developer ID and stored notary credentials, run the exact commands in `docs/release-acceptance.md`; on authenticated provider and physical-platform hosts, execute 6C7-75's documented evidence matrix.
+1. On a macOS release host with Developer ID and stored notary credentials, run the exact commands in `docs/release-acceptance.md`; on authenticated provider and physical-platform hosts, execute 6C7-75's documented evidence matrix.
+2. Record the required secret-free signing, notarisation, provider, hardware, accessibility, install, upgrade, pairing and reconnect evidence in 6C7-66/75 and mark them Done only when the real postconditions pass.
 3. Only after 6C7-66 and 6C7-75 are genuinely Done, execute 6C7-71, create the immutable v1.0.0 tag/release, download every public artifact, reverify manifests/checksums/signatures, and close M6.
 
 ## Verification state
@@ -147,7 +147,7 @@ Verified locally at the current baseline:
 
 ## Known failures and incomplete implementation
 
-- 6C7-81 requires publication and remote CI. The complete routine correction is public and Actions `32574801691` passed all sixteen jobs: authenticated create/edit/duplicate, demonstration recording/append/finish/cancel, Run now/dry run, enable/pause, run-history, supervised restart persistence, ten production screenshots, schema/Android drift, packaging, security, performance and accessibility checks.
+- 6C7-81 is Done. Its README and state reconciliation is public at `a523c55b2ae4548b93ed49493dd45499571854c2`; Actions `32575392734` passed all sixteen jobs. The complete routine correction is public at `9ba660df513b2de0d2f3d02b8501b955ad4714e2`, and Actions `32574801691` passed all sixteen jobs: authenticated create/edit/duplicate, demonstration recording/append/finish/cancel, Run now/dry run, enable/pause, run-history, supervised restart persistence, ten production screenshots, schema/Android drift, packaging, security, performance and accessibility checks.
 - 6C7-66 remains In Progress because real Developer ID signing/notarisation/stapling and clean Intel/Apple Silicon first-run/provider discovery have not occurred. CI's ad-hoc artifacts and simulated notary responses do not satisfy it.
 - 6C7-75 remains In Progress because real authenticated Codex/Claude round trips and physical Intel Mac, Apple Silicon Mac, Arch/Omarchy and Android install/upgrade/accessibility checks are unavailable in this environment.
 - The Android production signing keystore and physical device are unavailable. CI's `ci-ephemeral` APK proves the pipeline only and must never be published as v1.

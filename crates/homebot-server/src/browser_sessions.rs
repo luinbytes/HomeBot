@@ -28,6 +28,8 @@ use crate::{
     unix_time_ms,
 };
 
+const TAKEOVER_LEASE_MS: i64 = 5 * 60 * 1_000;
+
 #[async_trait]
 pub trait BrowserRuntime: Send + Sync {
     async fn create(
@@ -217,6 +219,7 @@ pub(super) async fn takeover(
         .storage
         .browser_session(state.owner_id, session_id)
         .await?;
+    enforce_takeover_claimable(&identity, &current)?;
     let mut canonical = request.clone();
     canonical.approval_id = None;
     if matches!(
@@ -249,18 +252,27 @@ pub(super) async fn takeover(
         .await
     {
         Ok(_authorization) => {
-            let record = state
+            let now = unix_time_ms();
+            let record = match state
                 .storage
-                .update_browser_session(
+                .claim_browser_takeover(
                     state.owner_id,
                     session_id,
-                    "user",
-                    "active",
-                    None,
-                    None,
-                    unix_time_ms(),
+                    device_id(&identity),
+                    now.saturating_add(TAKEOVER_LEASE_MS),
+                    now,
                 )
-                .await?;
+                .await
+            {
+                Ok(record) => record,
+                Err(error) => {
+                    state
+                        .storage
+                        .release_idempotency(request.idempotency_key)
+                        .await?;
+                    return Err(error.into());
+                }
+            };
             let session = summary(record)?;
             publish_session(&state, session.clone()).await?;
             Ok((StatusCode::OK, Json(response(session, None, None))))
@@ -303,9 +315,15 @@ pub(super) async fn takeover(
 
 pub(super) async fn return_to_bot(
     State(state): State<AppState>,
+    Extension(identity): Extension<AuthenticatedIdentity>,
     Path(session_id): Path<Uuid>,
     Json(request): Json<BrowserMutationRequest>,
 ) -> Result<Json<BrowserActionResponse>, ApiError> {
+    let current = state
+        .storage
+        .browser_session(state.owner_id, session_id)
+        .await?;
+    enforce_takeover_owner(&identity, &current)?;
     let replayed = matches!(
         claim(
             &state,
@@ -330,13 +348,10 @@ pub(super) async fn return_to_bot(
     }
     let record = state
         .storage
-        .update_browser_session(
+        .release_browser_takeover(
             state.owner_id,
             session_id,
-            "bot",
-            "active",
-            None,
-            None,
+            device_id(&identity),
             unix_time_ms(),
         )
         .await?;
@@ -355,6 +370,7 @@ pub(super) async fn execute(
         .storage
         .browser_session(state.owner_id, session_id)
         .await?;
+    enforce_action_controller(&identity, &current)?;
     if current.status == "closed" || current.runtime_session_id.is_none() {
         return Err(ApiError::conflict("The browser session is not active"));
     }
@@ -436,6 +452,7 @@ pub(super) async fn close(
         .storage
         .browser_session(state.owner_id, session_id)
         .await?;
+    enforce_takeover_owner(&identity, &current)?;
     let mut canonical = request.clone();
     canonical.approval_id = None;
     if matches!(
@@ -536,6 +553,8 @@ async fn activate_created_session(
         controller: "bot".to_owned(),
         status: "active".to_owned(),
         pending_approval_id: None,
+        controlling_device_id: None,
+        takeover_expires_at_ms: None,
         created_at_ms: now,
         updated_at_ms: now,
     };
@@ -637,6 +656,8 @@ async fn pending_session(
             controller: "bot".to_owned(),
             status: "awaiting_approval".to_owned(),
             pending_approval_id: Some(approval_id),
+            controlling_device_id: None,
+            takeover_expires_at_ms: None,
             created_at_ms: now,
             updated_at_ms: now,
         })
@@ -680,6 +701,55 @@ const fn device_id(identity: &AuthenticatedIdentity) -> Uuid {
         AuthenticatedIdentity::Owner => Uuid::nil(),
         AuthenticatedIdentity::Device { id } => *id,
     }
+}
+
+fn enforce_takeover_owner(
+    identity: &AuthenticatedIdentity,
+    session: &BrowserSessionRecord,
+) -> Result<(), ApiError> {
+    if session.controller != "user" {
+        return Ok(());
+    }
+    if session.controlling_device_id == Some(device_id(identity)) {
+        return Ok(());
+    }
+    Err(ApiError::forbidden(
+        "Another device controls this browser session",
+    ))
+}
+
+fn enforce_takeover_claimable(
+    identity: &AuthenticatedIdentity,
+    session: &BrowserSessionRecord,
+) -> Result<(), ApiError> {
+    if session.controller != "user"
+        || session.controlling_device_id == Some(device_id(identity))
+        || session
+            .takeover_expires_at_ms
+            .is_none_or(|expires| expires <= unix_time_ms())
+    {
+        return Ok(());
+    }
+    Err(ApiError::forbidden(
+        "Another device controls this browser session",
+    ))
+}
+
+fn enforce_action_controller(
+    identity: &AuthenticatedIdentity,
+    session: &BrowserSessionRecord,
+) -> Result<(), ApiError> {
+    enforce_takeover_owner(identity, session)?;
+    if session.controller == "user"
+        && session
+            .takeover_expires_at_ms
+            .is_some_and(|expires| expires <= unix_time_ms())
+    {
+        return Err(ApiError::conflict(
+            "Browser takeover expired; return control before continuing",
+        ));
+    }
+    Ok(())
 }
 
 fn protocol_action(command: &BrowserCommand) -> BrowserAction {

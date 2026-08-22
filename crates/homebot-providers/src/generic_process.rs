@@ -5,6 +5,7 @@ use crate::{
     ProviderAvailability, ProviderCapabilities, ProviderCapability, ProviderDescriptor,
     ProviderError, ProviderErrorCode, ProviderEvent, ProviderHealth, ProviderModel, ProviderRun,
     ResumeRequest, StartRequest, SupervisedProcess,
+    supervisor::{BoundedLine, read_bounded_line},
 };
 use serde::Serialize;
 use std::{
@@ -15,7 +16,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 use tokio::{
-    io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
+    io::{AsyncWriteExt, BufReader},
     sync::{Mutex, mpsc, watch},
 };
 use uuid::Uuid;
@@ -178,11 +179,9 @@ async fn consume_generic(
     events: mpsc::Sender<ProviderEvent>,
 ) {
     let mut reader = BufReader::new(stdout);
-    let mut line = String::new();
     let mut terminal = false;
     let mut cancelled = false;
     loop {
-        line.clear();
         tokio::select! {
             changed = cancel.changed() => {
                 if changed.is_err() || *cancel.borrow() {
@@ -190,15 +189,15 @@ async fn consume_generic(
                     break;
                 }
             }
-            read = reader.read_line(&mut line) => {
+            read = read_bounded_line(&mut reader, MAX_LINE_BYTES) => {
                 match read {
-                    Ok(0) | Err(_) => break,
-                    Ok(_) if line.len() > MAX_LINE_BYTES => {
+                    Ok(BoundedLine::Eof) | Err(_) => break,
+                    Ok(BoundedLine::TooLong) => {
                         let _ = events.send(ProviderEvent::Failed { error: protocol_error("Generic provider message exceeded the limit") }).await;
                         terminal = true;
                         break;
                     }
-                    Ok(_) => {
+                    Ok(BoundedLine::Line(line)) => {
                         let Ok(event) = serde_json::from_str::<ProviderEvent>(&line) else {
                             let _ = events.send(ProviderEvent::Failed { error: protocol_error("Generic provider emitted invalid HomeBot event JSON") }).await;
                             terminal = true;

@@ -8,7 +8,7 @@ use std::{
     time::Duration,
 };
 use tokio::{
-    io::{AsyncBufReadExt, BufReader},
+    io::{AsyncBufRead, AsyncBufReadExt, AsyncReadExt, BufReader},
     process::{Child, ChildStdin, ChildStdout, Command},
     task::JoinHandle,
     time::Instant,
@@ -17,6 +17,50 @@ use uuid::Uuid;
 
 const SPAWN_ATTEMPTS: usize = 8;
 const SPAWN_RETRY_DELAY: Duration = Duration::from_millis(2);
+
+pub(crate) enum BoundedLine {
+    Eof,
+    Line(String),
+    TooLong,
+}
+
+/// Reads one UTF-8 line without allowing the source to grow the destination
+/// beyond `max_bytes`. A too-long frame is rejected before its remainder is
+/// allocated; callers terminate the corresponding provider process.
+pub(crate) async fn read_bounded_line<R>(
+    reader: &mut R,
+    max_bytes: usize,
+) -> std::io::Result<BoundedLine>
+where
+    R: AsyncBufRead + Unpin,
+{
+    let mut bytes = Vec::with_capacity(max_bytes.min(8 * 1024));
+    loop {
+        let available = reader.fill_buf().await?;
+        if available.is_empty() {
+            if bytes.is_empty() {
+                return Ok(BoundedLine::Eof);
+            }
+            return String::from_utf8(bytes)
+                .map(BoundedLine::Line)
+                .map_err(|_| std::io::Error::other("provider frame is not UTF-8"));
+        }
+        let take = available
+            .iter()
+            .position(|byte| *byte == b'\n')
+            .map_or(available.len(), |position| position + 1);
+        if bytes.len().saturating_add(take) > max_bytes {
+            return Ok(BoundedLine::TooLong);
+        }
+        bytes.extend_from_slice(&available[..take]);
+        reader.consume(take);
+        if bytes.last() == Some(&b'\n') {
+            return String::from_utf8(bytes)
+                .map(BoundedLine::Line)
+                .map_err(|_| std::io::Error::other("provider frame is not UTF-8"));
+        }
+    }
+}
 
 #[derive(Clone, Debug)]
 pub struct ProcessLimits {
@@ -331,39 +375,64 @@ async fn read_bounded_stderr(
 ) -> BoundedDiagnostics {
     let mut reader = BufReader::new(stderr);
     let mut output = BoundedDiagnostics::default();
-    let mut buffer = Vec::new();
+    let mut chunk = [0_u8; 4 * 1024];
+    let mut line = Vec::with_capacity(4 * 1024);
+    let mut discarding_line = false;
     loop {
-        buffer.clear();
-        let Ok(read) = reader.read_until(b'\n', &mut buffer).await else {
+        let Ok(read) = reader.read(&mut chunk).await else {
             output.truncated = true;
             break;
         };
         if read == 0 {
+            if !line.is_empty() {
+                retain_diagnostic(&mut output, &line, limit, &secret_values);
+            }
             break;
         }
-        let mut line = String::from_utf8_lossy(&buffer).trim_end().to_owned();
-        for secret in &secret_values {
-            line = line.replace(secret, "[REDACTED]");
-        }
-        if line.len() > 4_096 {
-            line.truncate(4_096);
-            output.truncated = true;
-        }
-        let line_bytes = line.len();
-        while output.bytes.saturating_add(line_bytes) > limit && !output.lines.is_empty() {
-            if let Some(removed) = output.lines.pop_front() {
-                output.bytes = output.bytes.saturating_sub(removed.len());
-                output.truncated = true;
+        for byte in &chunk[..read] {
+            if *byte == b'\n' {
+                if !discarding_line {
+                    retain_diagnostic(&mut output, &line, limit, &secret_values);
+                }
+                line.clear();
+                discarding_line = false;
+            } else if !discarding_line {
+                if line.len() < 4_096 {
+                    line.push(*byte);
+                } else {
+                    line.clear();
+                    discarding_line = true;
+                    output.truncated = true;
+                }
             }
         }
-        if line_bytes > limit {
-            output.truncated = true;
-            continue;
-        }
-        output.bytes = output.bytes.saturating_add(line_bytes);
-        output.lines.push_back(line);
     }
     output
+}
+
+fn retain_diagnostic(
+    output: &mut BoundedDiagnostics,
+    bytes: &[u8],
+    limit: usize,
+    secret_values: &[String],
+) {
+    let mut line = String::from_utf8_lossy(bytes).trim_end().to_owned();
+    for secret in secret_values {
+        line = line.replace(secret, "[REDACTED]");
+    }
+    let line_bytes = line.len();
+    while output.bytes.saturating_add(line_bytes) > limit && !output.lines.is_empty() {
+        if let Some(removed) = output.lines.pop_front() {
+            output.bytes = output.bytes.saturating_sub(removed.len());
+            output.truncated = true;
+        }
+    }
+    if line_bytes > limit {
+        output.truncated = true;
+        return;
+    }
+    output.bytes = output.bytes.saturating_add(line_bytes);
+    output.lines.push_back(line);
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -382,4 +451,45 @@ pub enum ProviderProcessError {
     Io(#[from] std::io::Error),
     #[error("provider diagnostic task failed: {0}")]
     DiagnosticTask(tokio::task::JoinError),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::io::{AsyncWriteExt, BufReader, duplex};
+
+    #[tokio::test]
+    async fn bounded_line_rejects_an_unterminated_frame_at_the_limit() {
+        let (mut writer, reader) = duplex(64);
+        let write = tokio::spawn(async move {
+            writer
+                .write_all(b"123456789")
+                .await
+                .unwrap_or_else(|error| panic!("fixture write failed: {error}"));
+        });
+        let frame = read_bounded_line(&mut BufReader::new(reader), 8)
+            .await
+            .unwrap_or_else(|error| panic!("bounded read failed: {error}"));
+        assert!(matches!(frame, BoundedLine::TooLong));
+        write
+            .await
+            .unwrap_or_else(|error| panic!("fixture task failed: {error}"));
+    }
+
+    #[tokio::test]
+    async fn bounded_line_accepts_newline_and_partial_eof_frames() {
+        let mut first = BufReader::new(&b"ready\nnext"[..]);
+        assert!(matches!(
+            read_bounded_line(&mut first, 16).await,
+            Ok(BoundedLine::Line(line)) if line == "ready\n"
+        ));
+        assert!(matches!(
+            read_bounded_line(&mut first, 16).await,
+            Ok(BoundedLine::Line(line)) if line == "next"
+        ));
+        assert!(matches!(
+            read_bounded_line(&mut first, 16).await,
+            Ok(BoundedLine::Eof)
+        ));
+    }
 }

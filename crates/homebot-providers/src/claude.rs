@@ -8,6 +8,7 @@ use crate::{
     ProviderAdapterId, ProviderAvailability, ProviderCapabilities, ProviderCapability,
     ProviderDescriptor, ProviderError, ProviderErrorCode, ProviderEvent, ProviderHealth,
     ProviderModel, ProviderRun, ResumeRequest, StartRequest, SupervisedProcess,
+    supervisor::{BoundedLine, read_bounded_line},
 };
 use serde_json::{Value, json};
 use std::{
@@ -18,7 +19,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 use tokio::{
-    io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
+    io::{AsyncReadExt, AsyncWriteExt, BufReader},
     process::{ChildStdin, ChildStdout},
     sync::{Mutex, mpsc, watch},
 };
@@ -332,22 +333,20 @@ async fn run_process(
     events: mpsc::Sender<ProviderEvent>,
 ) {
     let mut reader = BufReader::new(stdout);
-    let mut line = String::new();
     let outcome = loop {
-        line.clear();
         tokio::select! {
             changed = cancel.changed() => {
                 if changed.is_err() || *cancel.borrow() {
                     break ProcessOutcome::Cancelled;
                 }
             }
-            read = reader.read_line(&mut line) => {
+            read = read_bounded_line(&mut reader, MAX_LINE_BYTES) => {
                 match read {
-                    Ok(0) => break ProcessOutcome::Eof,
-                    Ok(_) if line.len() > MAX_LINE_BYTES => {
+                    Ok(BoundedLine::Eof) => break ProcessOutcome::Eof,
+                    Ok(BoundedLine::TooLong) => {
                         break ProcessOutcome::Failed(protocol_error("Claude Code message exceeded the limit"));
                     }
-                    Ok(_) => {
+                    Ok(BoundedLine::Line(line)) => {
                         let Ok(message) = serde_json::from_str::<Value>(&line) else {
                             break ProcessOutcome::Failed(protocol_error("Claude Code emitted invalid JSON"));
                         };

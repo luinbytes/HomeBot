@@ -3608,12 +3608,53 @@ async fn pairing_is_single_use_restart_durable_revocable_and_owner_managed()
     let exchange_request = ExchangePairingRequest {
         request_id: Uuid::now_v7(),
         pairing_token: offer.pairing_token.clone(),
+        native_proof: None,
         device_name: "Pixel test device".to_owned(),
     };
+    let source = "192.168.1.20:41000".parse::<std::net::SocketAddr>()?;
+    for attempt in 0..31 {
+        let invalid = ExchangePairingRequest {
+            request_id: Uuid::now_v7(),
+            pairing_token: format!("hbpair_invalid_{attempt}"),
+            native_proof: Some("hbproof_invalid".to_owned()),
+            device_name: "Unknown device".to_owned(),
+        };
+        let response = app
+            .clone()
+            .oneshot(
+                Request::post("/api/v1/pairing/exchange")
+                    .extension(axum::extract::ConnectInfo(source))
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_vec(&invalid)?))?,
+            )
+            .await?;
+        assert_eq!(
+            response.status(),
+            if attempt < 30 {
+                StatusCode::UNAUTHORIZED
+            } else {
+                StatusCode::TOO_MANY_REQUESTS
+            }
+        );
+    }
+    let missing_origin = app
+        .clone()
+        .oneshot(
+            Request::post("/api/v1/pairing/exchange")
+                .extension(axum::extract::ConnectInfo(source))
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&exchange_request)?))?,
+        )
+        .await?;
+    assert_eq!(missing_origin.status(), StatusCode::FORBIDDEN);
+
     let mismatched = app
         .clone()
         .oneshot(
             Request::post("/api/v1/pairing/exchange")
+                .extension(axum::extract::ConnectInfo(
+                    "192.168.1.20:41000".parse::<std::net::SocketAddr>()?,
+                ))
                 .header("content-type", "application/json")
                 .header("origin", "https://attacker.example")
                 .body(Body::from(serde_json::to_vec(&exchange_request)?))?,
@@ -3625,6 +3666,9 @@ async fn pairing_is_single_use_restart_durable_revocable_and_owner_managed()
         .clone()
         .oneshot(
             Request::post("/api/v1/pairing/exchange")
+                .extension(axum::extract::ConnectInfo(
+                    "192.168.1.20:41001".parse::<std::net::SocketAddr>()?,
+                ))
                 .header("content-type", "application/json")
                 .header("origin", "http://127.0.0.1:7123")
                 .body(Body::from(serde_json::to_vec(&exchange_request)?))?,
@@ -3647,11 +3691,53 @@ async fn pairing_is_single_use_restart_durable_revocable_and_owner_managed()
         .clone()
         .oneshot(
             Request::post("/api/v1/pairing/exchange")
+                .extension(axum::extract::ConnectInfo(
+                    "192.168.1.20:41002".parse::<std::net::SocketAddr>()?,
+                ))
                 .header("content-type", "application/json")
                 .body(Body::from(serde_json::to_vec(&exchange_request)?))?,
         )
         .await?;
     assert_eq!(used.status(), StatusCode::CONFLICT);
+
+    let native_offer = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/pairing",
+            &CreatePairingRequest {
+                request_id: Uuid::now_v7(),
+                endpoint: "http://127.0.0.1:7123".to_owned(),
+                allow_insecure_private_network: false,
+            },
+        ))
+        .await?;
+    let native_offer = response_json::<PairingOffer>(native_offer).await?;
+    let native_proof = url::Url::parse(&native_offer.deep_link)?
+        .query_pairs()
+        .find_map(|(key, value)| (key == "proof").then(|| value.into_owned()))
+        .ok_or("pairing deep link omitted native proof")?;
+    assert!(native_proof.starts_with("hbproof_"));
+    let native_exchange = ExchangePairingRequest {
+        request_id: Uuid::now_v7(),
+        pairing_token: native_offer.pairing_token,
+        native_proof: Some(native_proof),
+        device_name: "Native Android device".to_owned(),
+    };
+    let native_exchanged = app
+        .clone()
+        .oneshot(
+            Request::post("/api/v1/pairing/exchange")
+                .extension(axum::extract::ConnectInfo(
+                    "100.64.12.5:42000".parse::<std::net::SocketAddr>()?,
+                ))
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&native_exchange)?))?,
+        )
+        .await?;
+    assert_eq!(native_exchanged.status(), StatusCode::OK);
+    let native_exchanged = response_json::<PairingExchangeResponse>(native_exchanged).await?;
+    assert_eq!(native_exchanged.device.name, "Native Android device");
 
     drop(app);
     let restarted = router(AppState::new(storage.clone(), "correct-token"));
@@ -3719,10 +3805,13 @@ async fn pairing_is_single_use_restart_durable_revocable_and_owner_managed()
         )
         .await?;
     let listed = response_json::<Vec<DeviceSessionSummary>>(listed).await?;
-    assert_eq!(listed.len(), 1);
-    assert_eq!(listed[0].id, exchanged.device.id);
-    assert_eq!(listed[0].name, exchanged.device.name);
-    assert!(listed[0].last_seen_at_unix_ms.is_some());
+    assert_eq!(listed.len(), 2);
+    let browser_device = listed
+        .iter()
+        .find(|device| device.id == exchanged.device.id)
+        .ok_or("browser-paired device was not listed")?;
+    assert_eq!(browser_device.name, exchanged.device.name);
+    assert!(browser_device.last_seen_at_unix_ms.is_some());
 
     let revoke = RevokeDeviceSessionRequest {
         request_id: Uuid::now_v7(),

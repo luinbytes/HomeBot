@@ -62,7 +62,7 @@ class HomeBotClientTest {
         server.start()
         val client = client()
         val endpoint = server.url("/").toString().trimEnd('/')
-        val deepLink = "homebot://pair?endpoint=${URLEncoder.encode(endpoint, Charsets.UTF_8)}&token=hbpair_fixture"
+        val deepLink = "homebot://pair?endpoint=${URLEncoder.encode(endpoint, Charsets.UTF_8)}&token=hbpair_fixture&proof=hbproof_fixture"
 
         val result = client.pair(deepLink, "Pixel 9").getOrThrow()
 

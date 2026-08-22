@@ -36,8 +36,10 @@ The release visual harness now constructs deterministic server projections and r
 - `production_computer_details_dark`
 - `production_settings_light`
 - `production_routines_dark`
+- `production_routine_editor_dark`
+- `production_routine_recording_dark`
 
-These images exercise the production sidebar, header, transcript, activity and approval cards, anchored composer, settings/routines navigation and contextual details. The legacy showcase remains a component development aid, not release evidence.
+These images exercise the production sidebar, header, transcript, activity and approval cards, anchored composer, settings/routines navigation, routine editor/recording workflows and contextual details. The legacy showcase remains a component development aid, not release evidence.
 
 Goldens are stored under `crates/homebot-desktop/tests/snapshots`. The harness uses egui's normal tessellation with a HomeBot-owned CPU triangle renderer. Fixed nearest-neighbor texture sampling and premultiplied-alpha blending remove GPU, driver, Metal, Vulkan, Wayland and X11 variance. The exact same checked-in image is therefore compared on Linux and macOS.
 

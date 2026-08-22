@@ -80,6 +80,19 @@ impl RoutineProjection {
         runs.sort_by_key(|item| std::cmp::Reverse(item.started_at_unix_ms));
     }
 
+    pub fn apply_routine(&mut self, routine: RoutineSummary) {
+        self.routines.insert(routine.id, routine);
+    }
+
+    pub fn apply_recording(&mut self, recording: RoutineRecordingSummary) {
+        self.recordings.insert(recording.id, recording);
+    }
+
+    pub fn apply_runs(&mut self, routine_id: Uuid, mut runs: Vec<RoutineRunSummary>) {
+        runs.sort_by_key(|item| std::cmp::Reverse(item.started_at_unix_ms));
+        self.runs.insert(routine_id, runs);
+    }
+
     pub fn routines(&self) -> impl Iterator<Item = &RoutineSummary> {
         self.routines.values()
     }

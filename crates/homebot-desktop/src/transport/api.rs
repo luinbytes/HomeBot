@@ -156,6 +156,163 @@ pub(super) async fn execute_command(
             let _ = events.send(DesktopEvent::Routines(routines));
             Ok(())
         }
+        DesktopCommand::CreateRoutine {
+            bot_id,
+            name,
+            description,
+            definition,
+            draft,
+        } => {
+            let routine = post_json(
+                client,
+                config,
+                "/api/v1/routines",
+                &homebot_protocol::CreateRoutineRequest {
+                    request_id: Uuid::now_v7(),
+                    idempotency_key: Uuid::now_v7(),
+                    bot_id,
+                    name,
+                    description,
+                    definition,
+                    draft,
+                },
+            )
+            .await?;
+            let _ = events.send(DesktopEvent::RoutineMutation(routine));
+            Ok(())
+        }
+        DesktopCommand::UpdateRoutine {
+            routine_id,
+            name,
+            description,
+            definition,
+            draft,
+        } => {
+            let routine = response_json(
+                authenticated(
+                    client,
+                    config,
+                    Method::PUT,
+                    &format!("/api/v1/routines/{routine_id}"),
+                )
+                .json(&homebot_protocol::UpdateRoutineRequest {
+                    request_id: Uuid::now_v7(),
+                    idempotency_key: Uuid::now_v7(),
+                    name,
+                    description,
+                    definition,
+                    draft,
+                })
+                .send()
+                .await
+                .map_err(request_error)?,
+            )
+            .await?;
+            let _ = events.send(DesktopEvent::RoutineMutation(routine));
+            Ok(())
+        }
+        DesktopCommand::DuplicateRoutine { routine_id, name } => {
+            let routine = post_json(
+                client,
+                config,
+                &format!("/api/v1/routines/{routine_id}/duplicate"),
+                &homebot_protocol::DuplicateRoutineRequest {
+                    request_id: Uuid::now_v7(),
+                    idempotency_key: Uuid::now_v7(),
+                    name,
+                },
+            )
+            .await?;
+            let _ = events.send(DesktopEvent::RoutineMutation(routine));
+            Ok(())
+        }
+        DesktopCommand::StartRoutineRecording {
+            bot_id,
+            name,
+            description,
+        } => {
+            let recording = post_json(
+                client,
+                config,
+                "/api/v1/routine-recordings",
+                &homebot_protocol::StartRoutineRecordingRequest {
+                    request_id: Uuid::now_v7(),
+                    idempotency_key: Uuid::now_v7(),
+                    bot_id,
+                    name,
+                    description,
+                },
+            )
+            .await?;
+            let _ = events.send(DesktopEvent::RoutineRecording(recording));
+            Ok(())
+        }
+        DesktopCommand::AppendRoutineRecording {
+            recording_id,
+            action,
+        } => {
+            let recording = post_json(
+                client,
+                config,
+                &format!("/api/v1/routine-recordings/{recording_id}/actions"),
+                &homebot_protocol::AppendRoutineRecordingRequest {
+                    request_id: Uuid::now_v7(),
+                    idempotency_key: Uuid::now_v7(),
+                    action,
+                },
+            )
+            .await?;
+            let _ = events.send(DesktopEvent::RoutineRecording(recording));
+            Ok(())
+        }
+        DesktopCommand::FinishRoutineRecording(recording_id) => {
+            let routine = post_json(
+                client,
+                config,
+                &format!("/api/v1/routine-recordings/{recording_id}/finish"),
+                &homebot_protocol::BotMutationRequest {
+                    request_id: Uuid::now_v7(),
+                    idempotency_key: Uuid::now_v7(),
+                },
+            )
+            .await?;
+            let _ = events.send(DesktopEvent::RoutineMutation(routine));
+            Ok(())
+        }
+        DesktopCommand::CancelRoutineRecording(recording_id) => {
+            ensure_success(
+                authenticated(
+                    client,
+                    config,
+                    Method::POST,
+                    &format!("/api/v1/routine-recordings/{recording_id}/cancel"),
+                )
+                .json(&homebot_protocol::BotMutationRequest {
+                    request_id: Uuid::now_v7(),
+                    idempotency_key: Uuid::now_v7(),
+                })
+                .send()
+                .await
+                .map_err(request_error)?,
+            )
+            .await
+        }
+        DesktopCommand::LoadRoutineRuns(routine_id) => {
+            let runs = response_json(
+                authenticated(
+                    client,
+                    config,
+                    Method::GET,
+                    &format!("/api/v1/routines/{routine_id}/runs"),
+                )
+                .send()
+                .await
+                .map_err(request_error)?,
+            )
+            .await?;
+            let _ = events.send(DesktopEvent::RoutineRuns { routine_id, runs });
+            Ok(())
+        }
         DesktopCommand::RunRoutine {
             routine_id,
             dry_run,
@@ -180,7 +337,7 @@ pub(super) async fn execute_command(
             enabled,
         } => {
             let action = if enabled { "enable" } else { "disable" };
-            let _: homebot_protocol::RoutineSummary = post_json(
+            let routine = post_json(
                 client,
                 config,
                 &format!("/api/v1/routines/{routine_id}/{action}"),
@@ -190,6 +347,7 @@ pub(super) async fn execute_command(
                 },
             )
             .await?;
+            let _ = events.send(DesktopEvent::RoutineMutation(routine));
             Ok(())
         }
         DesktopCommand::Shutdown => Ok(()),

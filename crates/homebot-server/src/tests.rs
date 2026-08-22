@@ -25,21 +25,21 @@ use homebot_protocol::{
     FinalizeAttachmentRequest, GlobalSearchResponse, GroupBotStatus, GroupTimelineResponse,
     HandoffGroupRequest, ImportSkillRequest, InteractionMode, MessageReferenceInput,
     MessageReferenceKind, MissedRunPolicy, OverlapPolicy, PairingEndpointKind,
-    PairingExchangeResponse, PairingOffer, PluginConnectionState, PluginMutationRequest,
-    PluginSummary, PullRequestMetadata, PullRequestMutationResponse, QueuedPromptKind,
-    ReactionMutationRequest, RecordedAction, RecordedActor, RenameGroupChatRequest,
-    RepositoryWorkspaceSummary, RestoreCheckpointRequest, RetryPolicy, RevokeDeviceSessionRequest,
-    RoutineDefinition, RoutineInput, RoutineInputKind, RoutineJobSummary, RoutineRecordingSummary,
-    RoutineRunSummary, RoutineSchedule, RoutineStep, RoutineStepStatus, RoutineSummary,
-    RoutineTriggerDefinition, RoutineTriggerSource, RunRoutineRequest, SecretSummary,
-    SendGroupMessageRequest, SendMessageRequest, SendMessageResponse, SetInteractionModeRequest,
-    SkillAssignmentRequest, SkillBundle, SkillContext, SkillDefinition, SkillImportConflictPolicy,
-    SkillSummary, SkillTestSummary, SkillToolReference, StartRoutineRecordingRequest,
-    TurnCheckpointSummary, UpdateBotRequest, UpdateGroupParticipantRequest, UpdateRoutineRequest,
-    UpdateSkillRequest, UpsertCapabilityRuleRequest, VcsCommitRequest, VcsCommitResult,
-    VcsCreateBranchRequest, VcsMutationStatus, VcsPushRequest, VcsRemoteMutationResponse,
-    VcsStatus, WorkingContextSummary, WorkingTreeCondition, WorkingTreeDiffResponse,
-    WorkspaceBranchesResponse, WorkspaceMode,
+    PairingExchangeResponse, PairingOffer, PluginAssignmentRequest, PluginConnectionState,
+    PluginMutationRequest, PluginSummary, PullRequestMetadata, PullRequestMutationResponse,
+    QueuedPromptKind, ReactionMutationRequest, RecordedAction, RecordedActor,
+    RenameGroupChatRequest, RepositoryWorkspaceSummary, RestoreCheckpointRequest, RetryPolicy,
+    RevokeDeviceSessionRequest, RoutineDefinition, RoutineInput, RoutineInputKind,
+    RoutineJobSummary, RoutineRecordingSummary, RoutineRunSummary, RoutineSchedule, RoutineStep,
+    RoutineStepStatus, RoutineSummary, RoutineTriggerDefinition, RoutineTriggerSource,
+    RunRoutineRequest, SecretSummary, SendGroupMessageRequest, SendMessageRequest,
+    SendMessageResponse, SetInteractionModeRequest, SkillAssignmentRequest, SkillBundle,
+    SkillContext, SkillDefinition, SkillImportConflictPolicy, SkillSummary, SkillTestSummary,
+    SkillToolReference, StartRoutineRecordingRequest, TurnCheckpointSummary, UpdateBotRequest,
+    UpdateGroupParticipantRequest, UpdateRoutineRequest, UpdateSkillRequest,
+    UpsertCapabilityRuleRequest, VcsCommitRequest, VcsCommitResult, VcsCreateBranchRequest,
+    VcsMutationStatus, VcsPushRequest, VcsRemoteMutationResponse, VcsStatus, WorkingContextSummary,
+    WorkingTreeCondition, WorkingTreeDiffResponse, WorkspaceBranchesResponse, WorkspaceMode,
 };
 use homebot_providers::{
     ActivityKind, ActivityStatus as ProviderActivityStatus, ApprovalDecision, CompactRequest,
@@ -770,6 +770,211 @@ async fn plugin_registry_connects_local_mcp_and_persists_error_recovery_states()
     assert_eq!(errored.connection_state, PluginConnectionState::Error);
     assert!(!errored.enabled);
     assert!(errored.tools.is_empty());
+    Ok(())
+}
+
+#[tokio::test]
+async fn paired_devices_cannot_register_local_plugin_executables()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let storage = Storage::open(&directory.path().join("homebot.db")).await?;
+    let device_token = "paired-plugin-mutation-denied";
+    let digest: [u8; 32] = Sha256::digest(device_token.as_bytes()).into();
+    sqlx::query("INSERT INTO device_sessions (id, owner_id, name, token_digest, endpoint_kind, created_at_ms) VALUES (?, ?, 'Remote phone', ?, 'loopback', 1)")
+        .bind(Uuid::now_v7().to_string())
+        .bind(Uuid::nil().to_string())
+        .bind(digest.as_slice())
+        .execute(storage.pool())
+        .await?;
+    let app = router(AppState::new(storage.clone(), "correct-token"));
+    let plugin_id = Uuid::now_v7();
+    let response = app
+        .oneshot(
+            Request::post("/api/v1/plugins")
+                .header("authorization", format!("Bearer {device_token}"))
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(
+                    &CreateLocalMcpPluginRequest {
+                        request_id: Uuid::now_v7(),
+                        idempotency_key: plugin_id,
+                        name: "Unsafe remote executable".to_owned(),
+                        description: String::new(),
+                        program: "/bin/sh".to_owned(),
+                        arguments: vec!["-c".to_owned(), "exit 0".to_owned()],
+                    },
+                )?))?,
+        )
+        .await?;
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    assert!(
+        storage
+            .list_plugins(Uuid::nil())
+            .await?
+            .into_iter()
+            .all(|plugin| plugin.id != plugin_id)
+    );
+    Ok(())
+}
+
+#[cfg(unix)]
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn routine_plugin_calls_require_server_policy_even_when_definition_opts_out()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let marker = directory.path().join("plugin-called");
+    let server = directory.path().join("fixture-mcp");
+    let script = format!(
+        "#!/bin/sh\nwhile IFS= read -r line; do\ncase \"$line\" in\n*\\\"method\\\":\\\"initialize\\\"*) printf '%s\\n' '{{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{{\"protocolVersion\":\"2025-11-25\",\"capabilities\":{{\"tools\":{{}}}},\"serverInfo\":{{\"name\":\"fixture\",\"version\":\"1\"}}}}}}' ;;\n*\\\"method\\\":\\\"tools/list\\\"*) printf '%s\\n' '{{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{{\"tools\":[{{\"name\":\"write_marker\",\"inputSchema\":{{\"type\":\"object\"}}}}]}}}}' ;;\n*\\\"method\\\":\\\"tools/call\\\"*) touch '{}'; printf '%s\\n' '{{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{{\"content\":[{{\"type\":\"text\",\"text\":\"done\"}}]}}}}' ;;\nesac\ndone\n",
+        marker.display()
+    );
+    std::fs::write(&server, script)?;
+    let mut permissions = std::fs::metadata(&server)?.permissions();
+    permissions.set_mode(0o700);
+    std::fs::set_permissions(&server, permissions)?;
+
+    let storage = Storage::open(&directory.path().join("homebot.db")).await?;
+    let bot = storage
+        .create_bot(
+            Uuid::nil(),
+            homebot_domain::Bot::create("Routine Bot", "Automation")?,
+            1,
+        )
+        .await?;
+    let app = router(AppState::new(storage, "correct-token"));
+    let plugin_id = Uuid::now_v7();
+    assert_eq!(
+        app.clone()
+            .oneshot(json_request(
+                "POST",
+                "/api/v1/plugins",
+                &CreateLocalMcpPluginRequest {
+                    request_id: Uuid::now_v7(),
+                    idempotency_key: plugin_id,
+                    name: "Routine fixture".to_owned(),
+                    description: String::new(),
+                    program: server.display().to_string(),
+                    arguments: Vec::new(),
+                },
+            ))
+            .await?
+            .status(),
+        StatusCode::CREATED
+    );
+    let mutation = PluginMutationRequest {
+        request_id: Uuid::now_v7(),
+        idempotency_key: Uuid::now_v7(),
+    };
+    assert_eq!(
+        app.clone()
+            .oneshot(json_request(
+                "POST",
+                &format!("/api/v1/plugins/{plugin_id}/connect"),
+                &mutation,
+            ))
+            .await?
+            .status(),
+        StatusCode::OK
+    );
+    assert_eq!(
+        app.clone()
+            .oneshot(json_request(
+                "PUT",
+                &format!("/api/v1/plugins/{plugin_id}/assignment"),
+                &PluginAssignmentRequest {
+                    request_id: Uuid::now_v7(),
+                    idempotency_key: Uuid::now_v7(),
+                    bot_id: bot.id.0,
+                    enabled: true,
+                },
+            ))
+            .await?
+            .status(),
+        StatusCode::OK
+    );
+    let routine_id = Uuid::now_v7();
+    assert_eq!(
+        app.clone()
+            .oneshot(json_request(
+                "POST",
+                "/api/v1/routines",
+                &CreateRoutineRequest {
+                    request_id: Uuid::now_v7(),
+                    idempotency_key: routine_id,
+                    bot_id: bot.id.0,
+                    name: "Policy-derived plugin call".to_owned(),
+                    description: String::new(),
+                    definition: RoutineDefinition {
+                        inputs: Vec::new(),
+                        steps: vec![RoutineStep::PluginTool {
+                            plugin_id,
+                            tool_name: "write_marker".to_owned(),
+                            arguments: json!({}),
+                            requires_approval: false,
+                        }],
+                        expected_outputs: Vec::new(),
+                    },
+                    draft: false,
+                },
+            ))
+            .await?
+            .status(),
+        StatusCode::CREATED
+    );
+    let blocked: RoutineRunSummary = response_json(
+        app.clone()
+            .oneshot(json_request(
+                "POST",
+                &format!("/api/v1/routines/{routine_id}/run"),
+                &RunRoutineRequest {
+                    request_id: Uuid::now_v7(),
+                    idempotency_key: Uuid::now_v7(),
+                    inputs: json!({}),
+                },
+            ))
+            .await?,
+    )
+    .await?;
+    assert_eq!(blocked.status, "waiting_approval");
+    assert!(!marker.exists());
+
+    let rule_id = Uuid::now_v7();
+    assert_eq!(
+        app.clone()
+            .oneshot(json_request(
+                "PUT",
+                &format!("/api/v1/capability-rules/{rule_id}"),
+                &UpsertCapabilityRuleRequest {
+                    request_id: Uuid::now_v7(),
+                    idempotency_key: Uuid::now_v7(),
+                    capability: CapabilityClass::PluginWrite,
+                    effect: CapabilityRuleEffect::Allow,
+                    device_id: None,
+                    bot_id: Some(bot.id.0),
+                    chat_id: None,
+                    workspace_id: None,
+                    action_prefix: Some("plugin.tool.call".to_owned()),
+                },
+            ))
+            .await?
+            .status(),
+        StatusCode::OK
+    );
+    let allowed: RoutineRunSummary = response_json(
+        app.oneshot(json_request(
+            "POST",
+            &format!("/api/v1/routines/{routine_id}/run"),
+            &RunRoutineRequest {
+                request_id: Uuid::now_v7(),
+                idempotency_key: Uuid::now_v7(),
+                inputs: json!({}),
+            },
+        ))
+        .await?,
+    )
+    .await?;
+    assert_eq!(allowed.status, "succeeded");
+    assert!(marker.exists());
     Ok(())
 }
 
@@ -5290,6 +5495,15 @@ async fn source_control_is_server_owned_idempotent_and_remote_push_requires_appr
             updated_at_ms: 4,
         })
         .await?;
+    let device_id = Uuid::now_v7();
+    let device_token = "source-control-policy-device";
+    let device_digest: [u8; 32] = Sha256::digest(device_token.as_bytes()).into();
+    sqlx::query("INSERT INTO device_sessions (id, owner_id, name, token_digest, endpoint_kind, created_at_ms) VALUES (?, ?, 'Coding phone', ?, 'loopback', 1)")
+        .bind(device_id.to_string())
+        .bind(Uuid::nil().to_string())
+        .bind(device_digest.as_slice())
+        .execute(storage.pool())
+        .await?;
     let app = router(
         AppState::new(storage.clone(), "correct-token").with_git_runtime(
             Arc::new(homebot_vcs::GitRuntime::discover()?.with_github_cli(Some(gh))),
@@ -5302,6 +5516,76 @@ async fn source_control_is_server_owned_idempotent_and_remote_push_requires_appr
         .oneshot(Request::get(&status_url).body(Body::empty())?)
         .await?;
     assert_eq!(unauthorized.status(), StatusCode::UNAUTHORIZED);
+
+    let rule_id = Uuid::now_v7();
+    let denied_rule = app
+        .clone()
+        .oneshot(json_request(
+            "PUT",
+            &format!("/api/v1/capability-rules/{rule_id}"),
+            &UpsertCapabilityRuleRequest {
+                request_id: Uuid::now_v7(),
+                idempotency_key: Uuid::now_v7(),
+                capability: CapabilityClass::GitRemote,
+                effect: CapabilityRuleEffect::Deny,
+                device_id: Some(device_id),
+                bot_id: None,
+                chat_id: Some(chat.id),
+                workspace_id: Some(workspace_id),
+                action_prefix: Some("git.push".to_owned()),
+            },
+        ))
+        .await?;
+    assert_eq!(denied_rule.status(), StatusCode::OK);
+    let device_push = app
+        .clone()
+        .oneshot(
+            Request::post(format!("/api/v1/chats/{}/vcs/push", chat.id))
+                .header("authorization", format!("Bearer {device_token}"))
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&VcsPushRequest {
+                    request_id: Uuid::now_v7(),
+                    idempotency_key: Uuid::now_v7(),
+                    remote: "origin".to_owned(),
+                    branch: "main".to_owned(),
+                    set_upstream: false,
+                    approval_id: None,
+                })?))?,
+        )
+        .await?;
+    assert_eq!(device_push.status(), StatusCode::FORBIDDEN);
+    let device_commit = app
+        .clone()
+        .oneshot(
+            Request::post(format!("/api/v1/chats/{}/vcs/commit", chat.id))
+                .header("authorization", format!("Bearer {device_token}"))
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&VcsCommitRequest {
+                    request_id: Uuid::now_v7(),
+                    idempotency_key: Uuid::now_v7(),
+                    message: "must not run".to_owned(),
+                    stage_all: false,
+                })?))?,
+        )
+        .await?;
+    assert_eq!(device_commit.status(), StatusCode::FORBIDDEN);
+    let device_workspace = app
+        .clone()
+        .oneshot(
+            Request::post("/api/v1/workspaces")
+                .header("authorization", format!("Bearer {device_token}"))
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(
+                    &CreateRepositoryWorkspaceRequest {
+                        request_id: Uuid::now_v7(),
+                        idempotency_key: Uuid::now_v7(),
+                        root_path: repository.path().display().to_string(),
+                        name: Some("must not register".to_owned()),
+                    },
+                )?))?,
+        )
+        .await?;
+    assert_eq!(device_workspace.status(), StatusCode::FORBIDDEN);
 
     std::fs::write(repository.path().join("README.md"), "working change\n")?;
     std::fs::write(repository.path().join("new.txt"), "new file\n")?;
@@ -5452,7 +5736,7 @@ async fn source_control_is_server_owned_idempotent_and_remote_push_requires_appr
             &push,
         ))
         .await?;
-    assert_eq!(blocked.status(), StatusCode::CONFLICT);
+    assert_eq!(blocked.status(), StatusCode::FORBIDDEN);
     assert!(
         run_git(
             remote.path(),

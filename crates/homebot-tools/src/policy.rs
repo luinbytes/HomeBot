@@ -187,6 +187,12 @@ impl PolicyEngine {
         self.policy_revision.fetch_add(1, Ordering::SeqCst);
     }
 
+    /// Evaluates current rules without creating an interactive approval
+    /// ticket. Durable schedulers use this to stop in a waiting state.
+    pub async fn effect_for(&self, request: &CapabilityRequest) -> PolicyEffect {
+        self.effect(request).await
+    }
+
     /// Records a server-authenticated decision for a pending approval.
     ///
     /// # Errors

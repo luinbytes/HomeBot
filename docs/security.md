@@ -24,6 +24,8 @@ Custom rules are durable SQLite metadata (never secret material), reload into th
 
 The implemented `PolicyEngine` defaults unmatched requests to approval and evaluates authenticated owner/device, Bot, chat, workspace, capability and action scopes. Its private authorization proof cannot be supplied by a client. Approval records bind the full canonical request digest, expire, are consumed once, and become invalid after any policy revision. Filesystem write digests include the proposed content; terminal digests include executable, arguments, working directory and filtered environment; browser digests include the complete action. This prevents payload substitution after approval.
 
+The local owner may perform local repository registration, worktree association, commit, branch and checkpoint restore operations directly. A paired device must match an explicit owner-managed `GitWrite` allow rule for the exact device/Bot/chat/workspace/action scope; unmatched and denied requests fail before mutation. Remote push and pull-request creation continue to use their digest-bound interactive approval flow and carry the real authenticated device identity into policy evaluation.
+
 ## Abuse cases and required mitigations
 
 | Threat | Required control | Negative verification |
@@ -42,7 +44,9 @@ The implemented `PolicyEngine` defaults unmatched requests to approval and evalu
 | Sensitive log leakage | Field-level redaction, bounded logs, secret scanning fixtures | Canary secrets absent from logs/crash reports/history |
 | Denial of service | Size/time/concurrency limits, backpressure, rate limits, child supervision | Oversized/slow input is bounded and server remains healthy |
 
-Local MCP executables are direct absolute-path child processes with no shell and a cleared environment. MCP stdout is bounded JSON-RPC data; stderr is bounded diagnostic data. Initialization, discovery, and shutdown have deadlines. Discovered annotations, descriptions, schemas, and results remain untrusted and cannot create approvals or alter permission policy. Per-Bot assignment narrows availability but never grants a capability.
+Local MCP executables are direct absolute-path child processes with no shell and a cleared environment. Only the authenticated local owner can register, connect, enable, assign, disable or remove an executable; paired devices can inspect safe plugin state but cannot turn a device session into host process execution. MCP stdout is bounded JSON-RPC data; stderr is bounded diagnostic data. Initialization, discovery, and shutdown have deadlines. Discovered annotations, descriptions, schemas, and results remain untrusted and cannot create approvals or alter permission policy. Per-Bot assignment narrows availability but never grants a capability. Routine plugin calls derive `PluginWrite` authority from current server policy even when an imported definition says approval is unnecessary; unmatched scheduled calls stop in `waiting_approval`, and only an explicit owner rule can make them non-interactive.
+
+Structured Codex, Claude and community-provider stdout frames are rejected as soon as they exceed the protocol limit, before the remainder can grow an allocation. Provider stderr is consumed in fixed-size chunks, redacted, and retained only in a byte-bounded tail, including for unterminated hostile output.
 
 ## Networking
 

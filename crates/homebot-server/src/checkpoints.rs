@@ -1,7 +1,7 @@
 //! Server-owned turn checkpoints, exact diffs, and guarded restore.
 
 use axum::{
-    Json,
+    Extension, Json,
     extract::{Path, Query, State},
     http::StatusCode,
 };
@@ -10,11 +10,12 @@ use homebot_protocol::{
     RestoreCheckpointRequest, ServerEventBody, TurnCheckpointSummary,
 };
 use homebot_storage::{CheckpointRestoreRecord, IdempotencyClaim, TurnCheckpointRecord};
+use homebot_tools::{CapabilityClass, CapabilityRequest, OperationContext};
 use serde::Deserialize;
 use uuid::Uuid;
 
 use crate::{
-    AppState,
+    AppState, AuthenticatedIdentity,
     bots::{ApiError, claim},
     persist_event, unix_time_ms,
 };
@@ -104,9 +105,38 @@ pub(super) async fn full_diff(
 
 pub(super) async fn restore(
     State(state): State<AppState>,
+    Extension(identity): Extension<AuthenticatedIdentity>,
     Path(checkpoint_id): Path<Uuid>,
     Json(request): Json<RestoreCheckpointRequest>,
 ) -> Result<(StatusCode, Json<CheckpointRestoreSummary>), ApiError> {
+    let target = state
+        .storage
+        .turn_checkpoint(state.owner_id, checkpoint_id)
+        .await?;
+    let chat = state
+        .storage
+        .get_direct_chat(state.owner_id, target.chat_id)
+        .await?;
+    crate::require_device_capability(
+        &state,
+        &identity,
+        &CapabilityRequest {
+            context: OperationContext {
+                operation_id: request.request_id,
+                owner_id: state.owner_id,
+                device_id: identity.device_id(),
+                bot_id: chat.bot_id,
+                chat_id: target.chat_id,
+                workspace_id: target.workspace_id,
+            },
+            capability: CapabilityClass::GitWrite,
+            action: "git.checkpoint.restore".to_owned(),
+            canonical_resource: format!("checkpoint:{checkpoint_id}"),
+            summary: "Restore a coding checkpoint".to_owned(),
+            destructive: true,
+        },
+    )
+    .await?;
     let replayed = matches!(
         claim(
             &state,

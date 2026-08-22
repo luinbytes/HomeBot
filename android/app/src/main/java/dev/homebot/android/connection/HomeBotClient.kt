@@ -63,6 +63,14 @@ import dev.homebot.protocol.SkillAssignmentRequest
 import dev.homebot.protocol.SkillSummary
 import dev.homebot.protocol.SkillTestSummary
 import dev.homebot.protocol.CreateRoutineTriggerRequest
+import dev.homebot.protocol.AppendRoutineRecordingRequest
+import dev.homebot.protocol.CreateRoutineRequest
+import dev.homebot.protocol.DuplicateRoutineRequest
+import dev.homebot.protocol.RecordedAction
+import dev.homebot.protocol.RoutineDefinition
+import dev.homebot.protocol.RoutineRecordingSummary
+import dev.homebot.protocol.StartRoutineRecordingRequest
+import dev.homebot.protocol.UpdateRoutineRequest
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -455,6 +463,42 @@ class HomeBotClient(
         get("api/v1/routines", ListSerializer(RoutineSummary.serializer()))
     }
 
+    suspend fun createRoutine(
+        botId: String,
+        name: String,
+        description: String,
+        definition: RoutineDefinition,
+        draft: Boolean = true,
+    ): Result<RoutineSummary> = authenticated {
+        val request = CreateRoutineRequest(ids(), ids(), botId, name, description, definition, draft)
+        post("api/v1/routines", request, CreateRoutineRequest.serializer(), RoutineSummary.serializer())
+    }
+
+    suspend fun updateRoutine(
+        routineId: String,
+        name: String,
+        description: String,
+        definition: RoutineDefinition,
+        draft: Boolean,
+    ): Result<RoutineSummary> = authenticated {
+        val request = UpdateRoutineRequest(ids(), ids(), name, description, definition, draft)
+        put("api/v1/routines/$routineId", request, UpdateRoutineRequest.serializer(), RoutineSummary.serializer())
+    }
+
+    suspend fun duplicateRoutine(routineId: String, name: String): Result<RoutineSummary> = authenticated {
+        val request = DuplicateRoutineRequest(ids(), ids(), name)
+        post(
+            "api/v1/routines/$routineId/duplicate",
+            request,
+            DuplicateRoutineRequest.serializer(),
+            RoutineSummary.serializer(),
+        )
+    }
+
+    suspend fun deleteRoutine(routineId: String): Result<Unit> = authenticated {
+        deleteDiscarding("api/v1/routines/$routineId")
+    }
+
     suspend fun search(query: String): Result<GlobalSearchResponse> = authenticated {
         search(query)
     }
@@ -474,6 +518,61 @@ class HomeBotClient(
             request,
             RunRoutineRequest.serializer(),
             RoutineRunSummary.serializer(),
+        )
+    }
+
+    suspend fun dryRunRoutine(routineId: String, inputs: JsonElement = buildJsonObject {}): Result<RoutineRunSummary> = authenticated {
+        val request = RunRoutineRequest(ids(), ids(), inputs)
+        post(
+            "api/v1/routines/$routineId/dry-run",
+            request,
+            RunRoutineRequest.serializer(),
+            RoutineRunSummary.serializer(),
+        )
+    }
+
+    suspend fun startRoutineRecording(
+        botId: String,
+        name: String,
+        description: String,
+    ): Result<RoutineRecordingSummary> = authenticated {
+        val request = StartRoutineRecordingRequest(ids(), ids(), botId, name, description)
+        post(
+            "api/v1/routine-recordings",
+            request,
+            StartRoutineRecordingRequest.serializer(),
+            RoutineRecordingSummary.serializer(),
+        )
+    }
+
+    suspend fun appendRoutineRecording(
+        recordingId: String,
+        action: RecordedAction,
+    ): Result<RoutineRecordingSummary> = authenticated {
+        val request = AppendRoutineRecordingRequest(ids(), ids(), action)
+        post(
+            "api/v1/routine-recordings/$recordingId/actions",
+            request,
+            AppendRoutineRecordingRequest.serializer(),
+            RoutineRecordingSummary.serializer(),
+        )
+    }
+
+    suspend fun finishRoutineRecording(recordingId: String): Result<RoutineSummary> = authenticated {
+        val request = mutation()
+        post(
+            "api/v1/routine-recordings/$recordingId/finish",
+            request,
+            BotMutationRequest.serializer(),
+            RoutineSummary.serializer(),
+        )
+    }
+
+    suspend fun cancelRoutineRecording(recordingId: String): Result<Unit> = authenticated {
+        postDiscarding(
+            "api/v1/routine-recordings/$recordingId/cancel",
+            mutation(),
+            BotMutationRequest.serializer(),
         )
     }
 
@@ -929,6 +1028,10 @@ class HomeBotClient(
                 .delete(json.encodeToString(requestSerializer, payload).jsonBody())
                 .build()
             executeDiscarding(request)
+        }
+
+        suspend fun deleteDiscarding(path: String) {
+            executeDiscarding(requestBuilder(path).delete().build())
         }
 
         suspend fun upload(path: String, mediaType: String, bytes: ByteArray) {

@@ -12,7 +12,15 @@ import dev.homebot.protocol.BotSummary
 import dev.homebot.protocol.CreateBotRequest
 import dev.homebot.protocol.CreateGroupChatRequest
 import dev.homebot.protocol.MessageSummary
+import dev.homebot.protocol.RecordedAction
+import dev.homebot.protocol.RoutineDefinition
+import dev.homebot.protocol.RoutineSummary
 import dev.homebot.protocol.UpdateBotRequest
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.put
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -120,6 +128,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun loadServices() = perform {
+        loadServicesNow()
+    }
+
+    private suspend fun loadServicesNow() {
         val skills = homeBot.client.skills().getOrThrow()
         val plugins = homeBot.client.plugins().getOrThrow()
         val routines = homeBot.client.routines().getOrThrow()
@@ -152,6 +164,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun selectRoutine(routineId: String) = perform {
+        selectRoutineNow(routineId)
+    }
+
+    private suspend fun selectRoutineNow(routineId: String) {
         val runs = homeBot.client.routineRuns(routineId).getOrThrow()
         val triggers = homeBot.client.routineTriggers(routineId).getOrThrow()
         mutableProduct.value = mutableProduct.value.copy(
@@ -163,27 +179,108 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun runRoutine(routineId: String) = perform {
         homeBot.client.runRoutine(routineId).getOrThrow()
-        selectRoutine(routineId)
+        selectRoutineNow(routineId)
+    }
+
+    fun dryRunRoutine(routineId: String) = perform {
+        homeBot.client.dryRunRoutine(routineId).getOrThrow()
+        selectRoutineNow(routineId)
     }
 
     fun toggleRoutine(routineId: String, enabled: Boolean) = perform {
         homeBot.client.mutateRoutine(routineId, enabled).getOrThrow()
-        loadServices()
+        loadServicesNow()
     }
 
     fun scheduleRoutine(routineId: String) = perform {
         homeBot.client.scheduleRoutineOnce(routineId, System.currentTimeMillis() + 5 * 60_000).getOrThrow()
-        selectRoutine(routineId)
+        selectRoutineNow(routineId)
+    }
+
+    fun createRoutine(botId: String, name: String, description: String, prompt: String, requiresApproval: Boolean) = perform {
+        homeBot.client.createRoutine(
+            botId,
+            name.trim(),
+            description.trim(),
+            promptDefinition(botId, prompt, requiresApproval),
+            draft = false,
+        ).getOrThrow()
+        loadServicesNow()
+    }
+
+    fun updateRoutine(routine: RoutineSummary, name: String, description: String, prompt: String, requiresApproval: Boolean) = perform {
+        val steps = routine.definition.steps.toMutableList()
+        val promptIndex = steps.indexOfFirst {
+            it.jsonObject["kind"]?.jsonPrimitive?.contentOrNull == "bot_prompt"
+        }
+        require(promptIndex >= 0) { "This routine has no Bot instruction to edit on mobile" }
+        steps[promptIndex] = botPromptStep(routine.bot_id, prompt, requiresApproval)
+        homeBot.client.updateRoutine(
+            routine.id,
+            name.trim(),
+            description.trim(),
+            routine.definition.copy(steps = steps),
+            draft = false,
+        ).getOrThrow()
+        loadServicesNow()
+        selectRoutineNow(routine.id)
+    }
+
+    fun duplicateRoutine(routine: RoutineSummary) = perform {
+        homeBot.client.duplicateRoutine(routine.id, "${routine.name} copy").getOrThrow()
+        loadServicesNow()
+    }
+
+    fun deleteRoutine(routineId: String) = perform {
+        homeBot.client.deleteRoutine(routineId).getOrThrow()
+        mutableProduct.value = mutableProduct.value.copy(
+            selectedRoutineId = null,
+            routineRuns = emptyList(),
+            routineTriggers = emptyList(),
+        )
+        loadServicesNow()
+    }
+
+    fun startRoutineRecording(botId: String, name: String, description: String) = perform {
+        val recording = homeBot.client.startRoutineRecording(botId, name.trim(), description.trim()).getOrThrow()
+        mutableProduct.value = mutableProduct.value.copy(activeRoutineRecording = recording)
+    }
+
+    fun appendRoutineRecording(prompt: String, requiresApproval: Boolean) = perform {
+        val recording = mutableProduct.value.activeRoutineRecording ?: error("Start recording first")
+        val action = RecordedAction(
+            actor = "user",
+            step = botPromptStep(recording.bot_id, prompt, requiresApproval),
+        )
+        val updated = homeBot.client.appendRoutineRecording(recording.id, action).getOrThrow()
+        mutableProduct.value = mutableProduct.value.copy(activeRoutineRecording = updated)
+    }
+
+    fun finishRoutineRecording() = perform {
+        val recording = mutableProduct.value.activeRoutineRecording ?: error("No routine recording is active")
+        val routine = homeBot.client.finishRoutineRecording(recording.id).getOrThrow()
+        mutableProduct.value = mutableProduct.value.copy(
+            activeRoutineRecording = null,
+            selectedRoutineId = routine.id,
+        )
+        loadServicesNow()
+        selectRoutineNow(routine.id)
+    }
+
+    fun cancelRoutineRecording() = perform {
+        val recording = mutableProduct.value.activeRoutineRecording ?: error("No routine recording is active")
+        homeBot.client.cancelRoutineRecording(recording.id).getOrThrow()
+        mutableProduct.value = mutableProduct.value.copy(activeRoutineRecording = null)
     }
 
     fun mutatePlugin(pluginId: String, action: String) = perform {
         homeBot.client.mutatePlugin(pluginId, action).getOrThrow()
-        loadServices()
+        loadServicesNow()
     }
 
     fun toggleSkill(skillId: String, botId: String, enabled: Boolean) = perform {
         homeBot.client.setSkillAssigned(skillId, botId, enabled).getOrThrow()
-        loadServices()
+        loadServicesNow()
     }
 
     fun testSkill(skillId: String) = perform {
@@ -396,6 +493,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun liveSnapshot() = (connection.value as? ConnectionState.Live)?.snapshot
     private fun id(): String = UUID.randomUUID().toString()
+
+    private fun promptDefinition(botId: String, prompt: String, requiresApproval: Boolean) = RoutineDefinition(
+        inputs = emptyList(),
+        steps = listOf(botPromptStep(botId, prompt, requiresApproval)),
+        expected_outputs = emptyList(),
+    )
+
+    private fun botPromptStep(botId: String, prompt: String, requiresApproval: Boolean) = buildJsonObject {
+        put("kind", "bot_prompt")
+        put("bot_id", botId)
+        put("prompt_template", prompt.trim())
+        put("requires_approval", requiresApproval)
+    }
 
     override fun onCleared() {
         homeBot.client.stop()

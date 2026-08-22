@@ -38,6 +38,10 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.homebot.android.connection.ConnectionState
 import dev.homebot.protocol.*
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.booleanOrNull
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 
 class MainActivity : ComponentActivity() {
     private val viewModel by viewModels<MainViewModel>()
@@ -148,6 +152,7 @@ private fun SearchScreen(viewModel: MainViewModel, state: AndroidProductState) {
 private fun RosterScreen(viewModel: MainViewModel, live: ConnectionState.Live) {
     var create by remember { mutableStateOf(false) }
     var archived by remember { mutableStateOf(false) }
+    var showHidden by remember { mutableStateOf(false) }
     var name by remember { mutableStateOf("") }
     var title by remember { mutableStateOf("") }
     LazyColumn(Modifier.fillMaxSize().padding(horizontal = 18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -174,16 +179,24 @@ private fun RosterScreen(viewModel: MainViewModel, live: ConnectionState.Live) {
                 }
             }
         }
-        items(live.snapshot.bots.filter { it.archived == archived }, key = { it.id }) { bot ->
+        items(
+            live.snapshot.bots.filter { it.archived == archived && (showHidden || !it.hidden) },
+            key = { it.id },
+        ) { bot ->
             BotRow(
                 bot,
                 { viewModel.openBot(bot.id) },
                 { viewModel.setBotArchived(bot.id, !bot.archived) },
                 { name, role -> viewModel.updateBot(bot, name, role) },
+                { viewModel.setBotPinned(bot.id, !bot.pinned) },
+                { viewModel.setBotHidden(bot.id, !bot.hidden) },
+                { viewModel.duplicateBot(bot.id) },
+                { confirmation -> viewModel.deleteBot(bot, confirmation) },
             )
         }
         item {
             TextButton(onClick = { archived = !archived }) { Text(if (archived) "Show active Bots" else "Show archived Bots") }
+            TextButton(onClick = { showHidden = !showHidden }) { Text(if (showHidden) "Hide hidden Bots" else "Review hidden Bots") }
             HorizontalDivider()
             Text("Group chats", fontSize = 20.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(vertical = 12.dp))
         }
@@ -202,8 +215,20 @@ private fun RosterScreen(viewModel: MainViewModel, live: ConnectionState.Live) {
 }
 
 @Composable
-private fun BotRow(bot: BotSummary, onOpen: () -> Unit, onArchive: () -> Unit, onUpdate: (String, String) -> Unit) {
+private fun BotRow(
+    bot: BotSummary,
+    onOpen: () -> Unit,
+    onArchive: () -> Unit,
+    onUpdate: (String, String) -> Unit,
+    onPin: () -> Unit,
+    onHide: () -> Unit,
+    onDuplicate: () -> Unit,
+    onDelete: (String) -> Unit,
+) {
     var editing by remember(bot.id) { mutableStateOf(false) }
+    var menuOpen by remember(bot.id) { mutableStateOf(false) }
+    var confirmingDelete by remember(bot.id) { mutableStateOf(false) }
+    var deleteConfirmation by remember(bot.id) { mutableStateOf("") }
     var name by remember(bot.id) { mutableStateOf(bot.name) }
     var role by remember(bot.id) { mutableStateOf(bot.title) }
     Card(shape = CardShape) {
@@ -217,14 +242,58 @@ private fun BotRow(bot: BotSummary, onOpen: () -> Unit, onArchive: () -> Unit, o
                     Text(bot.title, color = Muted)
                     Text(bot.provider, color = Muted, fontSize = 12.sp)
                 }
-                TextButton(onClick = { editing = !editing }) { Text("Edit") }
-                TextButton(onClick = onArchive) { Text(if (bot.archived) "Restore" else "Archive") }
+                Box {
+                    TextButton(onClick = { menuOpen = true }) { Text("More") }
+                    DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                        DropdownMenuItem(
+                            text = { Text("Edit") },
+                            onClick = { editing = true; menuOpen = false },
+                        )
+                        DropdownMenuItem(
+                            text = { Text(if (bot.pinned) "Unpin" else "Pin") },
+                            onClick = { onPin(); menuOpen = false },
+                        )
+                        DropdownMenuItem(
+                            text = { Text(if (bot.hidden) "Unhide" else "Hide") },
+                            onClick = { onHide(); menuOpen = false },
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Duplicate") },
+                            onClick = { onDuplicate(); menuOpen = false },
+                        )
+                        DropdownMenuItem(
+                            text = { Text(if (bot.archived) "Restore" else "Archive") },
+                            onClick = { onArchive(); menuOpen = false },
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Delete permanently", color = Danger) },
+                            onClick = { confirmingDelete = true; menuOpen = false },
+                        )
+                    }
+                }
             }
             if (editing) {
                 OutlinedTextField(name, { name = it }, label = { Text("Name") }, modifier = Modifier.fillMaxWidth())
                 OutlinedTextField(role, { role = it }, label = { Text("Role") }, modifier = Modifier.fillMaxWidth())
                 Button(onClick = { onUpdate(name, role); editing = false }, enabled = name.isNotBlank() && role.isNotBlank()) {
                     Text("Save changes")
+                }
+            }
+            if (confirmingDelete) {
+                Text("Type ${bot.name} to delete this Bot permanently.", color = Danger)
+                OutlinedTextField(
+                    deleteConfirmation,
+                    { deleteConfirmation = it },
+                    label = { Text("Bot name") },
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Row {
+                    TextButton(onClick = { confirmingDelete = false; deleteConfirmation = "" }) { Text("Cancel") }
+                    Button(
+                        onClick = { onDelete(deleteConfirmation); confirmingDelete = false; deleteConfirmation = "" },
+                        enabled = deleteConfirmation == bot.name,
+                        colors = ButtonDefaults.buttonColors(containerColor = Danger),
+                    ) { Text("Delete permanently") }
                 }
             }
         }
@@ -438,6 +507,18 @@ private fun ConnectedSettings(viewModel: MainViewModel, live: ConnectionState.Li
     val endpointSettings by viewModel.settings.collectAsState()
     var endpoint by remember(endpointSettings.endpoint) { mutableStateOf(endpointSettings.endpoint.ifBlank { live.endpoint }) }
     var endpointError by remember { mutableStateOf<String?>(null) }
+    var routineComposerOpen by rememberSaveable { mutableStateOf(false) }
+    var routineName by rememberSaveable { mutableStateOf("") }
+    var routineDescription by rememberSaveable { mutableStateOf("") }
+    var routinePrompt by rememberSaveable { mutableStateOf("") }
+    var routineBotId by rememberSaveable { mutableStateOf("") }
+    var routineRequiresApproval by rememberSaveable { mutableStateOf(true) }
+    var recordingName by rememberSaveable { mutableStateOf("") }
+    var recordingDescription by rememberSaveable { mutableStateOf("") }
+    var recordingPrompt by rememberSaveable { mutableStateOf("") }
+    var recordingBotId by rememberSaveable { mutableStateOf("") }
+    var recordingRequiresApproval by rememberSaveable { mutableStateOf(true) }
+    var deleteRoutineId by rememberSaveable { mutableStateOf<String?>(null) }
     val selectedRoutine = state.routines.firstOrNull { it.id == state.selectedRoutineId }
     LazyColumn(Modifier.fillMaxSize().padding(horizontal = 20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         item {
@@ -487,8 +568,92 @@ private fun ConnectedSettings(viewModel: MainViewModel, live: ConnectionState.Li
                 }
             }
         }
-        item { SectionTitle("Routines") }
+        item {
+            SectionTitle("Routines")
+            Text("Create, test, record and schedule server-owned Bot workflows.", color = Muted)
+            TextButton(onClick = { routineComposerOpen = !routineComposerOpen }) {
+                Text(if (routineComposerOpen) "Close routine creator" else "Create routine")
+            }
+            if (routineComposerOpen) {
+                OutlinedTextField(routineName, { routineName = it }, label = { Text("Routine name") }, modifier = Modifier.fillMaxWidth())
+                OutlinedTextField(routineDescription, { routineDescription = it }, label = { Text("Description") }, modifier = Modifier.fillMaxWidth())
+                OutlinedTextField(routinePrompt, { routinePrompt = it }, label = { Text("Bot instruction") }, minLines = 3, modifier = Modifier.fillMaxWidth())
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Checkbox(routineRequiresApproval, { routineRequiresApproval = it })
+                    Text("Ask before running this instruction")
+                }
+                Text("Run with", fontWeight = FontWeight.SemiBold)
+                live.snapshot.bots.filterNot { it.archived }.forEach { bot ->
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        RadioButton(selected = routineBotId == bot.id, onClick = { routineBotId = bot.id })
+                        Text(bot.name)
+                    }
+                }
+                Button(
+                    onClick = {
+                        viewModel.createRoutine(routineBotId, routineName, routineDescription, routinePrompt, routineRequiresApproval)
+                        routineComposerOpen = false
+                        routineName = ""
+                        routineDescription = ""
+                        routinePrompt = ""
+                    },
+                    enabled = routineBotId.isNotBlank() && routineName.isNotBlank() && routinePrompt.isNotBlank(),
+                ) { Text("Create routine") }
+            }
+        }
+        item {
+            val recording = state.activeRoutineRecording
+            if (recording == null) {
+                Text("Record a demonstration", fontWeight = FontWeight.SemiBold)
+                OutlinedTextField(recordingName, { recordingName = it }, label = { Text("Recording name") }, modifier = Modifier.fillMaxWidth())
+                OutlinedTextField(recordingDescription, { recordingDescription = it }, label = { Text("Description") }, modifier = Modifier.fillMaxWidth())
+                live.snapshot.bots.filterNot { it.archived }.forEach { bot ->
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        RadioButton(selected = recordingBotId == bot.id, onClick = { recordingBotId = bot.id })
+                        Text(bot.name)
+                    }
+                }
+                OutlinedButton(
+                    onClick = { viewModel.startRoutineRecording(recordingBotId, recordingName, recordingDescription) },
+                    enabled = recordingBotId.isNotBlank() && recordingName.isNotBlank(),
+                ) { Text("Start recording") }
+            } else {
+                HomeBotCard("Recording ${recording.name}", "${recording.actions.size} structured actions captured")
+                OutlinedTextField(recordingPrompt, { recordingPrompt = it }, label = { Text("Next Bot instruction") }, minLines = 2, modifier = Modifier.fillMaxWidth())
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Checkbox(recordingRequiresApproval, { recordingRequiresApproval = it })
+                    Text("Preserve an approval boundary")
+                }
+                Row {
+                    TextButton(
+                        onClick = { viewModel.appendRoutineRecording(recordingPrompt, recordingRequiresApproval); recordingPrompt = "" },
+                        enabled = recordingPrompt.isNotBlank(),
+                    ) { Text("Append action") }
+                    Button(onClick = viewModel::finishRoutineRecording, enabled = recording.actions.isNotEmpty()) { Text("Finish as draft") }
+                }
+                TextButton(onClick = viewModel::cancelRoutineRecording) { Text("Cancel recording") }
+            }
+        }
         items(state.routines, key = { it.id }) { routine ->
+            var editing by rememberSaveable(routine.id) { mutableStateOf(false) }
+            var editName by rememberSaveable(routine.id) { mutableStateOf(routine.name) }
+            var editDescription by rememberSaveable(routine.id) { mutableStateOf(routine.description) }
+            var editPrompt by rememberSaveable(routine.id) {
+                mutableStateOf(
+                    routine.definition.steps.firstOrNull()
+                        ?.jsonObject?.get("prompt_template")?.jsonPrimitive?.contentOrNull.orEmpty(),
+                )
+            }
+            var editRequiresApproval by rememberSaveable(routine.id) {
+                mutableStateOf(
+                    routine.definition.steps.firstOrNull {
+                        it.jsonObject["kind"]?.jsonPrimitive?.contentOrNull == "bot_prompt"
+                    }?.jsonObject?.get("requires_approval")?.jsonPrimitive?.booleanOrNull ?: true,
+                )
+            }
+            val hasBotPrompt = routine.definition.steps.any {
+                it.jsonObject["kind"]?.jsonPrimitive?.contentOrNull == "bot_prompt"
+            }
             Card(shape = CardShape) {
                 Column(Modifier.fillMaxWidth().padding(14.dp)) {
                     Text(routine.name, fontWeight = FontWeight.Bold)
@@ -498,12 +663,40 @@ private fun ConnectedSettings(viewModel: MainViewModel, live: ConnectionState.Li
                         Button(onClick = { viewModel.runRoutine(routine.id) }, enabled = !routine.draft) { Text("Run now") }
                     }
                     Row {
+                        TextButton(onClick = { viewModel.dryRunRoutine(routine.id) }) { Text("Dry run") }
                         TextButton(onClick = { viewModel.toggleRoutine(routine.id, !routine.enabled) }) {
                             Text(if (routine.enabled) "Disable" else "Enable")
                         }
+                    }
+                    Row {
                         TextButton(onClick = { viewModel.scheduleRoutine(routine.id) }, enabled = !routine.draft) {
                             Text("Schedule in 5 minutes")
                         }
+                        TextButton(onClick = { editing = !editing }, enabled = hasBotPrompt) { Text(if (editing) "Close editor" else "Edit") }
+                    }
+                    Row {
+                        TextButton(onClick = { viewModel.duplicateRoutine(routine) }) { Text("Duplicate") }
+                        TextButton(
+                            onClick = {
+                                if (deleteRoutineId == routine.id) {
+                                    viewModel.deleteRoutine(routine.id)
+                                    deleteRoutineId = null
+                                } else deleteRoutineId = routine.id
+                            },
+                        ) { Text(if (deleteRoutineId == routine.id) "Confirm delete" else "Delete") }
+                    }
+                    if (editing) {
+                        OutlinedTextField(editName, { editName = it }, label = { Text("Routine name") }, modifier = Modifier.fillMaxWidth())
+                        OutlinedTextField(editDescription, { editDescription = it }, label = { Text("Description") }, modifier = Modifier.fillMaxWidth())
+                        OutlinedTextField(editPrompt, { editPrompt = it }, label = { Text("Bot instruction") }, minLines = 3, modifier = Modifier.fillMaxWidth())
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Checkbox(editRequiresApproval, { editRequiresApproval = it })
+                            Text("Ask before running this instruction")
+                        }
+                        Button(
+                            onClick = { viewModel.updateRoutine(routine, editName, editDescription, editPrompt, editRequiresApproval); editing = false },
+                            enabled = editName.isNotBlank() && editPrompt.isNotBlank(),
+                        ) { Text("Save routine") }
                     }
                 }
             }

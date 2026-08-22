@@ -7,6 +7,7 @@ import dev.homebot.protocol.WorkingTreeDiffResponse
 import dev.homebot.protocol.DeviceSessionSummary
 import dev.homebot.protocol.PluginSummary
 import dev.homebot.protocol.RoutineRunSummary
+import dev.homebot.protocol.RoutineRecordingSummary
 import dev.homebot.protocol.RoutineSummary
 import dev.homebot.protocol.RoutineTriggerSummary
 import dev.homebot.protocol.SecretSummary
@@ -36,6 +37,7 @@ data class AndroidProductState(
     val routines: List<RoutineSummary> = emptyList(),
     val routineRuns: List<RoutineRunSummary> = emptyList(),
     val routineTriggers: List<RoutineTriggerSummary> = emptyList(),
+    val activeRoutineRecording: RoutineRecordingSummary? = null,
     val secrets: List<SecretSummary> = emptyList(),
     val currentDevice: DeviceSessionSummary? = null,
     val selectedRoutineId: String? = null,

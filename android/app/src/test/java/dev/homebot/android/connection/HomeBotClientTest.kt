@@ -2,6 +2,10 @@ package dev.homebot.android.connection
 
 import dev.homebot.protocol.CreateBotRequest
 import dev.homebot.protocol.SendMessageResponse
+import dev.homebot.protocol.RecordedAction
+import dev.homebot.protocol.RoutineDefinition
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -305,6 +309,90 @@ class HomeBotClientTest {
         }
     }
 
+    @Test
+    fun authoritativeRoutineLifecycleUsesEveryServerMutationPath() = runBlocking {
+        repeat(3) { server.enqueue(jsonResponse(ROUTINE_RESPONSE)) }
+        server.enqueue(jsonResponse(ROUTINE_RUN_RESPONSE))
+        server.enqueue(jsonResponse(RECORDING_EMPTY_RESPONSE))
+        server.enqueue(jsonResponse(RECORDING_ACTION_RESPONSE))
+        server.enqueue(jsonResponse(ROUTINE_RESPONSE))
+        server.enqueue(MockResponse().setResponseCode(204))
+        server.enqueue(MockResponse().setResponseCode(204))
+        server.start()
+        sessions.save(credentials())
+        val client = client()
+        val definition = RoutineDefinition(
+            inputs = emptyList(),
+            steps = listOf(botPromptStep("Check the repository")),
+            expected_outputs = emptyList(),
+        )
+
+        client.createRoutine(BOT_ID, "Review", "Repository review", definition, draft = false).getOrThrow()
+        client.updateRoutine(ROUTINE_ID, "Review", "Updated", definition, draft = false).getOrThrow()
+        client.duplicateRoutine(ROUTINE_ID, "Review copy").getOrThrow()
+        client.dryRunRoutine(ROUTINE_ID).getOrThrow()
+        val recording = client.startRoutineRecording(BOT_ID, "Recorded review", "").getOrThrow()
+        client.appendRoutineRecording(recording.id, RecordedAction("user", botPromptStep("Run tests"))).getOrThrow()
+        client.finishRoutineRecording(recording.id).getOrThrow()
+        client.cancelRoutineRecording(recording.id).getOrThrow()
+        client.deleteRoutine(ROUTINE_ID).getOrThrow()
+
+        val requests = List(9) { server.takeRequest() }
+        assertEquals(
+            listOf(
+                "/api/v1/routines",
+                "/api/v1/routines/$ROUTINE_ID",
+                "/api/v1/routines/$ROUTINE_ID/duplicate",
+                "/api/v1/routines/$ROUTINE_ID/dry-run",
+                "/api/v1/routine-recordings",
+                "/api/v1/routine-recordings/$RECORDING_ID/actions",
+                "/api/v1/routine-recordings/$RECORDING_ID/finish",
+                "/api/v1/routine-recordings/$RECORDING_ID/cancel",
+                "/api/v1/routines/$ROUTINE_ID",
+            ),
+            requests.map { it.path },
+        )
+        assertEquals(listOf("POST", "PUT", "POST", "POST", "POST", "POST", "POST", "POST", "DELETE"), requests.map { it.method })
+        assertTrue(requests[0].body.readUtf8().contains("bot_prompt"))
+        assertTrue(requests[5].body.readUtf8().contains("Run tests"))
+        requests.forEach { assertEquals("Bearer hbds_fixture_session", it.getHeader("Authorization")) }
+    }
+
+    @Test
+    fun completeBotLifecycleUsesReachableAuthenticatedMutations() = runBlocking {
+        repeat(3) { server.enqueue(jsonResponse(BOT_RESPONSE)) }
+        server.enqueue(MockResponse().setResponseCode(204))
+        server.start()
+        sessions.save(credentials())
+        val client = client()
+
+        client.setBotPinned(BOT_ID, true).getOrThrow()
+        client.setBotHidden(BOT_ID, true).getOrThrow()
+        client.duplicateBot(BOT_ID).getOrThrow()
+        client.deleteBot(BOT_ID, "Nova").getOrThrow()
+
+        val requests = List(4) { server.takeRequest() }
+        assertEquals(
+            listOf(
+                "/api/v1/bots/$BOT_ID/pin",
+                "/api/v1/bots/$BOT_ID/hide",
+                "/api/v1/bots/$BOT_ID/duplicate",
+                "/api/v1/bots/$BOT_ID",
+            ),
+            requests.map { it.path },
+        )
+        assertEquals("DELETE", requests.last().method)
+        assertTrue(requests.last().body.readUtf8().contains("Nova"))
+        requests.forEach { assertEquals("Bearer hbds_fixture_session", it.getHeader("Authorization")) }
+    }
+
+    private fun botPromptStep(prompt: String) = buildJsonObject {
+        put("kind", "bot_prompt")
+        put("bot_id", BOT_ID)
+        put("prompt_template", prompt)
+        put("requires_approval", false)
+    }
+
     private fun client(reconnectDelayMs: (Int) -> Long = { 1 }) = HomeBotClient(
         http = OkHttpClient.Builder().build(),
         sessions = sessions,
@@ -333,6 +421,10 @@ class HomeBotClientTest {
         const val DEVICE_ID = "018f47b8-c9aa-7c6f-b9e1-111111111111"
         const val CHAT_ID = "00000000-0000-0000-0000-000000000030"
         const val ATTACHMENT_ID = "00000000-0000-0000-0000-000000000050"
+        const val BOT_ID = "00000000-0000-0000-0000-000000000010"
+        const val ROUTINE_ID = "00000000-0000-0000-0000-000000000080"
+        const val ROUTINE_VERSION_ID = "00000000-0000-0000-0000-000000000081"
+        const val RECORDING_ID = "00000000-0000-0000-0000-000000000082"
         const val VERSION_RESPONSE = """{"server_version":"1.0.0","protocol":{"minimum":1,"maximum":1}}"""
         const val ERROR_RESPONSE = """{"code":"unauthenticated","message":"Device session is invalid","retryable":false,"request_id":null}"""
         const val PAIRING_RESPONSE = """{"device":{"id":"$DEVICE_ID","name":"Pixel 9","endpoint_kind":"loopback","created_at_unix_ms":1,"last_seen_at_unix_ms":null,"revoked_at_unix_ms":null},"device_session":"hbds_fixture_session"}"""
@@ -343,6 +435,10 @@ class HomeBotClientTest {
         const val PLUGINS_RESPONSE = """[{"id":"00000000-0000-0000-0000-000000000060","name":"Repository MCP","description":"Repository tools","kind":"local_mcp","enabled":true,"connection_state":"connected","auth_state":"ready","tools":[],"bot_ids":[],"updated_at_unix_ms":1}]"""
         const val SECRETS_RESPONSE = """[{"id":"00000000-0000-0000-0000-000000000070","label":"OpenAI work","status":"ready","created_at_unix_ms":1,"updated_at_unix_ms":1}]"""
         const val CURRENT_DEVICE_RESPONSE = """{"id":"$DEVICE_ID","name":"Pixel 9","endpoint_kind":"loopback","created_at_unix_ms":1,"last_seen_at_unix_ms":2,"revoked_at_unix_ms":null}"""
+        const val ROUTINE_RESPONSE = """{"id":"$ROUTINE_ID","bot_id":"$BOT_ID","name":"Review","description":"Repository review","enabled":true,"draft":false,"active_version_id":"$ROUTINE_VERSION_ID","version":1,"definition":{"inputs":[],"steps":[{"kind":"bot_prompt","bot_id":"$BOT_ID","prompt_template":"Check the repository","requires_approval":false}],"expected_outputs":[]},"created_at_unix_ms":1,"updated_at_unix_ms":1}"""
+        const val ROUTINE_RUN_RESPONSE = """{"id":"00000000-0000-0000-0000-000000000083","routine_id":"$ROUTINE_ID","routine_version_id":"$ROUTINE_VERSION_ID","bot_id":"$BOT_ID","status":"succeeded","trigger":{},"input_metadata":{},"dry_run":true,"results":[],"attempt_count":1,"started_at_unix_ms":1,"finished_at_unix_ms":2}"""
+        const val RECORDING_EMPTY_RESPONSE = """{"id":"$RECORDING_ID","bot_id":"$BOT_ID","name":"Recorded review","description":"","actions":[],"created_at_unix_ms":1,"updated_at_unix_ms":1}"""
+        const val RECORDING_ACTION_RESPONSE = """{"id":"$RECORDING_ID","bot_id":"$BOT_ID","name":"Recorded review","description":"","actions":[{"actor":"user","step":{"kind":"bot_prompt","bot_id":"$BOT_ID","prompt_template":"Run tests","requires_approval":false}}],"created_at_unix_ms":1,"updated_at_unix_ms":2}"""
 
         fun hello(resume: String) = """{"protocol_version":1,"sequence":0,"event_id":"00000000-0000-0000-0000-000000000001","kind":"hello","server_version":"1.0.0","supported_protocols":{"minimum":1,"maximum":1},"resume":"$resume","heartbeat_interval_ms":30000,"heartbeat_timeout_ms":60000}"""
         fun snapshot(sequence: Int) = """{"protocol_version":1,"sequence":$sequence,"event_id":"00000000-0000-0000-0000-000000000002","kind":"snapshot","boundary_sequence":$sequence,"snapshot":{"bots":[],"chats":[]}}"""

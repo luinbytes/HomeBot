@@ -35,10 +35,10 @@ Sources: [overview](https://docs.x.ai/grok-bot/overview), [Bots](https://docs.x.
 | Plugin discovery/connect/status/remove | Computer | Settings states | Equivalent settings | Plugin/MCP registry | Connect, fail, recover, revoke | Specified |
 | Skills create/edit/enable | Skills | Library and per-Bot enable | Equivalent management | Versioned Skill model | Historical prompt assembly is deterministic | Specified |
 | Teach workflow recording | Skills | Record/review draft | Mobile can inspect result | Structured action capture | Recording becomes editable/testable skill | Specified |
-| Routine create/manual run/test | Skills | Bot routine editor | Equivalent relevant controls | Versioned routine runner | Safe test and run history exist | Specified |
+| Routine create/manual run/test | Skills | Bot routine editor | Mobile create/edit/duplicate/delete and dry-run/Run-now controls | Versioned routine runner | Safe test and run history exist | Specified |
 | Scheduled routine/time zone | Skills | Schedule/next-run UI | View/edit controls | Headless scheduler | DST and restart boundary pass | Specified |
 | Event-triggered routine | Skills | Narrow event rule UI | Equivalent controls | Idempotent webhook/plugin trigger | Duplicate event produces one run | Specified |
-| Routine enable/pause/delete/history | Skills, mobile | Full management | Full HomeBot parity | Durable run state/history | No client open required | Specified |
+| Routine enable/pause/delete/history | Skills, mobile | Full management | Server-authoritative management and refreshed history | Durable run state/history | No client open required | Specified |
 | Structured approval once/deny | Security | Target/scope/value card | Equivalent approve/deny | Operation-digest approval | Prose cannot approve; expiry works | Specified |
 | Persistent capability rules | Security | Narrow allow/require/deny rules | Safe mobile management | Server policy evaluator | Deny wins and changes are audited | Specified |
 | Secure secret entry | Security | Masked non-chat flow | Android secure entry | OS credential store references | Canary never enters transcript/log | Specified |

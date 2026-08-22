@@ -493,6 +493,9 @@ data class CreateRoutineRequest(val request_id: String, val idempotency_key: Str
 data class UpdateRoutineRequest(val request_id: String, val idempotency_key: String, val name: String, val description: String = "", val definition: RoutineDefinition, val draft: Boolean)
 
 @Serializable
+data class DuplicateRoutineRequest(val request_id: String, val idempotency_key: String, val name: String)
+
+@Serializable
 data class StartRoutineRecordingRequest(val request_id: String, val idempotency_key: String, val bot_id: String, val name: String, val description: String = "")
 
 @Serializable

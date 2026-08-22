@@ -296,7 +296,7 @@ enum class BrowserController { @SerialName("bot") BOT, @SerialName("user") USER 
 enum class BrowserSessionStatus { @SerialName("active") ACTIVE, @SerialName("awaiting_approval") AWAITING_APPROVAL, @SerialName("closed") CLOSED, @SerialName("failed") FAILED }
 
 @Serializable
-data class BrowserSessionSummary(val id: String, val chat_id: String, val bot_id: String, val profile_id: String, val profile_name: String, val current_url: String? = null, val controller: BrowserController, val status: BrowserSessionStatus, val pending_approval_id: String? = null, val created_at_ms: Long, val updated_at_ms: Long)
+data class BrowserSessionSummary(val id: String, val chat_id: String, val bot_id: String, val profile_id: String, val profile_name: String, val current_url: String? = null, val controller: BrowserController, val controller_device_id: String? = null, val controller_lease_expires_at_ms: Long? = null, val status: BrowserSessionStatus, val pending_approval_id: String? = null, val created_at_ms: Long, val updated_at_ms: Long)
 
 @Serializable
 data class CreateBrowserSessionRequest(val request_id: String, val idempotency_key: String, val chat_id: String, val bot_id: String, val profile_id: String, val profile_name: String, val approval_id: String? = null)

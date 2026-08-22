@@ -28,7 +28,7 @@ use std::{
 };
 use uuid::Uuid;
 
-pub const SCHEMA_VERSION: u32 = 23;
+pub const SCHEMA_VERSION: u32 = 24;
 static MIGRATOR: std::sync::LazyLock<sqlx::migrate::Migrator> = std::sync::LazyLock::new(|| {
     use sqlx::migrate::{Migration, MigrationType, Migrator};
     use std::borrow::Cow;
@@ -136,6 +136,11 @@ static MIGRATOR: std::sync::LazyLock<sqlx::migrate::Migrator> = std::sync::LazyL
             23,
             "pairing attempt sources",
             include_str!("../migrations/0023_pairing_attempt_sources.sql"),
+        ),
+        (
+            24,
+            "browser controller leases",
+            include_str!("../migrations/0024_browser_controller_leases.sql"),
         ),
     ]
     .into_iter()
@@ -634,6 +639,8 @@ pub struct BrowserSessionRecord {
     pub directory_ref: String,
     pub current_url: Option<String>,
     pub controller: String,
+    pub controller_device_id: Option<Uuid>,
+    pub controller_lease_expires_at_ms: Option<i64>,
     pub status: String,
     pub pending_approval_id: Option<Uuid>,
     pub created_at_ms: i64,
@@ -4022,6 +4029,109 @@ impl Storage {
         self.browser_session(owner_id, session_id).await
     }
 
+    /// Binds user control of a browser session to one authenticated device and lease.
+    ///
+    /// # Errors
+    /// Returns an ownership or database error when the session does not exist.
+    pub async fn set_browser_controller_lease(
+        &self,
+        owner_id: Uuid,
+        session_id: Uuid,
+        device_id: Option<Uuid>,
+        expires_at_ms: Option<i64>,
+    ) -> Result<BrowserSessionRecord, StorageError> {
+        if device_id.is_some() != expires_at_ms.is_some() {
+            return Err(StorageError::Integrity(
+                "browser controller identity and lease must be set together".to_owned(),
+            ));
+        }
+        let updated = sqlx::query(
+            "UPDATE browser_sessions
+             SET controller_device_id = ?, controller_lease_expires_at_ms = ?
+             WHERE id = ? AND owner_id = ?",
+        )
+        .bind(device_id.map(|id| id.to_string()))
+        .bind(expires_at_ms)
+        .bind(session_id.to_string())
+        .bind(owner_id.to_string())
+        .execute(&self.pool)
+        .await?;
+        if updated.rows_affected() != 1 {
+            return Err(StorageError::Integrity(
+                "browser session was not found".to_owned(),
+            ));
+        }
+        self.browser_session(owner_id, session_id).await
+    }
+
+    /// Atomically claims or renews user control when no other live device lease exists.
+    ///
+    /// # Errors
+    /// Returns a database error; `None` means another device owns the live lease.
+    pub async fn claim_browser_controller(
+        &self,
+        owner_id: Uuid,
+        session_id: Uuid,
+        device_id: Uuid,
+        now_ms: i64,
+        expires_at_ms: i64,
+    ) -> Result<Option<BrowserSessionRecord>, StorageError> {
+        let updated = sqlx::query(
+            "UPDATE browser_sessions
+             SET controller = 'user', status = 'active', pending_approval_id = NULL,
+                 controller_device_id = ?, controller_lease_expires_at_ms = ?, updated_at_ms = ?
+             WHERE id = ? AND owner_id = ?
+               AND (controller = 'bot' OR controller_device_id = ?
+                    OR controller_lease_expires_at_ms IS NULL
+                    OR controller_lease_expires_at_ms <= ?)",
+        )
+        .bind(device_id.to_string())
+        .bind(expires_at_ms)
+        .bind(now_ms)
+        .bind(session_id.to_string())
+        .bind(owner_id.to_string())
+        .bind(device_id.to_string())
+        .bind(now_ms)
+        .execute(&self.pool)
+        .await?;
+        if updated.rows_affected() == 0 {
+            return Ok(None);
+        }
+        self.browser_session(owner_id, session_id).await.map(Some)
+    }
+
+    /// Atomically returns a live user-controlled browser lease to its Bot.
+    ///
+    /// # Errors
+    /// Returns a database error; `None` means the requester no longer owns a live lease.
+    pub async fn release_browser_controller(
+        &self,
+        owner_id: Uuid,
+        session_id: Uuid,
+        device_id: Uuid,
+        now_ms: i64,
+    ) -> Result<Option<BrowserSessionRecord>, StorageError> {
+        let updated = sqlx::query(
+            "UPDATE browser_sessions
+             SET controller = 'bot', status = 'active', pending_approval_id = NULL,
+                 controller_device_id = NULL, controller_lease_expires_at_ms = NULL,
+                 updated_at_ms = ?
+             WHERE id = ? AND owner_id = ? AND controller = 'user'
+               AND controller_device_id = ? AND controller_lease_expires_at_ms > ?",
+        )
+        .bind(now_ms)
+        .bind(session_id.to_string())
+        .bind(owner_id.to_string())
+        .bind(device_id.to_string())
+        .bind(now_ms)
+        .execute(&self.pool)
+        .await?;
+        if updated.rows_affected() == 0 {
+            return Ok(None);
+        }
+        self.browser_session(owner_id, session_id).await.map(Some)
+    }
+
     /// Attaches a live runtime target to an existing durable browser projection.
     ///
     /// # Errors
@@ -6457,6 +6567,12 @@ fn browser_session_from_row(
         directory_ref: row.try_get("directory_ref")?,
         current_url: row.try_get("current_url")?,
         controller: row.try_get("controller")?,
+        controller_device_id: row
+            .try_get::<Option<String>, _>("controller_device_id")?
+            .as_deref()
+            .map(parse_uuid)
+            .transpose()?,
+        controller_lease_expires_at_ms: row.try_get("controller_lease_expires_at_ms")?,
         status: row.try_get("status")?,
         pending_approval_id: row
             .try_get::<Option<String>, _>("pending_approval_id")?

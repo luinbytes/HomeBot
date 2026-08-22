@@ -967,6 +967,8 @@ pub struct BrowserSessionSummary {
     pub profile_name: String,
     pub current_url: Option<String>,
     pub controller: BrowserController,
+    pub controller_device_id: Option<Uuid>,
+    pub controller_lease_expires_at_ms: Option<i64>,
     pub status: BrowserSessionStatus,
     pub pending_approval_id: Option<Uuid>,
     pub created_at_ms: i64,

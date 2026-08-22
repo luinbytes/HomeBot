@@ -28,6 +28,8 @@ use crate::{
     unix_time_ms,
 };
 
+const BROWSER_CONTROL_LEASE_MS: i64 = 10 * 60 * 1_000;
+
 #[async_trait]
 pub trait BrowserRuntime: Send + Sync {
     async fn create(
@@ -217,6 +219,16 @@ pub(super) async fn takeover(
         .storage
         .browser_session(state.owner_id, session_id)
         .await?;
+    if current.controller == "user"
+        && current
+            .controller_lease_expires_at_ms
+            .is_some_and(|expires| expires > unix_time_ms())
+        && current.controller_device_id != Some(identity.device_id())
+    {
+        return Err(ApiError::forbidden(
+            "Another paired device currently controls this browser",
+        ));
+    }
     let mut canonical = request.clone();
     canonical.approval_id = None;
     if matches!(
@@ -249,18 +261,20 @@ pub(super) async fn takeover(
         .await
     {
         Ok(_authorization) => {
+            let now = unix_time_ms();
             let record = state
                 .storage
-                .update_browser_session(
+                .claim_browser_controller(
                     state.owner_id,
                     session_id,
-                    "user",
-                    "active",
-                    None,
-                    None,
-                    unix_time_ms(),
+                    identity.device_id(),
+                    now,
+                    now.saturating_add(BROWSER_CONTROL_LEASE_MS),
                 )
-                .await?;
+                .await?
+                .ok_or_else(|| {
+                    ApiError::forbidden("Another paired device currently controls this browser")
+                })?;
             let session = summary(record)?;
             publish_session(&state, session.clone()).await?;
             Ok((StatusCode::OK, Json(response(session, None, None))))
@@ -303,9 +317,15 @@ pub(super) async fn takeover(
 
 pub(super) async fn return_to_bot(
     State(state): State<AppState>,
+    Extension(identity): Extension<AuthenticatedIdentity>,
     Path(session_id): Path<Uuid>,
     Json(request): Json<BrowserMutationRequest>,
 ) -> Result<Json<BrowserActionResponse>, ApiError> {
+    let current = state
+        .storage
+        .browser_session(state.owner_id, session_id)
+        .await?;
+    require_controller(&current, &identity)?;
     let replayed = matches!(
         claim(
             &state,
@@ -330,16 +350,14 @@ pub(super) async fn return_to_bot(
     }
     let record = state
         .storage
-        .update_browser_session(
+        .release_browser_controller(
             state.owner_id,
             session_id,
-            "bot",
-            "active",
-            None,
-            None,
+            identity.device_id(),
             unix_time_ms(),
         )
-        .await?;
+        .await?
+        .ok_or_else(|| ApiError::forbidden("Browser control is no longer owned by this device"))?;
     let session = summary(record)?;
     publish_session(&state, session.clone()).await?;
     Ok(Json(response(session, None, None)))
@@ -355,6 +373,7 @@ pub(super) async fn execute(
         .storage
         .browser_session(state.owner_id, session_id)
         .await?;
+    require_controller(&current, &identity)?;
     if current.status == "closed" || current.runtime_session_id.is_none() {
         return Err(ApiError::conflict("The browser session is not active"));
     }
@@ -534,6 +553,8 @@ async fn activate_created_session(
         directory_ref: profile.directory_ref,
         current_url: None,
         controller: "bot".to_owned(),
+        controller_device_id: None,
+        controller_lease_expires_at_ms: None,
         status: "active".to_owned(),
         pending_approval_id: None,
         created_at_ms: now,
@@ -635,6 +656,8 @@ async fn pending_session(
             directory_ref: profile.directory_ref.clone(),
             current_url: None,
             controller: "bot".to_owned(),
+            controller_device_id: None,
+            controller_lease_expires_at_ms: None,
             status: "awaiting_approval".to_owned(),
             pending_approval_id: Some(approval_id),
             created_at_ms: now,
@@ -682,6 +705,29 @@ const fn device_id(identity: &AuthenticatedIdentity) -> Uuid {
     }
 }
 
+fn require_controller(
+    session: &BrowserSessionRecord,
+    identity: &AuthenticatedIdentity,
+) -> Result<(), ApiError> {
+    if session.controller == "bot" {
+        return Ok(());
+    }
+    if session.controller_device_id != Some(identity.device_id()) {
+        return Err(ApiError::forbidden(
+            "This browser is controlled by another paired device",
+        ));
+    }
+    if session
+        .controller_lease_expires_at_ms
+        .is_none_or(|expires| expires <= unix_time_ms())
+    {
+        return Err(ApiError::conflict(
+            "Browser control expired; request takeover again",
+        ));
+    }
+    Ok(())
+}
+
 fn protocol_action(command: &BrowserCommand) -> BrowserAction {
     match command {
         BrowserCommand::Navigate { url } => BrowserAction::Navigate { url: url.clone() },
@@ -699,6 +745,8 @@ pub(super) fn summary(record: BrowserSessionRecord) -> Result<BrowserSessionSumm
         profile_name: record.profile_name,
         current_url: record.current_url,
         controller: parse_enum(&record.controller)?,
+        controller_device_id: record.controller_device_id,
+        controller_lease_expires_at_ms: record.controller_lease_expires_at_ms,
         status: parse_enum(&record.status)?,
         pending_approval_id: record.pending_approval_id,
         created_at_ms: record.created_at_ms,

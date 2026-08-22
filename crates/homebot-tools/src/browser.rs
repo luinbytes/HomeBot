@@ -55,7 +55,14 @@ struct BrowserSession {
     target_id: String,
     websocket_url: Url,
     profile_id: Uuid,
+    browser_context_id: String,
     _slot: Arc<OwnedSemaphorePermit>,
+}
+
+#[derive(Clone, Debug)]
+struct IsolatedBrowserContext {
+    id: String,
+    active_targets: usize,
 }
 
 pub struct BrowserService {
@@ -65,6 +72,7 @@ pub struct BrowserService {
     policy: Arc<PolicyEngine>,
     activities: Arc<dyn ActivitySink>,
     sessions: Mutex<HashMap<Uuid, BrowserSession>>,
+    contexts: Mutex<HashMap<Uuid, IsolatedBrowserContext>>,
     session_slots: Arc<Semaphore>,
     request_timeout: Duration,
 }
@@ -124,6 +132,7 @@ impl BrowserService {
             policy,
             activities,
             sessions: Mutex::new(HashMap::new()),
+            contexts: Mutex::new(HashMap::new()),
             session_slots: Arc::new(Semaphore::new(MAX_BROWSER_SESSIONS)),
             request_timeout: Duration::from_secs(15),
         })
@@ -196,10 +205,11 @@ impl BrowserService {
                     .await;
             }
         };
-        let (target_id, websocket_url) = match self.open_target().await {
-            Ok(target) => target,
-            Err(error) => return self.browser_failure(&context, error).await,
-        };
+        let (target_id, websocket_url, browser_context_id) =
+            match self.open_target(profile.profile_id).await {
+                Ok(target) => target,
+                Err(error) => return self.browser_failure(&context, error).await,
+            };
         let session_id = Uuid::now_v7();
         self.sessions.lock().await.insert(
             session_id,
@@ -207,6 +217,7 @@ impl BrowserService {
                 target_id,
                 websocket_url,
                 profile_id: profile.profile_id,
+                browser_context_id,
                 _slot: slot,
             },
         );
@@ -351,6 +362,12 @@ impl BrowserService {
                 .await;
         }
         self.sessions.lock().await.remove(&session_id);
+        if let Err(error) = self
+            .release_context(session.profile_id, &session.browser_context_id)
+            .await
+        {
+            return self.browser_failure(&context, error).await;
+        }
         self.emit(
             &context,
             ActivityStatus::Completed,
@@ -380,31 +397,134 @@ impl BrowserService {
         Ok(path)
     }
 
-    async fn open_target(&self) -> Result<(String, Url), ToolError> {
-        let mut endpoint = self
+    async fn open_target(&self, profile_id: Uuid) -> Result<(String, Url, String), ToolError> {
+        let mut contexts = self.contexts.lock().await;
+        let browser_context_id = if let Some(context) = contexts.get_mut(&profile_id) {
+            context.active_targets = context.active_targets.saturating_add(1);
+            context.id.clone()
+        } else {
+            let value = self
+                .browser_command("Target.createBrowserContext", json!({}))
+                .await?;
+            let id = value
+                .pointer("/result/browserContextId")
+                .and_then(Value::as_str)
+                .ok_or(ToolError::BrowserProtocol)?
+                .to_owned();
+            contexts.insert(
+                profile_id,
+                IsolatedBrowserContext {
+                    id: id.clone(),
+                    active_targets: 1,
+                },
+            );
+            id
+        };
+        drop(contexts);
+        let result = self.open_target_in_context(&browser_context_id).await;
+        if result.is_err() {
+            let _ = self.release_context(profile_id, &browser_context_id).await;
+        }
+        result.map(|(target_id, websocket_url)| (target_id, websocket_url, browser_context_id))
+    }
+
+    async fn open_target_in_context(
+        &self,
+        browser_context_id: &str,
+    ) -> Result<(String, Url), ToolError> {
+        let value = self
+            .browser_command(
+                "Target.createTarget",
+                json!({"url": "about:blank", "browserContextId": browser_context_id}),
+            )
+            .await?;
+        let target_id = value
+            .pointer("/result/targetId")
+            .and_then(Value::as_str)
+            .ok_or(ToolError::BrowserProtocol)?
+            .to_owned();
+        let endpoint = self
             .endpoint
-            .join("json/new")
+            .join("json/list")
             .map_err(|_| ToolError::BrowserProtocol)?;
-        endpoint.query_pairs_mut().append_pair("url", "about:blank");
-        let response = self
+        let targets: Vec<CdpTarget> = self
             .client
-            .put(endpoint)
+            .get(endpoint)
             .send()
             .await
-            .map_err(|_| ToolError::Unavailable)?;
-        if !response.status().is_success() {
-            return Err(ToolError::BrowserProtocol);
-        }
-        let target: CdpTarget = response
+            .map_err(|_| ToolError::Unavailable)?
+            .error_for_status()
+            .map_err(|_| ToolError::BrowserProtocol)?
             .json()
             .await
             .map_err(|_| ToolError::BrowserProtocol)?;
+        let target = targets
+            .into_iter()
+            .find(|target| {
+                target.id == target_id
+                    && target.browser_context_id.as_deref() == Some(browser_context_id)
+            })
+            .ok_or(ToolError::BrowserProtocol)?;
         let websocket_url =
             Url::parse(&target.web_socket_debugger_url).map_err(|_| ToolError::BrowserProtocol)?;
         if !matches!(websocket_url.scheme(), "ws" | "wss") || !is_loopback(&websocket_url) {
             return Err(ToolError::BrowserProtocol);
         }
         Ok((target.id, websocket_url))
+    }
+
+    async fn browser_command(&self, method: &str, params: Value) -> Result<Value, ToolError> {
+        let endpoint = self
+            .endpoint
+            .join("json/version")
+            .map_err(|_| ToolError::BrowserProtocol)?;
+        let version: CdpVersion = self
+            .client
+            .get(endpoint)
+            .send()
+            .await
+            .map_err(|_| ToolError::Unavailable)?
+            .error_for_status()
+            .map_err(|_| ToolError::BrowserProtocol)?
+            .json()
+            .await
+            .map_err(|_| ToolError::BrowserProtocol)?;
+        let websocket_url =
+            Url::parse(&version.web_socket_debugger_url).map_err(|_| ToolError::BrowserProtocol)?;
+        if !matches!(websocket_url.scheme(), "ws" | "wss") || !is_loopback(&websocket_url) {
+            return Err(ToolError::BrowserProtocol);
+        }
+        execute_raw_cdp(&websocket_url, method, params, self.request_timeout).await
+    }
+
+    async fn release_context(
+        &self,
+        profile_id: Uuid,
+        expected_context_id: &str,
+    ) -> Result<(), ToolError> {
+        let context_id = {
+            let mut contexts = self.contexts.lock().await;
+            let context = contexts
+                .get_mut(&profile_id)
+                .ok_or(ToolError::BrowserProtocol)?;
+            if context.id != expected_context_id || context.active_targets == 0 {
+                return Err(ToolError::BrowserProtocol);
+            }
+            context.active_targets -= 1;
+            if context.active_targets == 0 {
+                contexts.remove(&profile_id).map(|context| context.id)
+            } else {
+                None
+            }
+        };
+        if let Some(context_id) = context_id {
+            self.browser_command(
+                "Target.disposeBrowserContext",
+                json!({"browserContextId": context_id}),
+            )
+            .await?;
+        }
+        Ok(())
     }
 
     async fn emit(
@@ -446,6 +566,64 @@ impl BrowserService {
 struct CdpTarget {
     id: String,
     web_socket_debugger_url: String,
+    browser_context_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CdpVersion {
+    web_socket_debugger_url: String,
+}
+
+async fn execute_raw_cdp(
+    websocket_url: &Url,
+    method: &str,
+    params: Value,
+    timeout: Duration,
+) -> Result<Value, ToolError> {
+    let (mut socket, _) = connect_async(websocket_url.as_str())
+        .await
+        .map_err(|_| ToolError::BrowserProtocol)?;
+    socket
+        .send(Message::Text(
+            json!({"id": 1, "method": method, "params": params})
+                .to_string()
+                .into(),
+        ))
+        .await
+        .map_err(|_| ToolError::BrowserProtocol)?;
+    let response = tokio::time::timeout(timeout, async {
+        for _ in 0..MAX_CDP_MESSAGES {
+            let message = socket
+                .next()
+                .await
+                .ok_or(ToolError::BrowserProtocol)?
+                .map_err(|_| ToolError::BrowserProtocol)?;
+            let data = match message {
+                Message::Text(text) => text.as_bytes().to_vec(),
+                Message::Binary(bytes) => bytes.to_vec(),
+                Message::Close(_) => return Err(ToolError::BrowserProtocol),
+                Message::Ping(_) | Message::Pong(_) | Message::Frame(_) => continue,
+            };
+            if data.len() > MAX_CDP_MESSAGE_BYTES {
+                return Err(ToolError::LimitExceeded);
+            }
+            let value: Value =
+                serde_json::from_slice(&data).map_err(|_| ToolError::BrowserProtocol)?;
+            if value.get("id").and_then(Value::as_u64) != Some(1) {
+                continue;
+            }
+            if value.get("error").is_some() {
+                return Err(ToolError::BrowserProtocol);
+            }
+            return Ok(value);
+        }
+        Err(ToolError::LimitExceeded)
+    })
+    .await
+    .map_err(|_| ToolError::TimedOut)??;
+    let _ = socket.close(None).await;
+    Ok(response)
 }
 
 async fn execute_cdp(
@@ -624,20 +802,31 @@ fn reject_profile_symlinks(root: &Path, target: &Path) -> Result<(), ToolError> 
 mod tests {
     use super::*;
     use crate::{PolicyEffect, PolicyRule, RecordingActivitySink};
-    use axum::{
-        Json, Router,
-        extract::State,
-        routing::{get, put},
+    use axum::{Json, Router, extract::State, routing::get};
+    use std::{
+        sync::atomic::{AtomicUsize, Ordering},
+        time::Duration,
     };
-    use std::time::Duration;
     use tokio::net::TcpListener;
     use tokio_tungstenite::accept_async;
 
-    async fn fake_cdp_socket(listener: TcpListener) {
+    #[derive(Clone)]
+    struct FakeCdpState {
+        websocket_url: String,
+        targets: Arc<Mutex<HashMap<String, String>>>,
+    }
+
+    async fn fake_cdp_socket(
+        listener: TcpListener,
+        targets: Arc<Mutex<HashMap<String, String>>>,
+        next_context: Arc<AtomicUsize>,
+    ) {
         loop {
             let Ok((stream, _)) = listener.accept().await else {
                 return;
             };
+            let targets = targets.clone();
+            let next_context = next_context.clone();
             tokio::spawn(async move {
                 let Ok(mut socket) = accept_async(stream).await else {
                     return;
@@ -650,6 +839,24 @@ mod tests {
                 };
                 let method = request.get("method").and_then(Value::as_str).unwrap_or("");
                 let result = match method {
+                    "Target.createBrowserContext" => {
+                        let number = next_context.fetch_add(1, Ordering::SeqCst);
+                        json!({"browserContextId": format!("context-{number}")})
+                    }
+                    "Target.createTarget" => {
+                        let Some(context_id) = request
+                            .pointer("/params/browserContextId")
+                            .and_then(Value::as_str)
+                        else {
+                            return;
+                        };
+                        let target_id = format!("target-{context_id}");
+                        targets
+                            .lock()
+                            .await
+                            .insert(target_id.clone(), context_id.to_owned());
+                        json!({"targetId": target_id})
+                    }
                     "Page.navigate" => json!({"frameId": "frame"}),
                     "Page.captureScreenshot" => json!({"data": STANDARD.encode(b"png")}),
                     "Runtime.evaluate" => json!({"result": {"value": "https://example.test/"}}),
@@ -676,21 +883,48 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(clippy::too_many_lines)]
     async fn local_cdp_session_executes_normalized_actions()
     -> Result<(), Box<dyn std::error::Error>> {
         let websocket_listener = TcpListener::bind("127.0.0.1:0").await?;
         let websocket_address = websocket_listener.local_addr()?;
-        tokio::spawn(fake_cdp_socket(websocket_listener));
+        let targets = Arc::new(Mutex::new(HashMap::new()));
+        tokio::spawn(fake_cdp_socket(
+            websocket_listener,
+            targets.clone(),
+            Arc::new(AtomicUsize::new(1)),
+        ));
         let websocket_url = format!("ws://{websocket_address}/devtools/page/fixture");
         let app = Router::new()
             .route(
-                "/json/new",
-                put(|State(url): State<String>| async move {
-                    Json(json!({"id": "target-fixture", "webSocketDebuggerUrl": url}))
+                "/json/version",
+                get(|State(state): State<FakeCdpState>| async move {
+                    Json(json!({"webSocketDebuggerUrl": state.websocket_url}))
+                }),
+            )
+            .route(
+                "/json/list",
+                get(|State(state): State<FakeCdpState>| async move {
+                    let targets = state.targets.lock().await;
+                    Json(Value::Array(
+                        targets
+                            .iter()
+                            .map(|(target, context)| {
+                                json!({
+                                    "id": target,
+                                    "webSocketDebuggerUrl": state.websocket_url,
+                                    "browserContextId": context,
+                                })
+                            })
+                            .collect(),
+                    ))
                 }),
             )
             .route("/json/close/{id}", get(|| async { "Target is closing" }))
-            .with_state(websocket_url);
+            .with_state(FakeCdpState {
+                websocket_url,
+                targets,
+            });
         let listener = TcpListener::bind("127.0.0.1:0").await?;
         let address = listener.local_addr()?;
         tokio::spawn(async move {
@@ -698,6 +932,7 @@ mod tests {
         });
         let profile_root = tempfile::tempdir()?;
         std::fs::create_dir(profile_root.path().join("default"))?;
+        std::fs::create_dir(profile_root.path().join("separate"))?;
         let activities = Arc::new(RecordingActivitySink::default());
         let policy = Arc::new(PolicyEngine::new(
             Duration::from_secs(60),
@@ -729,6 +964,28 @@ mod tests {
         else {
             return Err("session was not created".into());
         };
+        let BrowserResult::SessionCreated {
+            session_id: second_session_id,
+        } = service
+            .create_session(
+                context(),
+                &BrowserSessionProfile {
+                    profile_id: Uuid::now_v7(),
+                    display_name: "Separate".to_owned(),
+                    profile_directory: PathBuf::from("separate"),
+                },
+                None,
+            )
+            .await?
+        else {
+            return Err("second session was not created".into());
+        };
+        let sessions = service.sessions.lock().await;
+        assert_ne!(
+            sessions[&session_id].browser_context_id,
+            sessions[&second_session_id].browser_context_id
+        );
+        drop(sessions);
         assert_eq!(
             service
                 .execute(
@@ -757,6 +1014,12 @@ mod tests {
         );
         assert_eq!(
             service.close_session(context(), session_id, None).await?,
+            BrowserResult::SessionClosed
+        );
+        assert_eq!(
+            service
+                .close_session(context(), second_session_id, None)
+                .await?,
             BrowserResult::SessionClosed
         );
         Ok(())

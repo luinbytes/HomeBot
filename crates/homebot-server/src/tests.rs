@@ -1657,10 +1657,19 @@ async fn authenticated_socket(
 }
 
 fn json_request(method: &str, uri: &str, body: &impl serde::Serialize) -> Request<Body> {
+    authenticated_json_request("correct-token", method, uri, body)
+}
+
+fn authenticated_json_request(
+    token: &str,
+    method: &str,
+    uri: &str,
+    body: &impl serde::Serialize,
+) -> Request<Body> {
     let mut request = Request::builder()
         .method(method)
         .uri(uri)
-        .header("authorization", "Bearer correct-token")
+        .header("authorization", format!("Bearer {token}"))
         .header("content-type", "application/json")
         .body(Body::from(
             serde_json::to_vec(body).unwrap_or_else(|error| panic!("{error}")),
@@ -6136,7 +6145,7 @@ async fn browser_session_watch_takeover_approval_return_and_restart_are_server_o
     });
     let app = router(
         AppState::new(storage.clone(), "correct-token")
-            .with_policy_engine(policy)
+            .with_policy_engine(policy.clone())
             .with_browser_runtime(browser.clone()),
     );
     let create = CreateBrowserSessionRequest {
@@ -6317,6 +6326,7 @@ async fn browser_session_watch_takeover_approval_return_and_restart_are_server_o
         BrowserController::User
     );
     let returned = app
+        .clone()
         .oneshot(json_request(
             "POST",
             &format!("/api/v1/browser-sessions/{session_id}/return"),
@@ -6335,6 +6345,103 @@ async fn browser_session_watch_takeover_approval_return_and_restart_are_server_o
             .controller,
         BrowserController::Bot
     );
+
+    policy
+        .replace_rules(vec![
+            homebot_tools::PolicyRule::new(
+                homebot_tools::CapabilityClass::BrowserAct,
+                homebot_tools::PolicyEffect::Allow,
+            ),
+            homebot_tools::PolicyRule::new(
+                homebot_tools::CapabilityClass::BrowserObserve,
+                homebot_tools::PolicyEffect::Allow,
+            ),
+        ])
+        .await;
+    let first_device = Uuid::now_v7();
+    let second_device = Uuid::now_v7();
+    for (id, token, name) in [
+        (first_device, "browser-controller-one", "First phone"),
+        (second_device, "browser-controller-two", "Second phone"),
+    ] {
+        let digest: [u8; 32] = Sha256::digest(token.as_bytes()).into();
+        sqlx::query("INSERT INTO device_sessions (id, owner_id, name, token_digest, endpoint_kind, created_at_ms) VALUES (?, ?, ?, ?, 'loopback', 1)")
+            .bind(id.to_string())
+            .bind(Uuid::nil().to_string())
+            .bind(name)
+            .bind(digest.as_slice())
+            .execute(storage.pool())
+            .await?;
+    }
+    let first_takeover = app
+        .clone()
+        .oneshot(authenticated_json_request(
+            "browser-controller-one",
+            "POST",
+            &format!("/api/v1/browser-sessions/{session_id}/takeover"),
+            &BrowserMutationRequest {
+                request_id: Uuid::now_v7(),
+                idempotency_key: Uuid::now_v7(),
+                approval_id: None,
+            },
+        ))
+        .await?;
+    assert_eq!(first_takeover.status(), StatusCode::OK);
+    let first_takeover: BrowserActionResponse = response_json(first_takeover).await?;
+    assert_eq!(
+        first_takeover.session.controller_device_id,
+        Some(first_device)
+    );
+    assert!(
+        first_takeover
+            .session
+            .controller_lease_expires_at_ms
+            .is_some()
+    );
+
+    for path in ["actions", "return", "takeover"] {
+        let body = if path == "actions" {
+            serde_json::to_value(BrowserActionRequest {
+                request_id: Uuid::now_v7(),
+                idempotency_key: Uuid::now_v7(),
+                command: BrowserCommand::CurrentUrl,
+                approval_id: None,
+            })?
+        } else {
+            serde_json::to_value(BrowserMutationRequest {
+                request_id: Uuid::now_v7(),
+                idempotency_key: Uuid::now_v7(),
+                approval_id: None,
+            })?
+        };
+        let denied = app
+            .clone()
+            .oneshot(authenticated_json_request(
+                "browser-controller-two",
+                "POST",
+                &format!("/api/v1/browser-sessions/{session_id}/{path}"),
+                &body,
+            ))
+            .await?;
+        assert_eq!(denied.status(), StatusCode::FORBIDDEN);
+    }
+    let returned = app
+        .clone()
+        .oneshot(authenticated_json_request(
+            "browser-controller-one",
+            "POST",
+            &format!("/api/v1/browser-sessions/{session_id}/return"),
+            &BrowserMutationRequest {
+                request_id: Uuid::now_v7(),
+                idempotency_key: Uuid::now_v7(),
+                approval_id: None,
+            },
+        ))
+        .await?;
+    assert_eq!(returned.status(), StatusCode::OK);
+    let returned: BrowserActionResponse = response_json(returned).await?;
+    assert_eq!(returned.session.controller, BrowserController::Bot);
+    assert!(returned.session.controller_device_id.is_none());
 
     let reopened = Storage::open(&database).await?;
     let durable = reopened.browser_session(Uuid::nil(), session_id).await?;

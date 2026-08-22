@@ -1250,6 +1250,20 @@
         "controller": {
           "$ref": "#/$defs/BrowserController"
         },
+        "controller_device_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid"
+        },
+        "controller_lease_expires_at_ms": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int64"
+        },
         "created_at_ms": {
           "type": "integer",
           "format": "int64"

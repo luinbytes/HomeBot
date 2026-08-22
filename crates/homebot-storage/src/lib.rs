@@ -8351,6 +8351,9 @@ mod tests {
         sqlx::raw_sql(include_str!("../migrations/0017_device_pairing.sql"))
             .execute(&pool)
             .await?;
+        sqlx::raw_sql(include_str!("../migrations/0024_pairing_provenance.sql"))
+            .execute(&pool)
+            .await?;
         let result = VcsOperationResultRecord {
             idempotency_key: Uuid::now_v7(),
             owner_id: owner,

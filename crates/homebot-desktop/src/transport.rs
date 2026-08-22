@@ -56,6 +56,10 @@ pub struct RuntimeConfig {
     pub endpoint: String,
     pub device_token: String,
     pub local_database: Option<PathBuf>,
+    /// Optional server-owned provider configuration used only when the desktop
+    /// supervises its bundled local server. Remote endpoints compose providers
+    /// in their own server process.
+    pub provider_config: Option<PathBuf>,
     pub reconnect_delay: Duration,
 }
 
@@ -66,6 +70,7 @@ impl std::fmt::Debug for RuntimeConfig {
             .field("endpoint", &self.endpoint)
             .field("device_token", &"[REDACTED]")
             .field("local_database", &self.local_database)
+            .field("provider_config", &self.provider_config)
             .field("reconnect_delay", &self.reconnect_delay)
             .finish()
     }
@@ -78,10 +83,12 @@ impl RuntimeConfig {
         let device_token =
             std::env::var("HOMEBOT_DEVICE_TOKEN").unwrap_or_else(|_| Uuid::now_v7().to_string());
         let local_database = is_loopback_endpoint(&endpoint).then(default_database_path);
+        let provider_config = std::env::var_os("HOMEBOT_PROVIDER_CONFIG").map(PathBuf::from);
         Self {
             endpoint,
             device_token,
             local_database,
+            provider_config,
             reconnect_delay: Duration::from_millis(250),
         }
     }
@@ -422,8 +429,19 @@ async fn start_local_server(
         .parent()
         .unwrap_or_else(|| std::path::Path::new("."))
         .join("artifacts");
-    let state = homebot_server::AppState::new(storage, &config.device_token)
-        .with_artifact_root(artifact_root);
+    let provider_config =
+        homebot_server::provider_bootstrap::load_config(config.provider_config.as_deref())
+            .map_err(|error| {
+                TransportFailure::Request(format!("provider configuration: {error}"))
+            })?;
+    let state = homebot_server::provider_bootstrap::compose_app_state(
+        storage,
+        &config.device_token,
+        artifact_root,
+        provider_config,
+    )
+    .await
+    .map_err(|error| TransportFailure::Request(format!("provider startup: {error}")))?;
     let (shutdown, shutdown_rx) = tokio::sync::oneshot::channel();
     let task = tokio::spawn(async move {
         let _ = homebot_server::serve(listener, state, shutdown_rx).await;

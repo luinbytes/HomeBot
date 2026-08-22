@@ -6,11 +6,12 @@ This file is operational state for coding agents. It is not user-facing product 
 
 ## Current state
 
-- Current milestone: M6 packaging, hardening and the v1 parity gate. M1, M2 and M5 are temporarily reopened while the final coherence corrections receive remote verification; the implementation is on public `main`.
-- Current Linear issues: 6C7-66 and 6C7-75 remain externally blocked `In Progress`; final gate 6C7-71 remains Todo and blocked by them plus the active corrective issues 6C7-80, 6C7-82, 6C7-88 and 6C7-89 until their exact tree passes remote CI.
+- Current milestone: M6 packaging, hardening and the v1 parity gate. M0 through M5 are complete. M6 is temporarily reduced while the repository-wide security corrections receive exact-tree remote verification.
+- Current Linear issues: security parent 6C7-69 and corrective issues 6C7-85, 6C7-86 and 6C7-87 are `In Progress`. 6C7-66 and 6C7-75 remain externally blocked `In Progress`; final gate 6C7-71 remains Todo and is blocked only by those two physical/live-provider issues.
 - Current Git branch: public `main` is authoritative. Local audit commits may have different metadata when authenticated publication uses GitHub's blob/tree/commit/ref API; compare exact trees rather than local commit IDs.
-- Latest public implementation commit: `6e98b9a8f05ac417fd0e26651523ebb674c24bb0` (exact implementation tree `b12e53dec734f8ad438924479d68410148098304`). It adds complete Android Bot/routine management parity, restores safe simple-command resolution for production generic-process profiles, and removes an unsupported desktop reaction glyph from the production path and checked-in screenshots.
-- Latest verified GitHub Actions run: `32575392734`, all sixteen jobs passed for documentation tree `90039323c7b9ea6509a8cb9013961239a141bd0e`, merged as public `main` commit `a523c55b2ae4548b93ed49493dd45499571854c2`. The latest product implementation remains `9ba660df513b2de0d2f3d02b8501b955ad4714e2` (tree `29958ae7bdc4bf4c9560e2be2a8cb883f8cdd03f`).
+- Current public `main`: `1a14dfd9eb2e4689c1fc752fb144cb4758bdd314`, tree `5d50935d853820363a1bd2884873117738919287`. It includes provider-frame bounds, privileged-mutation authorization and signed update manifests. A merge-mode regression left `scripts/check-packaging.sh` non-executable, so 6C7-86 is correctly reopened.
+- Pending exact heads: mode-only PR #40 `7f552d1240a91873a61f73b808ca16cd8ace20d6` (tree `f229bf21a3080b9a48e2f115c33c46ca2dd1526d`), atomic browser-isolation PR #36 `bb63dba88c1f5570b15798d8cba3bfb65891fd30` (tree `a5a36961a4e4ef7e7483b2fa9c991e1e69fa7f39`), and pairing-provenance PR #39 `b332f6b6b09ae793e163d3eb6991041965ffcaa9` (tree `2aca60e9d36a2e6b32032e98546dfea972eadca8`). The expected combined implementation tree is `9b33de06043ee63397bfdc7e7ba1b828f7c0b6ae` before this handoff update.
+- Latest complete exact-head correction run: Actions `32580434962`, all sixteen jobs passed for privileged-mutation head `ef3ae49832f8a674396100da2ce6c27685a39ef1`, merged as `8ef092d4943453d9118ab99ec918f59fc374e5f7`. Provider-frame run `32579386951` also passed all sixteen jobs before merge.
 - Public repository: `https://github.com/luinbytes/HomeBot`.
 - Required commit identity: `luinbytes <42706009+luinbytes@users.noreply.github.com>`.
 
@@ -31,14 +32,15 @@ Architecture decisions currently frozen:
 - Source-control reads and mutations are server-owned and normalized. Commit/branch/push use a fixed shell-free Git executable with repository hooks suppressed; remote push and PR creation require digest-bound server approval, and exact idempotent results persist independently from remote side effects.
 - Queued prompts are durable server state with typed `steering` and `follow_up` semantics. Steering retains FIFO priority ahead of ordinary follow-ups, stop/failure preserves remaining order, and SQLite write reservations prevent provider-event races during insert/promotion.
 - Provider interaction mode and working-context generation/status/usage are server-owned. Capability-gated native compaction preserves provider mapping; reset removes only that mapping. Neither operation deletes HomeBot identity, transcript, attachments, Skills, checkpoints or app memory.
-- Pairing offers are five-minute, single-use, endpoint-bound credentials stored only as digests. Named device sessions use the same authenticated versioned protocol as desktop, are owner-listable/revocable, and cannot administer devices. Remote binding is explicit and loopback remains the safe default.
-- Shared browser profiles and sessions are server-owned, owner-scoped state. Generated profile directory references never expose native paths or credentials; group handoff preserves access. Navigation and human takeover remain digest-bound capability operations, while watch/return and live activity use the authenticated sequenced contract.
+- Pairing offers are five-minute, single-use, endpoint-bound credentials stored only as digests. Browser exchange requires the exact advertised Origin; native deep links carry a separate one-time proof. Unknown-token throttling is keyed to a digest of the direct peer address and cannot consume a valid offer's capacity. Named device sessions use the same authenticated versioned protocol as desktop, are owner-listable/revocable, and cannot administer devices.
+- Shared browser profiles and sessions are server-owned, owner-scoped state. Every profile maps to a distinct CDP browser context, target membership is revalidated before use, and takeover leases are acquired/released atomically by the authenticated controlling device. Generated profile directory references never expose native paths or credentials; group handoff preserves access.
 - Android release packaging accepts only a cryptographically verified, version/package-matched signed APK and emits a manifest, certificate-digest evidence, and SHA-256 checksums. CI uses an explicitly `ci-ephemeral` identity that cannot be represented as the public signing identity.
 - Root `VERSION` is the single candidate identity. Cargo metadata, server/desktop negotiation, Android BuildConfig/client identity, and macOS/Arch/Android artifact names and manifests must agree; the release gate rejects divergence.
 
 Current blockers:
 
-- The coherence audit found three non-external gaps and tracks them narrowly: Android lacked reachable complete Bot and routine management controls (6C7-82/89), production generic-process profiles could not resolve a configured simple command after clearing their child environment (6C7-88), and the default desktop reaction control rendered an unsupported glyph (reopened 6C7-80). Corrections are public on `main`; keep these issues and their M1/M2/M5 epics open until remote CI verifies the exact tree.
+- The final coherence/security pass found five additional non-external gaps: privileged mutations missing shared authorization (6C7-83), unbounded provider frames (6C7-84), browser isolation/takeover races (6C7-85), unsigned update metadata (6C7-86), and pairing provenance/global-throttle weaknesses (6C7-87). 6C7-83/84 are merged and verified. 6C7-85/86/87 have narrow corrections in PRs #36, #40 and #39 and remain open for exact-tree CI.
+- GitHub's macOS Intel and Apple Silicon runners are the current external verification blocker. Exact PR #40 runs `32583013781` and `32583350119` each have eight successful Linux/Android/dependency/Arch jobs and eight queued macOS jobs, with no macOS job active. Do not merge or close the corrective issues until one exact-head run reaches sixteen of sixteen.
 - External final-release blockers remain: neither Codex nor Claude is installed/authenticated for genuine provider smoke tests; Apple Developer ID/notarisation credentials and clean Intel/Apple Silicon machines are unavailable; and physical Arch/Omarchy and Android devices with VoiceOver/TalkBack-equivalent acceptance facilities are unavailable.
 - `egui` 0.32.3 transitively uses unmaintained `ttf-parser` 0.25.1. RUSTSEC-2026-0192 reports no known vulnerability or safe upgrade; the exact-revision 6C7-69 review accepted the warning with a required pre-v1 dependency recheck.
 
@@ -64,8 +66,8 @@ Current blockers:
 - 6C7-63, Android routine/run/trigger controls, Skills assignment, plugin/MCP controls, provider/endpoint settings, opaque secret references and paired-device self management with owner administration still denied.
 - 6C7-64, event-driven Android Bot/approval/routine/error notifications, exact deep links and connectivity-driven reconnect without permanent polling.
 - M5 epic 6C7-59: native Android and secure remote parity verified complete.
-- 6C7-82 and 6C7-89 corrective implementation: Android now reaches every authoritative routine create/edit/duplicate/delete/dry-run/recording mutation and every Bot pin/hide/review-hidden/duplicate/archive/delete mutation, with exact route/authentication tests and server-projection refresh after success. Completion awaits remote CI.
-- 6C7-88 corrective implementation: a production generic-process profile seeds only the selected executable search path into its otherwise cleared environment, resolves before launch, and remains shell-free. Completion awaits remote CI.
+- 6C7-82 and 6C7-89 corrective implementation: Android reaches every authoritative routine create/edit/duplicate/delete/dry-run/recording mutation and every Bot pin/hide/review-hidden/duplicate/archive/delete mutation, with exact route/authentication tests and server-projection refresh after success. Both are remote-verified Done.
+- 6C7-88 corrective implementation: a production generic-process profile seeds only the selected executable search path into its otherwise cleared environment, resolves before launch, and remains shell-free. It is remote-verified Done.
 - 6C7-67, AUR-ready Arch/Omarchy desktop and headless packaging with a clean install/update/uninstall CI lifecycle.
 - 6C7-68, explicit manifest-driven desktop update staging, verified pre-migration backups, too-new-schema refusal and deterministic recovery coverage.
 - 6C7-69, repository-wide security hardening, parser/resource bounds, hostile repository/MCP/provider fixtures, all-capability negative approvals and a clean exact-revision security scan.
@@ -80,9 +82,9 @@ Current blockers:
 
 ## Immediate next work
 
-1. On a macOS release host with Developer ID and stored notary credentials, run the exact commands in `docs/release-acceptance.md`; on authenticated provider and physical-platform hosts, execute 6C7-75's documented evidence matrix.
-2. Record the required secret-free signing, notarisation, provider, hardware, accessibility, install, upgrade, pairing and reconnect evidence in 6C7-66/75 and mark them Done only when the real postconditions pass.
-3. Only after 6C7-66 and 6C7-75 are genuinely Done, execute 6C7-71, create the immutable v1.0.0 tag/release, download every public artifact, reverify manifests/checksums/signatures, and close M6.
+1. Wait for a complete exact-head PR #40 run, merge it, rebase/verify/merge PR #36, then rebase/verify/merge PR #39 without dropping the v24 legacy-fixture setup or executable-mode correction. Re-run all sixteen jobs on the final combined tree and reconcile 6C7-69/85/86/87.
+2. On a macOS release host with Developer ID and stored notary credentials, run the exact commands in `docs/release-acceptance.md`; on authenticated provider and physical-platform hosts, execute 6C7-75's documented evidence matrix.
+3. Record the required secret-free signing, notarisation, provider, hardware, accessibility, install, upgrade, pairing and reconnect evidence in 6C7-66/75. Only after both are genuinely Done may 6C7-71 create the immutable v1.0.0 tag/release.
 
 ## Verification state
 
@@ -119,7 +121,7 @@ Verified at the latest remote baseline:
 
 Verified locally at the current baseline:
 
-- The final coherence tree passes `./scripts/check.sh`, including formatting, strict all-target/all-feature clippy, the complete Rust workspace suite, protocol schema and generated Android drift checks, all production desktop visual goldens, packaging contracts, the security gate, dependency policy/audit, and the performance/accessibility gate. The generic-process selected-search-path regression test and production visual-golden suite also pass independently.
+- The expected combined code plus restored executable mode passes formatting, strict all-target/all-feature clippy, the complete Rust workspace suite and doc-tests, protocol schema and generated Android drift checks, all production desktop visual goldens, packaging/checksum/CI-only-release contracts, the security gate, version consistency and the performance/accessibility gate. The root gate first exposed and then confirmed the v24 legacy-fixture and executable-mode corrections rather than masking either failure.
 - Updated production screenshots were manually inspected after regeneration. The unsupported reaction glyph is gone, and the audited chat, approval, contextual-computer and provider-unavailable layouts show no clipping, overlap or accidental always-open developer controls.
 - Local Android Gradle execution is unavailable because this container has no cached Gradle 8.13 distribution and cannot reach the distribution host. Android compile, lint, JVM tests and debug/minified builds therefore require the repository's remote CI before the corrective Android issues can close.
 - 6C7-70 targeted budgets pass: real cold start/authenticated probes, replay and stale-cursor reconnect, 10,000-message chat hydration, eight-Bot/2,000-event streaming projection, bounded local-only telemetry and 80%-200% text scaling. Desktop/Android accessibility semantics and cross-platform process-resource CI are implemented; the Appearance visual golden was intentionally updated and reverified.
@@ -149,13 +151,14 @@ Verified locally at the current baseline:
 - 6C7-58's complete local gate passes: strict all-target clippy, every workspace test suite, all 15 visual fixtures, schema drift, generated Android binding drift and cargo-deny advisories/bans/licenses/sources.
 - Its server fixtures prove typed steering priority/FIFO follow-ups, duplicate replay, cancel-order stability, restart durability, three automatic queued turns, default/plan/default capability routing, unsupported-mode denial, compaction/reset concurrency exclusion, transcript preservation, fresh provider-context isolation and restart recovery. The 32-test server suite passed three consecutive 16-thread stress runs after the SQLite write-reservation fix.
 
-6C7-73 and M3/M4 remain verified Done. M1 epic 6C7-34, M2 epic 6C7-41 and M5 epic 6C7-59 are temporarily In Progress for the coherence corrections above. M6 epic 6C7-65 and macOS packaging issue 6C7-66 are In Progress.
+6C7-73 and M0 through M5 remain verified Done. M6 epic 6C7-65, security parent 6C7-69, corrective issues 6C7-85/86/87 and external acceptance issues 6C7-66/75 are In Progress.
 
 ## Known failures and incomplete implementation
 
 - 6C7-81 is Done. Its README and state reconciliation is public at `a523c55b2ae4548b93ed49493dd45499571854c2`; Actions `32575392734` passed all sixteen jobs. The complete routine correction is public at `9ba660df513b2de0d2f3d02b8501b955ad4714e2`, and Actions `32574801691` passed all sixteen jobs: authenticated create/edit/duplicate, demonstration recording/append/finish/cancel, Run now/dry run, enable/pause, run-history, supervised restart persistence, ten production screenshots, schema/Android drift, packaging, security, performance and accessibility checks.
 - 6C7-66 remains In Progress because real Developer ID signing/notarisation/stapling and clean Intel/Apple Silicon first-run/provider discovery have not occurred. CI's ad-hoc artifacts and simulated notary responses do not satisfy it.
 - 6C7-75 remains In Progress because real authenticated Codex/Claude round trips and physical Intel Mac, Apple Silicon Mac, Arch/Omarchy and Android install/upgrade/accessibility checks are unavailable in this environment.
+- Exact corrective CI cannot currently finish because every macOS Intel/Apple Silicon job in the pending workflows is queued with zero macOS runner active. PRs #40, #36 and #39 and Linear 6C7-85/86/87 remain open; this is an external runner-capacity stop, not release acceptance.
 - The Android production signing keystore and physical device are unavailable. CI's `ci-ephemeral` APK proves the pipeline only and must never be published as v1.
 - 6C7-71 and the public v1.0.0 tag/release remain blocked by 6C7-66 and 6C7-75. No signed/notarised public v1 release exists; do not describe HomeBot as v1-ready.
 

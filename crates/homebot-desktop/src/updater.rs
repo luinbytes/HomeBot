@@ -1,10 +1,12 @@
 //! Explicit, checksum-verified desktop update staging.
 
+use base64::{Engine, engine::general_purpose::STANDARD};
+use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use futures_util::StreamExt;
 use homebot_protocol::PROTOCOL_VERSION;
 use reqwest::{Client, Url};
 use semver::Version;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
     path::{Path, PathBuf},
@@ -34,6 +36,24 @@ struct ReleaseManifest {
     signing: String,
     protocol_minimum: u16,
     protocol_maximum: u16,
+    key_id: String,
+    signature: String,
+}
+
+#[derive(Serialize)]
+struct SignedManifestFields<'a> {
+    schema_version: u16,
+    product: &'a str,
+    version: &'a str,
+    platform: &'a str,
+    architecture: &'a str,
+    artifact: &'a str,
+    bytes: u64,
+    sha256: &'a str,
+    signing: &'a str,
+    protocol_minimum: u16,
+    protocol_maximum: u16,
+    key_id: &'a str,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -169,15 +189,18 @@ async fn check(
     let bytes = bounded_response(response, MANIFEST_LIMIT).await?;
     let manifest: ReleaseManifest =
         serde_json::from_slice(&bytes).map_err(|_| UpdateError::InvalidManifest)?;
-    validate_manifest(manifest, &url, current_version)
+    let public_key = release_public_key()?;
+    validate_manifest(manifest, &url, current_version, &public_key)
 }
 
 fn validate_manifest(
     manifest: ReleaseManifest,
     manifest_url: &Url,
     current_version: &str,
+    public_key: &VerifyingKey,
 ) -> Result<UpdateEvent, UpdateError> {
-    if manifest.schema_version != 1
+    verify_manifest_signature(&manifest, public_key)?;
+    if manifest.schema_version != 2
         || manifest.product != "HomeBot"
         || manifest.platform != target_platform()
         || manifest.architecture != target_architecture()
@@ -214,6 +237,60 @@ fn validate_manifest(
         bytes: manifest.bytes,
         sha256: manifest.sha256.to_ascii_lowercase(),
     }))
+}
+
+fn release_public_key() -> Result<VerifyingKey, UpdateError> {
+    let encoded =
+        option_env!("HOMEBOT_UPDATE_PUBLIC_KEY_HEX").ok_or(UpdateError::InvalidManifest)?;
+    let decoded = decode_hex_32(encoded).ok_or(UpdateError::InvalidManifest)?;
+    VerifyingKey::from_bytes(&decoded).map_err(|_| UpdateError::InvalidManifest)
+}
+
+fn verify_manifest_signature(
+    manifest: &ReleaseManifest,
+    public_key: &VerifyingKey,
+) -> Result<(), UpdateError> {
+    let expected_key_id = format!("{:x}", Sha256::digest(public_key.as_bytes()));
+    if manifest.key_id != expected_key_id[..16] {
+        return Err(UpdateError::Integrity);
+    }
+    let signature_bytes = STANDARD
+        .decode(&manifest.signature)
+        .map_err(|_| UpdateError::Integrity)?;
+    let signature = Signature::from_slice(&signature_bytes).map_err(|_| UpdateError::Integrity)?;
+    let payload = manifest_payload(manifest)?;
+    public_key
+        .verify(&payload, &signature)
+        .map_err(|_| UpdateError::Integrity)
+}
+
+fn manifest_payload(manifest: &ReleaseManifest) -> Result<Vec<u8>, UpdateError> {
+    serde_json::to_vec(&SignedManifestFields {
+        schema_version: manifest.schema_version,
+        product: &manifest.product,
+        version: &manifest.version,
+        platform: &manifest.platform,
+        architecture: &manifest.architecture,
+        artifact: &manifest.artifact,
+        bytes: manifest.bytes,
+        sha256: &manifest.sha256,
+        signing: &manifest.signing,
+        protocol_minimum: manifest.protocol_minimum,
+        protocol_maximum: manifest.protocol_maximum,
+        key_id: &manifest.key_id,
+    })
+    .map_err(|_| UpdateError::InvalidManifest)
+}
+
+fn decode_hex_32(value: &str) -> Option<[u8; 32]> {
+    if value.len() != 64 || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return None;
+    }
+    let mut output = [0_u8; 32];
+    for (index, byte) in output.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(&value[index * 2..index * 2 + 2], 16).ok()?;
+    }
+    Some(output)
 }
 
 async fn stage(
@@ -342,10 +419,18 @@ const fn target_architecture() -> &'static str {
 mod tests {
     use super::*;
     use axum::{Router, routing::get};
+    use ed25519_dalek::{Signer, SigningKey};
+
+    fn signing_key() -> SigningKey {
+        SigningKey::from_bytes(&[7_u8; 32])
+    }
 
     fn manifest(version: &str) -> ReleaseManifest {
-        ReleaseManifest {
-            schema_version: 1,
+        let key = signing_key();
+        let key_id =
+            format!("{:x}", Sha256::digest(key.verifying_key().as_bytes()))[..16].to_owned();
+        let mut manifest = ReleaseManifest {
+            schema_version: 2,
             product: "HomeBot".to_owned(),
             version: version.to_owned(),
             platform: target_platform().to_owned(),
@@ -360,7 +445,17 @@ mod tests {
             },
             protocol_minimum: PROTOCOL_VERSION,
             protocol_maximum: PROTOCOL_VERSION,
-        }
+            key_id,
+            signature: String::new(),
+        };
+        manifest.signature = STANDARD.encode(
+            key.sign(
+                &manifest_payload(&manifest)
+                    .unwrap_or_else(|error| panic!("manifest payload failed: {error}")),
+            )
+            .to_bytes(),
+        );
+        manifest
     }
 
     #[test]
@@ -369,19 +464,39 @@ mod tests {
             Url::parse("https://github.com/luinbytes/HomeBot/releases/download/v2/manifest.json")
                 .map_err(|_| UpdateError::InvalidManifest)?;
         assert!(matches!(
-            validate_manifest(manifest("2.0.0"), &url, "1.0.0")?,
+            validate_manifest(
+                manifest("2.0.0"),
+                &url,
+                "1.0.0",
+                &signing_key().verifying_key(),
+            )?,
             UpdateEvent::Available(_)
         ));
         assert_eq!(
-            validate_manifest(manifest("1.0.0"), &url, "1.0.0")?,
+            validate_manifest(
+                manifest("1.0.0"),
+                &url,
+                "1.0.0",
+                &signing_key().verifying_key(),
+            )?,
             UpdateEvent::Current
         );
         let mut incompatible = manifest("2.0.0");
         incompatible.protocol_minimum = PROTOCOL_VERSION + 1;
-        assert!(validate_manifest(incompatible, &url, "1.0.0").is_err());
+        assert!(
+            validate_manifest(incompatible, &url, "1.0.0", &signing_key().verifying_key()).is_err()
+        );
         let mut traversal = manifest("2.0.0");
         traversal.artifact = "../HomeBot.tar.gz".to_owned();
-        assert!(validate_manifest(traversal, &url, "1.0.0").is_err());
+        assert!(
+            validate_manifest(traversal, &url, "1.0.0", &signing_key().verifying_key()).is_err()
+        );
+        let mut tampered = manifest("2.0.0");
+        tampered.sha256 = "b".repeat(64);
+        assert!(matches!(
+            validate_manifest(tampered, &url, "1.0.0", &signing_key().verifying_key()),
+            Err(UpdateError::Integrity)
+        ));
         Ok(())
     }
 

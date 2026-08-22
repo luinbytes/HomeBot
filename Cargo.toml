@@ -32,6 +32,7 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "serd
 chrono-tz = { version = "0.10", features = ["serde"] }
 egui = "0.32.3"
 eframe = { version = "0.32.3", default-features = false, features = ["accesskit", "default_fonts", "glow", "wayland", "x11"] }
+ed25519-dalek = "2.2"
 futures-util = "0.3"
 getrandom = "0.3"
 homebot-domain = { version = "=1.0.0", path = "crates/homebot-domain" }

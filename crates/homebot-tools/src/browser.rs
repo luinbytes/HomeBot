@@ -86,8 +86,9 @@ impl BrowserService {
     /// Creates a controller for a local Chrome `DevTools` Protocol endpoint.
     ///
     /// The endpoint must be loopback. Browser cookies and other authentication
-    /// state remain in `profile_root` on the `HomeBot` server and are never
-    /// returned through this API.
+    /// state remain inside a server-owned CDP browser context and are never
+    /// returned through this API. `profile_root` holds only HomeBot-owned profile
+    /// metadata; it is not exposed as a browser command-line path.
     ///
     /// # Errors
     ///

@@ -1831,7 +1831,7 @@ impl HomeBotApp {
                                     }
                                 }
                                 if !item.reactions.iter().any(|reaction| reaction.emoji == "👍")
-                                    && ui.small_button("React 👍").clicked()
+                                    && ui.small_button("React").clicked()
                                 {
                                     self.timeline.set_reaction(item.id, "👍", true);
                                 }

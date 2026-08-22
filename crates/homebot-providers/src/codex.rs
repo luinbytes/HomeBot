@@ -8,6 +8,7 @@ use crate::{
     ProviderAdapterId, ProviderApproval, ProviderAvailability, ProviderCapabilities,
     ProviderCapability, ProviderDescriptor, ProviderError, ProviderErrorCode, ProviderEvent,
     ProviderHealth, ProviderModel, ProviderRun, ResumeRequest, StartRequest, SupervisedProcess,
+    supervisor::{BoundedLine, read_bounded_line},
 };
 use serde_json::{Value, json};
 use std::{
@@ -21,7 +22,7 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use tokio::{
-    io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
+    io::{AsyncWriteExt, BufReader},
     process::{ChildStdin, ChildStdout},
     sync::{Mutex, mpsc, oneshot},
 };
@@ -486,18 +487,21 @@ impl CodexClient {
 
     async fn read_loop(self: &Arc<Self>, stdout: ChildStdout) -> Result<(), ProviderError> {
         let mut reader = BufReader::new(stdout);
-        let mut line = String::new();
         loop {
-            line.clear();
-            let read = reader.read_line(&mut line).await.map_err(io_error)?;
-            if read == 0 {
-                return Err(unavailable("Codex App Server closed its event stream"));
-            }
-            if line.len() > MAX_PROTOCOL_LINE_BYTES {
-                return Err(protocol_error(
-                    "Codex App Server message exceeded the limit",
-                ));
-            }
+            let line = match read_bounded_line(&mut reader, MAX_PROTOCOL_LINE_BYTES)
+                .await
+                .map_err(io_error)?
+            {
+                BoundedLine::Eof => {
+                    return Err(unavailable("Codex App Server closed its event stream"));
+                }
+                BoundedLine::TooLong => {
+                    return Err(protocol_error(
+                        "Codex App Server message exceeded the limit",
+                    ));
+                }
+                BoundedLine::Line(line) => line,
+            };
             let message: Value = serde_json::from_str(&line)
                 .map_err(|_| protocol_error("Codex App Server emitted invalid JSON"))?;
             self.dispatch(message).await?;

@@ -1,6 +1,8 @@
 use std::{collections::HashSet, net::TcpListener as StdListener, time::Instant};
 
-use homebot_protocol::{BotColor, BotPermissionProfile, BotShape};
+use homebot_protocol::{
+    BotColor, BotPermissionProfile, BotShape, MessageAuthor, MessagePart, MessageStatus,
+};
 use tempfile::TempDir;
 use tokio::sync::oneshot;
 
@@ -90,6 +92,7 @@ fn clean_local_launch_supervises_server_and_persists_real_api_state()
         endpoint: unused_endpoint()?,
         device_token: "local-desktop-token".to_owned(),
         local_database: Some(directory.path().join("homebot.db")),
+        provider_config: None,
         reconnect_delay: Duration::from_millis(20),
     };
     let transport = DesktopTransport::start(config.clone());
@@ -407,6 +410,142 @@ fn clean_local_launch_supervises_server_and_persists_real_api_state()
     Ok(())
 }
 
+#[cfg(unix)]
+#[test]
+fn supervised_local_server_uses_production_provider_bootstrap()
+-> Result<(), Box<dyn std::error::Error>> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let directory = TempDir::new()?;
+    let binary = directory.path().join("claude-desktop-fixture");
+    std::fs::write(
+        &binary,
+        r#"#!/bin/sh
+if [ "${1:-}" = "auth" ]; then
+  printf '%s\n' '{"loggedIn":true}'
+  exit 0
+fi
+IFS= read -r input
+printf '%s\n' '{"type":"system","subtype":"init","session_id":"desktop_production_fixture"}'
+printf '%s\n' '{"type":"stream_event","session_id":"desktop_production_fixture","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"desktop provider ready"}}}'
+printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"session_id":"desktop_production_fixture","usage":{"input_tokens":1,"output_tokens":3}}'
+"#,
+    )?;
+    let mut permissions = std::fs::metadata(&binary)?.permissions();
+    permissions.set_mode(0o700);
+    std::fs::set_permissions(&binary, permissions)?;
+
+    let profile_id = Uuid::now_v7();
+    let provider_config = directory.path().join("providers.json");
+    std::fs::write(
+        &provider_config,
+        serde_json::to_vec(&serde_json::json!({
+            "profiles": [{
+                "id": profile_id,
+                "adapter_id": "claude-desktop-production-fixture",
+                "kind": "claude-code",
+                "display_name": "Desktop production fixture",
+                "binary": binary,
+            }]
+        }))?,
+    )?;
+
+    let config = RuntimeConfig {
+        endpoint: unused_endpoint()?,
+        device_token: "local-desktop-provider-token".to_owned(),
+        local_database: Some(directory.path().join("homebot.db")),
+        provider_config: Some(provider_config),
+        reconnect_delay: Duration::from_millis(20),
+    };
+    let transport = DesktopTransport::start(config);
+    let initial = receive_until(&transport, Duration::from_secs(10), |event| {
+        matches!(event, DesktopEvent::Snapshot { .. })
+    })?;
+    let provider_is_projected = initial.iter().any(|event| match event {
+        DesktopEvent::Snapshot { snapshot, .. } => snapshot
+            .provider_profiles
+            .iter()
+            .any(|profile| profile.id == profile_id),
+        _ => false,
+    });
+    assert!(
+        provider_is_projected,
+        "configured provider was not projected"
+    );
+
+    let mut bot_draft = draft("Provider Bot");
+    bot_draft.provider_profile_id = Some(profile_id);
+    transport.send(DesktopCommand::Bot(BotClientCommand::Create(bot_draft)))?;
+    let created = receive_until(&transport, Duration::from_secs(10), |event| {
+        matches!(event, DesktopEvent::BotMutation(_))
+    })?;
+    let bot = created
+        .iter()
+        .find_map(|event| match event {
+            DesktopEvent::BotMutation(response) => Some(response.bot.clone()),
+            _ => None,
+        })
+        .ok_or("missing configured Bot mutation")?;
+    assert_eq!(bot.advanced.provider_profile_id, Some(profile_id));
+
+    transport.send(DesktopCommand::Timeline {
+        bot_id: bot.id,
+        chat_id: None,
+        command: TimelineCommand::Send(ComposerDraft {
+            content: "Run through the supervised provider".to_owned(),
+            ..ComposerDraft::default()
+        }),
+    })?;
+    let completed = receive_until(&transport, Duration::from_secs(10), |event| {
+        matches!(
+            event,
+            DesktopEvent::Server(ServerEvent {
+                body: ServerEventBody::MessageChanged { message },
+                ..
+            }) if message.author == MessageAuthor::Bot
+                && message.status == MessageStatus::Completed
+        )
+    })?;
+    assert!(completed.iter().any(|event| matches!(
+        event,
+        DesktopEvent::Server(ServerEvent {
+            body: ServerEventBody::MessageChanged { message },
+            ..
+        }) if message.parts.iter().any(|part| matches!(
+            part,
+            MessagePart::Text { text, .. } if text.contains("desktop provider ready")
+        ))
+    )));
+
+    drop(transport);
+    Ok(())
+}
+
+#[test]
+fn supervised_local_server_reports_invalid_provider_configuration()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = TempDir::new()?;
+    let provider_config = directory.path().join("providers.json");
+    std::fs::write(&provider_config, br#"{"unknown":true}"#)?;
+    let transport = DesktopTransport::start(RuntimeConfig {
+        endpoint: unused_endpoint()?,
+        device_token: "local-desktop-invalid-provider".to_owned(),
+        local_database: Some(directory.path().join("homebot.db")),
+        provider_config: Some(provider_config),
+        reconnect_delay: Duration::from_secs(1),
+    });
+    let events = receive_until(&transport, Duration::from_secs(10), |event| {
+        matches!(event, DesktopEvent::Disconnected(TransportFailure::Request(message))
+            if message.starts_with("provider configuration:"))
+    })?;
+    assert!(events.iter().any(|event| matches!(
+        event,
+        DesktopEvent::Disconnected(TransportFailure::Request(message))
+            if message.starts_with("provider configuration:")
+    )));
+    Ok(())
+}
+
 async fn spawn_server(
     endpoint: &str,
     database: &std::path::Path,
@@ -435,6 +574,7 @@ async fn reconnect_resumes_without_duplicate_events_after_server_restart()
         endpoint: endpoint.clone(),
         device_token: token.to_owned(),
         local_database: None,
+        provider_config: None,
         reconnect_delay: Duration::from_millis(20),
     });
     let _ = receive_until(&transport, Duration::from_secs(10), |event| {
@@ -521,6 +661,7 @@ async fn authentication_version_and_unavailable_failures_are_distinct()
         endpoint: endpoint.clone(),
         device_token: "must-not-appear".to_owned(),
         local_database: None,
+        provider_config: None,
         reconnect_delay: Duration::from_secs(1),
     };
     assert!(!format!("{redacted:?}").contains("must-not-appear"));
@@ -530,6 +671,7 @@ async fn authentication_version_and_unavailable_failures_are_distinct()
         endpoint: endpoint.clone(),
         device_token: "wrong".to_owned(),
         local_database: None,
+        provider_config: None,
         reconnect_delay: Duration::from_secs(1),
     });
     let auth = receive_until(&wrong, Duration::from_secs(10), |event| {
@@ -550,6 +692,7 @@ async fn authentication_version_and_unavailable_failures_are_distinct()
         endpoint: unused_endpoint()?,
         device_token: "unused".to_owned(),
         local_database: None,
+        provider_config: None,
         reconnect_delay: Duration::from_secs(1),
     });
     let _ = receive_until(&unavailable, Duration::from_secs(10), |event| {
@@ -575,6 +718,7 @@ async fn authentication_version_and_unavailable_failures_are_distinct()
         endpoint: mismatch_endpoint,
         device_token: "unused".to_owned(),
         local_database: None,
+        provider_config: None,
         reconnect_delay: Duration::from_secs(1),
     });
     let _ = receive_until(&mismatch, Duration::from_secs(10), |event| {

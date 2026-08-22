@@ -12,7 +12,7 @@ The server persists each chat's `default`/`plan` choice independently from the p
 
 ## Production configuration
 
-The production server—not either client—constructs the provider registry. With no explicit configuration it creates stable Codex CLI and Claude Code profiles, searches the server's allowlisted `PATH`, persists only safe profile metadata, and reports `not_installed` or `authentication_required` instead of substituting a fixture. Desktop and Android receive safe profile IDs, capabilities, and health in the authenticated snapshot; executable paths, environment values, and secret references remain server-only.
+The production server—not either client—constructs the provider registry. With no explicit configuration it creates stable Codex CLI and Claude Code profiles, searches the server's allowlisted `PATH`, persists only safe profile metadata, and reports `not_installed` or `authentication_required` instead of substituting a fixture. Desktop local mode invokes this same composition root when it supervises the bundled server; remote desktop and Android clients consume the registry owned by their configured server. All clients receive only safe profile IDs, capabilities, and health in the authenticated snapshot; executable paths, environment values, and secret references remain server-only.
 
 Set `HOMEBOT_PROVIDER_CONFIG` to a JSON file to replace those defaults with multiple named profiles. The file is bounded to 1 MiB, rejects unknown fields, and never accepts credential values. Example:
 

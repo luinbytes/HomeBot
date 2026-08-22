@@ -28,7 +28,7 @@ use std::{
 };
 use uuid::Uuid;
 
-pub const SCHEMA_VERSION: u32 = 22;
+pub const SCHEMA_VERSION: u32 = 23;
 static MIGRATOR: std::sync::LazyLock<sqlx::migrate::Migrator> = std::sync::LazyLock::new(|| {
     use sqlx::migrate::{Migration, MigrationType, Migrator};
     use std::borrow::Cow;
@@ -131,6 +131,11 @@ static MIGRATOR: std::sync::LazyLock<sqlx::migrate::Migrator> = std::sync::LazyL
             22,
             "browser sessions",
             include_str!("../migrations/0022_browser_sessions.sql"),
+        ),
+        (
+            23,
+            "pairing attempt sources",
+            include_str!("../migrations/0023_pairing_attempt_sources.sql"),
         ),
     ]
     .into_iter()
@@ -5151,12 +5156,15 @@ impl Storage {
     ///
     /// # Errors
     /// Returns precise expired, consumed, origin, rate-limit, validation, or database errors.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
     pub async fn exchange_pairing_credential(
         &self,
         owner_id: Uuid,
         token_digest: &[u8; 32],
+        offer_id: Uuid,
+        offer_endpoint: &str,
         request_origin: Option<&str>,
+        source_digest: &[u8; 32],
         device_id: Uuid,
         device_name: &str,
         session_digest: &[u8; 32],
@@ -5169,23 +5177,28 @@ impl Storage {
             .bind(now_ms.saturating_sub(rate_window_ms))
             .execute(&mut *transaction)
             .await?;
-        let global_attempts: i64 =
-            sqlx::query_scalar("SELECT count(*) FROM pairing_exchange_attempts")
-                .fetch_one(&mut *transaction)
-                .await?;
-        if global_attempts >= 30 {
+        let source_attempts: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM pairing_exchange_attempts WHERE source_digest = ?",
+        )
+        .bind(source_digest.as_slice())
+        .fetch_one(&mut *transaction)
+        .await?;
+        if source_attempts >= 30 {
             transaction.rollback().await?;
             return Err(StorageError::PairingRateLimited);
         }
         sqlx::query(
-            "INSERT INTO pairing_exchange_attempts (token_digest, attempted_at_ms) VALUES (?, ?)",
+            "INSERT INTO pairing_exchange_attempts (
+                token_digest, source_digest, attempted_at_ms
+             ) VALUES (?, ?, ?)",
         )
         .bind(token_digest.as_slice())
+        .bind(source_digest.as_slice())
         .bind(now_ms)
         .execute(&mut *transaction)
         .await?;
         let row = sqlx::query(
-            "SELECT id, expected_origin, endpoint_kind, expires_at_ms, consumed_at_ms,
+            "SELECT id, endpoint, expected_origin, endpoint_kind, expires_at_ms, consumed_at_ms,
                     failed_attempts
              FROM pairing_credentials WHERE owner_id = ? AND token_digest = ?",
         )
@@ -5198,6 +5211,7 @@ impl Storage {
             return Err(StorageError::PairingNotFound);
         };
         let pairing_id: String = row.try_get("id")?;
+        let endpoint: String = row.try_get("endpoint")?;
         let expected_origin: String = row.try_get("expected_origin")?;
         let endpoint_kind: String = row.try_get("endpoint_kind")?;
         let expires_at_ms: i64 = row.try_get("expires_at_ms")?;
@@ -5214,6 +5228,16 @@ impl Storage {
         if failed_attempts >= 5 {
             transaction.commit().await?;
             return Err(StorageError::PairingRateLimited);
+        }
+        if pairing_id != offer_id.to_string() || endpoint != offer_endpoint {
+            sqlx::query(
+                "UPDATE pairing_credentials SET failed_attempts = failed_attempts + 1 WHERE id = ?",
+            )
+            .bind(&pairing_id)
+            .execute(&mut *transaction)
+            .await?;
+            transaction.commit().await?;
+            return Err(StorageError::PairingOriginMismatch);
         }
         if request_origin.is_some_and(|origin| origin != expected_origin) {
             sqlx::query(
@@ -8265,7 +8289,10 @@ mod tests {
             .exchange_pairing_credential(
                 owner,
                 &[1; 32],
+                pairing_id,
+                "http://127.0.0.1:7123",
                 None,
+                &[9; 32],
                 Uuid::now_v7(),
                 "Upgrade fixture",
                 &[2; 32],
@@ -9322,10 +9349,11 @@ mod tests {
         let database = directory.path().join("pairing.db");
         let owner = Uuid::now_v7();
         let storage = Storage::open(&database).await?;
+        let expired_id = Uuid::now_v7();
         storage
             .create_pairing_credential(
                 owner,
-                Uuid::now_v7(),
+                expired_id,
                 &[1; 32],
                 "https://expired.example",
                 "https://expired.example",
@@ -9339,7 +9367,10 @@ mod tests {
                 .exchange_pairing_credential(
                     owner,
                     &[1; 32],
+                    expired_id,
+                    "https://expired.example",
                     None,
+                    &[9; 32],
                     Uuid::now_v7(),
                     "Expired",
                     &[2; 32],
@@ -9350,10 +9381,11 @@ mod tests {
             Err(StorageError::PairingExpired)
         ));
 
+        let limited_id = Uuid::now_v7();
         storage
             .create_pairing_credential(
                 owner,
-                Uuid::now_v7(),
+                limited_id,
                 &[3; 32],
                 "https://homebot.example",
                 "https://homebot.example",
@@ -9368,7 +9400,10 @@ mod tests {
                     .exchange_pairing_credential(
                         owner,
                         &[3; 32],
+                        limited_id,
+                        "https://homebot.example",
                         Some("https://wrong.example"),
+                        &[9; 32],
                         Uuid::now_v7(),
                         "Wrong origin",
                         &[4; 32],
@@ -9384,7 +9419,10 @@ mod tests {
                 .exchange_pairing_credential(
                     owner,
                     &[3; 32],
+                    limited_id,
+                    "https://homebot.example",
                     Some("https://homebot.example"),
+                    &[9; 32],
                     Uuid::now_v7(),
                     "Rate limited",
                     &[5; 32],
@@ -9395,10 +9433,11 @@ mod tests {
             Err(StorageError::PairingRateLimited)
         ));
 
+        let persistent_id = Uuid::now_v7();
         storage
             .create_pairing_credential(
                 owner,
-                Uuid::now_v7(),
+                persistent_id,
                 &[6; 32],
                 "http://127.0.0.1:7123",
                 "http://127.0.0.1:7123",
@@ -9411,7 +9450,10 @@ mod tests {
             .exchange_pairing_credential(
                 owner,
                 &[6; 32],
+                persistent_id,
+                "http://127.0.0.1:7123",
                 None,
+                &[9; 32],
                 Uuid::now_v7(),
                 "Persistent device",
                 &[7; 32],
@@ -9436,6 +9478,83 @@ mod tests {
                 .await?
                 .is_none()
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn pairing_attempt_limits_are_source_scoped_and_offer_bound() -> Result<(), StorageError>
+    {
+        let directory = tempfile::tempdir()?;
+        let storage = Storage::open(&directory.path().join("pairing-sources.db")).await?;
+        let owner = Uuid::now_v7();
+        let offer_id = Uuid::now_v7();
+        storage
+            .create_pairing_credential(
+                owner,
+                offer_id,
+                &[1; 32],
+                "https://homebot.example",
+                "https://homebot.example",
+                "custom_https",
+                1,
+                10_000,
+            )
+            .await?;
+
+        for value in 2_u8..32 {
+            assert!(matches!(
+                storage
+                    .exchange_pairing_credential(
+                        owner,
+                        &[value; 32],
+                        Uuid::now_v7(),
+                        "https://attacker.invalid",
+                        None,
+                        &[8; 32],
+                        Uuid::now_v7(),
+                        "Attacker",
+                        &[value.wrapping_add(32); 32],
+                        2,
+                        60_000,
+                    )
+                    .await,
+                Err(StorageError::PairingNotFound)
+            ));
+        }
+        assert!(matches!(
+            storage
+                .exchange_pairing_credential(
+                    owner,
+                    &[1; 32],
+                    Uuid::now_v7(),
+                    "https://homebot.example",
+                    None,
+                    &[9; 32],
+                    Uuid::now_v7(),
+                    "Wrong offer",
+                    &[2; 32],
+                    3,
+                    60_000,
+                )
+                .await,
+            Err(StorageError::PairingOriginMismatch)
+        ));
+        let device = storage
+            .exchange_pairing_credential(
+                owner,
+                &[1; 32],
+                offer_id,
+                "https://homebot.example",
+                None,
+                &[9; 32],
+                Uuid::now_v7(),
+                "Legitimate device",
+                &[3; 32],
+                4,
+                60_000,
+            )
+            .await?;
+        assert_eq!(device.name, "Legitimate device");
         Ok(())
     }
 

@@ -26,7 +26,7 @@ curl --fail-with-body \
   http://127.0.0.1:7123/api/v1/pairing
 ```
 
-The response contains a five-minute `homebot://pair` deep link. Its `hbpair_` credential is single-use and is not a permanent session. The Android client exchanges it at the advertised endpoint, names the device, and receives an `hbds_` session once. HomeBot stores only SHA-256 token digests. Secret-bearing responses use `Cache-Control: no-store`.
+The response contains a five-minute `homebot://pair` deep link. Its offer ID, advertised endpoint and `hbpair_` credential are bound together; the credential is single-use and is not a permanent session. The Android client echoes the offer provenance at that endpoint, names the device, and receives an `hbds_` session once. HomeBot stores only SHA-256 token digests. Secret-bearing responses use `Cache-Control: no-store`.
 
 Plain HTTP advertisements are accepted automatically only for loopback. A private LAN or Tailscale HTTP endpoint requires `allow_insecure_private_network: true` and returns a visible warning. Custom/public advertisements require HTTPS. Endpoint credentials, paths, queries, and fragments are rejected. When a browser supplies an `Origin`, exchange requires an exact match; native clients may omit it.
 
@@ -44,6 +44,6 @@ curl --fail-with-body \
   http://127.0.0.1:7123/api/v1/devices/DEVICE_UUID/revoke
 ```
 
-Revocation takes effect for subsequent HTTP calls and terminates a live event stream at its next heartbeat. Device sessions cannot create pairing offers, list devices, or revoke peers. Pairing exchange is rate-limited and failed origin attempts are durable across restart.
+Revocation takes effect for subsequent HTTP calls and terminates a live event stream at its next heartbeat. Device sessions cannot create pairing offers, list devices, or revoke peers. Pairing exchange is rate-limited per hashed network source and per offer; failed provenance/origin attempts are durable across restart. Raw client addresses are not retained, and traffic from one source cannot exhaust every other source's pairing bucket.
 
 The desktop Devices settings screen uses these same APIs. It generates/copies the deep link, displays endpoint warnings and authoritative device state, and sends revocation through the server; it never treats its local projection as authority.

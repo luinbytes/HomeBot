@@ -181,6 +181,8 @@ class HomeBotClient(
             require(deviceName.trim().length in 1..80) { "Device name must contain 1 to 80 characters" }
             val request = ExchangePairingRequest(
                 request_id = UUID.randomUUID().toString(),
+                offer_id = offer.id,
+                endpoint = endpoint.toString().trimEnd('/'),
                 pairing_token = offer.token,
                 device_name = deviceName.trim(),
             )
@@ -1114,7 +1116,7 @@ class HomeBotClient(
         data class Failed(val reason: DisconnectReason) : Negotiation
     }
 
-    private data class PairingLink(val endpoint: String, val token: String) {
+    private data class PairingLink(val id: String, val endpoint: String, val token: String) {
         companion object {
             fun parse(raw: String): PairingLink {
                 val uri = URI(raw.trim())
@@ -1129,6 +1131,7 @@ class HomeBotClient(
                     }
                 }.toMap()
                 return PairingLink(
+                    id = values["offer"] ?: error("Pairing link omitted offer identity"),
                     endpoint = values["endpoint"] ?: error("Pairing link omitted endpoint"),
                     token = values["token"] ?: error("Pairing link omitted token"),
                 )

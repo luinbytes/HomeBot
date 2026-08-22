@@ -1657,7 +1657,7 @@ async fn authenticated_socket(
 }
 
 fn json_request(method: &str, uri: &str, body: &impl serde::Serialize) -> Request<Body> {
-    Request::builder()
+    let mut request = Request::builder()
         .method(method)
         .uri(uri)
         .header("authorization", "Bearer correct-token")
@@ -1665,7 +1665,22 @@ fn json_request(method: &str, uri: &str, body: &impl serde::Serialize) -> Reques
         .body(Body::from(
             serde_json::to_vec(body).unwrap_or_else(|error| panic!("{error}")),
         ))
-        .unwrap_or_else(|error| panic!("{error}"))
+        .unwrap_or_else(|error| panic!("{error}"));
+    request.extensions_mut().insert(axum::extract::ConnectInfo(
+        "127.0.0.1:45000"
+            .parse::<std::net::SocketAddr>()
+            .unwrap_or_else(|error| panic!("{error}")),
+    ));
+    request
+}
+
+fn with_connect_info(mut request: Request<Body>) -> Request<Body> {
+    request.extensions_mut().insert(axum::extract::ConnectInfo(
+        "127.0.0.1:45000"
+            .parse::<std::net::SocketAddr>()
+            .unwrap_or_else(|error| panic!("{error}")),
+    ));
+    request
 }
 
 async fn response_json<T: serde::de::DeserializeOwned>(
@@ -3607,28 +3622,44 @@ async fn pairing_is_single_use_restart_durable_revocable_and_owner_managed()
 
     let exchange_request = ExchangePairingRequest {
         request_id: Uuid::now_v7(),
+        offer_id: offer.id,
+        endpoint: offer.endpoint.clone(),
         pairing_token: offer.pairing_token.clone(),
         device_name: "Pixel test device".to_owned(),
     };
+    let wrong_offer = ExchangePairingRequest {
+        offer_id: Uuid::now_v7(),
+        ..exchange_request.clone()
+    };
+    let wrong_offer = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/pairing/exchange",
+            &wrong_offer,
+        ))
+        .await?;
+    assert_eq!(wrong_offer.status(), StatusCode::FORBIDDEN);
+
     let mismatched = app
         .clone()
-        .oneshot(
+        .oneshot(with_connect_info(
             Request::post("/api/v1/pairing/exchange")
                 .header("content-type", "application/json")
                 .header("origin", "https://attacker.example")
                 .body(Body::from(serde_json::to_vec(&exchange_request)?))?,
-        )
+        ))
         .await?;
     assert_eq!(mismatched.status(), StatusCode::FORBIDDEN);
 
     let exchanged = app
         .clone()
-        .oneshot(
+        .oneshot(with_connect_info(
             Request::post("/api/v1/pairing/exchange")
                 .header("content-type", "application/json")
                 .header("origin", "http://127.0.0.1:7123")
                 .body(Body::from(serde_json::to_vec(&exchange_request)?))?,
-        )
+        ))
         .await?;
     assert_eq!(exchanged.status(), StatusCode::OK);
     assert_eq!(
@@ -3645,11 +3676,11 @@ async fn pairing_is_single_use_restart_durable_revocable_and_owner_managed()
 
     let used = app
         .clone()
-        .oneshot(
+        .oneshot(with_connect_info(
             Request::post("/api/v1/pairing/exchange")
                 .header("content-type", "application/json")
                 .body(Body::from(serde_json::to_vec(&exchange_request)?))?,
-        )
+        ))
         .await?;
     assert_eq!(used.status(), StatusCode::CONFLICT);
 

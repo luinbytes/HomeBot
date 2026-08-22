@@ -410,6 +410,8 @@ pub struct PairingOffer {
 #[serde(deny_unknown_fields)]
 pub struct ExchangePairingRequest {
     pub request_id: Uuid,
+    pub offer_id: Uuid,
+    pub endpoint: String,
     pub pairing_token: String,
     pub device_name: String,
 }

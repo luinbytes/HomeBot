@@ -143,7 +143,7 @@ data class CreatePairingRequest(val request_id: String, val endpoint: String, va
 data class PairingOffer(val id: String, val endpoint: String, val endpoint_kind: PairingEndpointKind, val pairing_token: String, val deep_link: String, val expires_at_unix_ms: Long, val warning: String? = null)
 
 @Serializable
-data class ExchangePairingRequest(val request_id: String, val pairing_token: String, val device_name: String)
+data class ExchangePairingRequest(val request_id: String, val offer_id: String, val endpoint: String, val pairing_token: String, val device_name: String)
 
 @Serializable
 data class DeviceSessionSummary(val id: String, val name: String, val endpoint_kind: PairingEndpointKind, val created_at_unix_ms: Long, val last_seen_at_unix_ms: Long? = null, val revoked_at_unix_ms: Long? = null)

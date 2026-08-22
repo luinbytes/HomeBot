@@ -2555,6 +2555,13 @@
         "device_name": {
           "type": "string"
         },
+        "endpoint": {
+          "type": "string"
+        },
+        "offer_id": {
+          "type": "string",
+          "format": "uuid"
+        },
         "pairing_token": {
           "type": "string"
         },
@@ -2566,6 +2573,8 @@
       "additionalProperties": false,
       "required": [
         "request_id",
+        "offer_id",
+        "endpoint",
         "pairing_token",
         "device_name"
       ]

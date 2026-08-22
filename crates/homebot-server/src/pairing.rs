@@ -1,6 +1,6 @@
 use axum::{
     Extension, Json,
-    extract::{Path, State},
+    extract::{ConnectInfo, Path, State},
     http::{HeaderMap, header},
 };
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
@@ -10,6 +10,7 @@ use homebot_protocol::{
 };
 use homebot_storage::DeviceSessionRecord;
 use sha2::{Digest, Sha256};
+use std::net::{IpAddr, SocketAddr};
 use url::{Host, Url};
 use uuid::Uuid;
 
@@ -50,6 +51,7 @@ pub(super) async fn create(
     let mut deep_link = Url::parse("homebot://pair").map_err(|_| ApiError::internal())?;
     deep_link
         .query_pairs_mut()
+        .append_pair("offer", &id.to_string())
         .append_pair("endpoint", &endpoint.endpoint)
         .append_pair("token", &token);
     let offer = PairingOffer {
@@ -66,6 +68,7 @@ pub(super) async fn create(
 
 pub(super) async fn exchange(
     State(state): State<AppState>,
+    ConnectInfo(connection): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
     Json(request): Json<ExchangePairingRequest>,
 ) -> Result<(HeaderMap, Json<PairingExchangeResponse>), ApiError> {
@@ -75,13 +78,17 @@ pub(super) async fn exchange(
     let origin = normalized_origin(&headers)?;
     let session = random_token("hbds")?;
     let pairing_digest: [u8; 32] = Sha256::digest(request.pairing_token.as_bytes()).into();
+    let source_digest = pairing_source_digest(connection.ip());
     let session_digest: [u8; 32] = Sha256::digest(session.as_bytes()).into();
     let device = state
         .storage
         .exchange_pairing_credential(
             state.owner_id,
             &pairing_digest,
+            request.offer_id,
+            &request.endpoint,
             origin.as_deref(),
+            &source_digest,
             Uuid::now_v7(),
             &request.device_name,
             &session_digest,
@@ -96,6 +103,11 @@ pub(super) async fn exchange(
             device_session: session,
         }),
     ))
+}
+
+fn pairing_source_digest(source: IpAddr) -> [u8; 32] {
+    // Hash the network identity so durable throttling does not retain client addresses.
+    Sha256::digest(source.to_string().as_bytes()).into()
 }
 
 pub(super) async fn list_devices(

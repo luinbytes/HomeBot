@@ -198,6 +198,109 @@ fn clean_local_launch_supervises_server_and_persists_real_api_state()
             if timeline.group.id == group_id && timeline.messages.len() == 1
     )));
 
+    let routine_definition = homebot_protocol::RoutineDefinition {
+        inputs: Vec::new(),
+        steps: vec![homebot_protocol::RoutineStep::BotPrompt {
+            bot_id: bot.id,
+            prompt_template: "Prepare the release brief".to_owned(),
+            requires_approval: true,
+        }],
+        expected_outputs: Vec::new(),
+    };
+    transport.send(DesktopCommand::CreateRoutine {
+        bot_id: bot.id,
+        name: "Release brief".to_owned(),
+        description: "Prepare a durable brief".to_owned(),
+        definition: routine_definition.clone(),
+        draft: true,
+    })?;
+    let routine = receive_until(&transport, Duration::from_secs(10), |event| {
+        matches!(event, DesktopEvent::RoutineMutation(_))
+    })?
+    .into_iter()
+    .find_map(|event| match event {
+        DesktopEvent::RoutineMutation(routine) => Some(routine),
+        _ => None,
+    })
+    .ok_or("missing routine mutation")?;
+    let routine_id = routine.id;
+    transport.send(DesktopCommand::UpdateRoutine {
+        routine_id,
+        name: "Release brief v2".to_owned(),
+        description: routine.description.clone(),
+        definition: routine_definition,
+        draft: false,
+    })?;
+    let updated = receive_until(
+        &transport,
+        Duration::from_secs(10),
+        |event| matches!(event, DesktopEvent::RoutineMutation(routine) if routine.id == routine_id && routine.version == 2),
+    )?;
+    assert!(updated.iter().any(|event| matches!(
+        event,
+        DesktopEvent::RoutineMutation(updated) if updated.name == "Release brief v2" && updated.version == 2
+    )));
+    transport.send(DesktopCommand::DuplicateRoutine {
+        routine_id,
+        name: "Release brief copy".to_owned(),
+    })?;
+    let _ = receive_until(
+        &transport,
+        Duration::from_secs(10),
+        |event| matches!(event, DesktopEvent::RoutineMutation(routine) if routine.name == "Release brief copy"),
+    )?;
+
+    transport.send(DesktopCommand::StartRoutineRecording {
+        bot_id: bot.id,
+        name: "Demonstrated brief".to_owned(),
+        description: String::new(),
+    })?;
+    let recording = receive_until(&transport, Duration::from_secs(10), |event| {
+        matches!(event, DesktopEvent::RoutineRecording(_))
+    })?
+    .into_iter()
+    .find_map(|event| match event {
+        DesktopEvent::RoutineRecording(recording) => Some(recording),
+        _ => None,
+    })
+    .ok_or("missing routine recording")?;
+    transport.send(DesktopCommand::AppendRoutineRecording {
+        recording_id: recording.id,
+        action: homebot_protocol::RecordedAction {
+            actor: homebot_protocol::RecordedActor::User,
+            step: homebot_protocol::RoutineStep::BotPrompt {
+                bot_id: bot.id,
+                prompt_template: "Summarise the changes".to_owned(),
+                requires_approval: true,
+            },
+        },
+    })?;
+    let appended = receive_until(
+        &transport,
+        Duration::from_secs(10),
+        |event| matches!(event, DesktopEvent::RoutineRecording(recording) if recording.actions.len() == 1),
+    )?;
+    assert!(appended.iter().any(|event| matches!(
+        event,
+        DesktopEvent::RoutineRecording(recording) if recording.actions.len() == 1
+    )));
+    transport.send(DesktopCommand::FinishRoutineRecording(recording.id))?;
+    let _ = receive_until(
+        &transport,
+        Duration::from_secs(10),
+        |event| matches!(event, DesktopEvent::RoutineMutation(routine) if routine.name == "Demonstrated brief"),
+    )?;
+    transport.send(DesktopCommand::LoadRoutineRuns(routine_id))?;
+    let history = receive_until(
+        &transport,
+        Duration::from_secs(10),
+        |event| matches!(event, DesktopEvent::RoutineRuns { routine_id: received_id, .. } if *received_id == routine_id),
+    )?;
+    assert!(history.iter().any(|event| matches!(
+        event,
+        DesktopEvent::RoutineRuns { routine_id: received_id, runs } if *received_id == routine_id && runs.is_empty()
+    )));
+
     let repository = directory.path().join("repository");
     git_repository(&repository)?;
     transport.send(DesktopCommand::Workspace(
@@ -291,6 +394,16 @@ fn clean_local_launch_supervises_server_and_persists_real_api_state()
     assert_eq!(snapshot.bots[0].name, "Nova");
     assert_eq!(snapshot.chats.len(), 1);
     assert_eq!(snapshot.group_chats.len(), 1);
+    restarted.send(DesktopCommand::LoadRoutines)?;
+    let routines = receive_until(
+        &restarted,
+        Duration::from_secs(10),
+        |event| matches!(event, DesktopEvent::Routines(routines) if routines.len() == 3),
+    )?;
+    assert!(routines.iter().any(|event| matches!(
+        event,
+        DesktopEvent::Routines(routines) if routines.len() == 3
+    )));
     Ok(())
 }
 

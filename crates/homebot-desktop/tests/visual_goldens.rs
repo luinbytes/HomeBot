@@ -62,4 +62,14 @@ fn production_desktop_visual_goldens() {
         HomeBotTheme::dark(),
         ProductionFixtureState::Routines,
     );
+    snapshot(
+        "production_routine_editor_dark",
+        HomeBotTheme::dark(),
+        ProductionFixtureState::RoutineEditor,
+    );
+    snapshot(
+        "production_routine_recording_dark",
+        HomeBotTheme::dark(),
+        ProductionFixtureState::RoutineRecording,
+    );
 }

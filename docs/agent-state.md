@@ -7,10 +7,10 @@ This file is operational state for coding agents. It is not user-facing product 
 ## Current state
 
 - Current milestone: corrective M2/M3 production-client verification alongside M6 packaging, hardening and the v1 parity gate. M0, M1, M4 and M5 remain verified complete.
-- Current Linear issues: 6C7-80, production `HomeBotApp` visual fidelity and golden coverage (`In Progress`, highest priority); 6C7-45, authoritative desktop group projection (`In Progress`); 6C7-52, authoritative desktop routine projection (`In Progress`); 6C7-81, README/agent-state reconciliation (`Todo`); 6C7-66 and 6C7-75 remain externally blocked `In Progress`. Final gate 6C7-71 remains Todo.
+- Current Linear issues: 6C7-52, authoritative desktop routine projection (`In Progress`, active); 6C7-81, README/agent-state reconciliation (`Todo`); 6C7-66 and 6C7-75 remain externally blocked `In Progress`. 6C7-80 and the corrective desktop group work in 6C7-45 are verified Done. Final gate 6C7-71 remains Todo.
 - Current Git branch: local `audit/6c7-75-release-readiness`, based on public `main`; the production desktop correction is in the working tree and is not yet remote-verified.
-- Latest public and verified implementation commit: `ca8edf477380265109015241b46aa4a5b26457c4` (exact tree `daf86edd51011b5b87c310108f573bbecb16fdb2`). It includes production provider composition (6C7-77), the fail-closed macOS notarisation pipeline, the Android release-artifact pipeline (6C7-78), and consistent v1 candidate identity across every client/package (6C7-79).
-- Latest verified GitHub Actions run: `32536602259`, all sixteen jobs passed, including Rust/release-version quality, Android lint/tests/debug and minified release builds/signature packaging, dependency gates, Linux and Arch 1.0.0 packaging, both macOS architectures' 1.0.0 builds/goldens/packages, and all resource probes.
+- Latest public and verified implementation commit: `369f3555d7720313796a020efe79864be5c69fc6` (exact implementation tree `a4006e34df58730d1037b698ecb7c766d52684f0`). It includes production provider composition/release work plus the real `HomeBotApp` visual-parity correction and authoritative desktop group projection.
+- Latest verified GitHub Actions run: `32574135885`, all sixteen jobs passed for the production desktop tree, including Rust/release-version quality, Android, dependency, Linux/Arch packaging, both macOS architectures' production-app goldens/packages, and resource probes.
 - Public repository: `https://github.com/luinbytes/HomeBot`.
 - Required commit identity: `luinbytes <42706009+luinbytes@users.noreply.github.com>`.
 
@@ -38,7 +38,7 @@ Architecture decisions currently frozen:
 
 Current blockers:
 
-- Non-external corrective work is active in 6C7-80, 6C7-45, 6C7-52 and 6C7-81. The production desktop previously had fixture-only visual goldens, no authoritative group timeline transport, and no authoritative routine projection wired into `HomeBotApp`; those concrete gaps are being corrected.
+- Non-external corrective work is active in 6C7-52 and 6C7-81. Production visual parity (6C7-80) and authoritative group transport (6C7-45) are remote-verified Done. The remaining routine correction is locally implemented and awaiting its complete gate/public evidence.
 - External final-release blockers remain: neither Codex nor Claude is installed/authenticated for genuine provider smoke tests; Apple Developer ID/notarisation credentials and clean Intel/Apple Silicon machines are unavailable; and physical Arch/Omarchy and Android devices with VoiceOver/TalkBack-equivalent acceptance facilities are unavailable.
 - `egui` 0.32.3 transitively uses unmaintained `ttf-parser` 0.25.1. RUSTSEC-2026-0192 reports no known vulnerability or safe upgrade; the exact-revision 6C7-69 review accepted the warning with a required pre-v1 dependency recheck.
 
@@ -148,7 +148,7 @@ Verified locally at the current baseline:
 
 ## Known failures and incomplete implementation
 
-- 6C7-80, 6C7-45, 6C7-52 and 6C7-81 require pushed implementation, remote CI and final acceptance reconciliation. The complete local `./scripts/check.sh` gate passes with serialized Rust tests, including all 44 server tests, 30 production desktop tests, eight production-path screenshot scenarios, schema/generated-Android drift, packaging, security, performance and accessibility gates. The queue/plan/compaction server fixture timed out once under concurrent local load and passed immediately in isolation and in the serialized full gate; remote evidence does not yet exist.
+- 6C7-52 and 6C7-81 require pushed implementation, remote CI and final acceptance reconciliation. The previously published complete gate passed all 16 remote jobs. The routine correction adds authenticated create/edit/duplicate, demonstration recording/append/finish/cancel, Run now/dry run, enable/pause and run-history flows, a supervised-server round trip with restart persistence, and production routine editor/recording goldens. Its complete serialized `./scripts/check.sh` gate passes locally: 177 Rust tests, ten production screenshot scenarios, schema/generated Android drift, packaging, security, performance and accessibility checks.
 - 6C7-66 remains In Progress because real Developer ID signing/notarisation/stapling and clean Intel/Apple Silicon first-run/provider discovery have not occurred. CI's ad-hoc artifacts and simulated notary responses do not satisfy it.
 - 6C7-75 remains In Progress because real authenticated Codex/Claude round trips and physical Intel Mac, Apple Silicon Mac, Arch/Omarchy and Android install/upgrade/accessibility checks are unavailable in this environment.
 - The Android production signing keystore and physical device are unavailable. CI's `ci-ephemeral` APK proves the pipeline only and must never be published as v1.

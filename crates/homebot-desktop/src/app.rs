@@ -8,8 +8,9 @@ use homebot_protocol::{
     BotPermissionProfile, BotProviderStatus, BotShape, BotSummary, ChatSummary,
     ChatTimelineResponse, GroupBotStatus, GroupChatSummary, GroupParticipantRole,
     GroupParticipantSummary, GroupTimelineResponse, MessageAuthor, MessagePart, MessageStatus,
-    MessageSummary, ProviderProfileSummary, PullRequestMetadata, RiskLevel, RoutineDefinition,
-    RoutineStep, RoutineSummary, ServerEvent, ServerEventBody, VcsStatus,
+    MessageSummary, ProviderProfileSummary, PullRequestMetadata, RecordedAction, RecordedActor,
+    RiskLevel, RoutineDefinition, RoutineRecordingSummary, RoutineStep, RoutineSummary,
+    ServerEvent, ServerEventBody, VcsStatus,
 };
 use std::sync::mpsc::{Receiver, channel};
 use std::time::Instant;
@@ -70,6 +71,29 @@ struct SearchProjection {
     results: Vec<homebot_protocol::SearchResultSummary>,
 }
 
+#[derive(Clone, Debug)]
+struct RoutineEditorDraft {
+    routine_id: Option<Uuid>,
+    bot_id: Uuid,
+    name: String,
+    description: String,
+    definition: RoutineDefinition,
+    draft: bool,
+}
+
+impl RoutineEditorDraft {
+    fn from_summary(routine: &RoutineSummary) -> Self {
+        Self {
+            routine_id: Some(routine.id),
+            bot_id: routine.bot_id,
+            name: routine.name.clone(),
+            description: routine.description.clone(),
+            definition: routine.definition.clone(),
+            draft: routine.draft,
+        }
+    }
+}
+
 // These flags represent independent transient overlays and focus requests rather than a single
 // mutually exclusive state machine (settings, routines, details, composer focus, pairing ack).
 #[allow(clippy::struct_excessive_bools)]
@@ -103,6 +127,10 @@ pub struct HomeBotApp {
     deep_link_receiver: Receiver<DeepLink>,
     settings_open: bool,
     routines_open: bool,
+    routine_editor: Option<RoutineEditorDraft>,
+    routine_recording: Option<RoutineRecordingSummary>,
+    routine_recording_prompt: String,
+    routine_recording_requires_approval: bool,
     details_open: bool,
     search: Option<SearchProjection>,
     editor_error: Option<EditorError>,
@@ -152,6 +180,10 @@ impl Default for HomeBotApp {
             deep_link_receiver,
             settings_open: false,
             routines_open: false,
+            routine_editor: None,
+            routine_recording: None,
+            routine_recording_prompt: String::new(),
+            routine_recording_requires_approval: true,
             details_open: false,
             search: None,
             editor_error: None,
@@ -492,6 +524,19 @@ impl HomeBotApp {
                 DesktopEvent::CheckpointDiff(diff) => self.checkpoint_diff = Some(diff),
                 DesktopEvent::Search(response) => self.apply_search(response),
                 DesktopEvent::Routines(routines) => self.routines.hydrate(routines),
+                DesktopEvent::RoutineMutation(routine) => {
+                    self.routines.apply_routine(routine);
+                    self.routine_editor = None;
+                    self.routine_recording = None;
+                }
+                DesktopEvent::RoutineRecording(recording) => {
+                    self.routines.apply_recording(recording.clone());
+                    self.routine_recording = Some(recording);
+                    self.routine_recording_prompt.clear();
+                }
+                DesktopEvent::RoutineRuns { routine_id, runs } => {
+                    self.routines.apply_runs(routine_id, runs);
+                }
                 DesktopEvent::RoutineRun(run) => self.routines.apply_run(run),
                 DesktopEvent::MutationFailed(error) => {
                     self.transport_error = Some(error.to_string());
@@ -1407,13 +1452,64 @@ impl HomeBotApp {
         });
     }
 
+    #[allow(clippy::too_many_lines)] // List, contextual creation and server actions share one surface.
     fn routine_content(&mut self, ui: &mut egui::Ui) {
         ui.vertical_centered(|ui| {
             ui.set_max_width(self.theme.layout.content_max_width);
             ui.add_space(self.theme.spacing.xl);
-            ui.heading("Routines");
-            ui.label("Repeat useful work without keeping a client open.");
+            ui.horizontal(|ui| {
+                ui.vertical(|ui| {
+                    ui.heading("Routines");
+                    ui.label("Repeat useful work without keeping a client open.");
+                });
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    let selected_bot = self.roster.selected;
+                    if ui
+                        .add_enabled(selected_bot.is_some(), egui::Button::new("Teach routine"))
+                        .clicked()
+                        && let Some(bot_id) = selected_bot
+                    {
+                        self.send_transport(DesktopCommand::StartRoutineRecording {
+                            bot_id,
+                            name: "New demonstrated routine".to_owned(),
+                            description: String::new(),
+                        });
+                    }
+                    if ui
+                        .add_enabled(selected_bot.is_some(), egui::Button::new("New routine"))
+                        .clicked()
+                        && let Some(bot_id) = selected_bot
+                    {
+                        self.routine_editor = Some(RoutineEditorDraft {
+                            routine_id: None,
+                            bot_id,
+                            name: "New routine".to_owned(),
+                            description: String::new(),
+                            definition: RoutineDefinition {
+                                inputs: Vec::new(),
+                                steps: vec![RoutineStep::BotPrompt {
+                                    bot_id,
+                                    prompt_template: String::new(),
+                                    requires_approval: true,
+                                }],
+                                expected_outputs: Vec::new(),
+                            },
+                            draft: true,
+                        });
+                    }
+                });
+            });
             ui.add_space(self.theme.spacing.lg);
+
+            if self.routine_recording.is_some() {
+                self.routine_recording_content(ui);
+                return;
+            }
+            if self.routine_editor.is_some() {
+                self.routine_editor_content(ui);
+                return;
+            }
+
             let routines = self.routines.routines().cloned().collect::<Vec<_>>();
             if routines.is_empty() {
                 Frame::NONE
@@ -1467,6 +1563,16 @@ impl HomeBotApp {
                                         enabled: !routine.enabled,
                                     });
                                 }
+                                if ui.button("Duplicate").clicked() {
+                                    self.send_transport(DesktopCommand::DuplicateRoutine {
+                                        routine_id: routine.id,
+                                        name: format!("{} copy", routine.name),
+                                    });
+                                }
+                                if ui.button("Edit").clicked() {
+                                    self.routine_editor =
+                                        Some(RoutineEditorDraft::from_summary(&routine));
+                                }
                             });
                         });
                         for run in self.routines.runs(routine.id).iter().take(3) {
@@ -1477,10 +1583,167 @@ impl HomeBotApp {
                                 if run.dry_run { " · dry run" } else { "" }
                             ));
                         }
+                        if ui.small_button("Refresh run history").clicked() {
+                            self.send_transport(DesktopCommand::LoadRoutineRuns(routine.id));
+                        }
                     });
                 ui.add_space(self.theme.spacing.sm);
             }
         });
+    }
+
+    fn routine_editor_content(&mut self, ui: &mut egui::Ui) {
+        let mut save = false;
+        let mut cancel = false;
+        let mut remove_step = None;
+        let Some(editor) = self.routine_editor.as_mut() else {
+            return;
+        };
+        Frame::NONE
+            .fill(self.theme.palette.surface)
+            .stroke(Stroke::new(
+                self.theme.layout.hairline,
+                self.theme.palette.border,
+            ))
+            .corner_radius(CornerRadius::same(self.theme.radii.lg))
+            .inner_margin(egui::Margin::same(self.theme.insets.xl))
+            .show(ui, |ui| {
+                ui.strong(if editor.routine_id.is_some() {
+                    "Edit routine"
+                } else {
+                    "Create routine"
+                });
+                ui.text_edit_singleline(&mut editor.name);
+                ui.text_edit_multiline(&mut editor.description);
+                ui.checkbox(&mut editor.draft, "Keep as draft");
+                ui.separator();
+                ui.label("Structured steps");
+                for (index, step) in editor.definition.steps.iter_mut().enumerate() {
+                    Frame::NONE
+                        .fill(self.theme.palette.surface_hover)
+                        .corner_radius(CornerRadius::same(self.theme.radii.sm))
+                        .inner_margin(egui::Margin::same(self.theme.insets.md))
+                        .show(ui, |ui| match step {
+                            RoutineStep::BotPrompt {
+                                prompt_template,
+                                requires_approval,
+                                ..
+                            } => {
+                                ui.label(format!("Bot prompt {}", index + 1));
+                                ui.text_edit_multiline(prompt_template);
+                                ui.checkbox(requires_approval, "Require approval");
+                                if ui.small_button("Remove step").clicked() {
+                                    remove_step = Some(index);
+                                }
+                            }
+                            RoutineStep::PluginTool { tool_name, .. } => {
+                                ui.label(format!("Plugin tool: {tool_name}"));
+                            }
+                            RoutineStep::RecordOutput { output_key, .. } => {
+                                ui.label(format!("Record output: {output_key}"));
+                            }
+                        });
+                    ui.add_space(self.theme.spacing.sm);
+                }
+                if ui.button("Add Bot prompt").clicked() {
+                    editor.definition.steps.push(RoutineStep::BotPrompt {
+                        bot_id: editor.bot_id,
+                        prompt_template: String::new(),
+                        requires_approval: true,
+                    });
+                }
+                ui.horizontal(|ui| {
+                    save = ui
+                        .add_enabled(
+                            !editor.name.trim().is_empty() && !editor.definition.steps.is_empty(),
+                            egui::Button::new("Save"),
+                        )
+                        .clicked();
+                    cancel = ui.button("Cancel").clicked();
+                });
+            });
+        if let Some(index) = remove_step {
+            editor.definition.steps.remove(index);
+        }
+        if cancel {
+            self.routine_editor = None;
+        } else if save && let Some(editor) = self.routine_editor.clone() {
+            let command = if let Some(routine_id) = editor.routine_id {
+                DesktopCommand::UpdateRoutine {
+                    routine_id,
+                    name: editor.name,
+                    description: editor.description,
+                    definition: editor.definition,
+                    draft: editor.draft,
+                }
+            } else {
+                DesktopCommand::CreateRoutine {
+                    bot_id: editor.bot_id,
+                    name: editor.name,
+                    description: editor.description,
+                    definition: editor.definition,
+                    draft: editor.draft,
+                }
+            };
+            self.send_transport(command);
+        }
+    }
+
+    fn routine_recording_content(&mut self, ui: &mut egui::Ui) {
+        let Some(recording) = self.routine_recording.clone() else {
+            return;
+        };
+        Frame::NONE
+            .fill(self.theme.palette.surface)
+            .stroke(Stroke::new(
+                self.theme.layout.hairline,
+                self.theme.palette.warning,
+            ))
+            .corner_radius(CornerRadius::same(self.theme.radii.lg))
+            .inner_margin(egui::Margin::same(self.theme.insets.xl))
+            .show(ui, |ui| {
+                ui.strong(format!("Teaching {}", recording.name));
+                ui.label(format!("{} recorded actions", recording.actions.len()));
+                ui.text_edit_multiline(&mut self.routine_recording_prompt);
+                ui.checkbox(
+                    &mut self.routine_recording_requires_approval,
+                    "Preserve an approval boundary",
+                );
+                ui.horizontal(|ui| {
+                    if ui
+                        .add_enabled(
+                            !self.routine_recording_prompt.trim().is_empty(),
+                            egui::Button::new("Record Bot prompt"),
+                        )
+                        .clicked()
+                    {
+                        self.send_transport(DesktopCommand::AppendRoutineRecording {
+                            recording_id: recording.id,
+                            action: RecordedAction {
+                                actor: RecordedActor::User,
+                                step: RoutineStep::BotPrompt {
+                                    bot_id: recording.bot_id,
+                                    prompt_template: self.routine_recording_prompt.clone(),
+                                    requires_approval: self.routine_recording_requires_approval,
+                                },
+                            },
+                        });
+                    }
+                    if ui
+                        .add_enabled(
+                            !recording.actions.is_empty(),
+                            egui::Button::new("Finish and edit"),
+                        )
+                        .clicked()
+                    {
+                        self.send_transport(DesktopCommand::FinishRoutineRecording(recording.id));
+                    }
+                    if ui.button("Cancel recording").clicked() {
+                        self.send_transport(DesktopCommand::CancelRoutineRecording(recording.id));
+                        self.routine_recording = None;
+                    }
+                });
+            });
     }
 
     #[allow(clippy::too_many_lines)] // Message, activity and approval ordering must remain explicit.
@@ -2357,6 +2620,8 @@ pub enum ProductionFixtureState {
     ProviderUnavailable,
     Settings,
     Routines,
+    RoutineEditor,
+    RoutineRecording,
     ComputerDetails,
 }
 
@@ -2529,7 +2794,12 @@ fn production_fixture(theme: HomeBotTheme, state: ProductionFixtureState) -> Hom
         });
     }
     app.settings_open = state == ProductionFixtureState::Settings;
-    app.routines_open = state == ProductionFixtureState::Routines;
+    app.routines_open = matches!(
+        state,
+        ProductionFixtureState::Routines
+            | ProductionFixtureState::RoutineEditor
+            | ProductionFixtureState::RoutineRecording
+    );
     if app.routines_open {
         app.routines.hydrate(vec![RoutineSummary {
             id: Uuid::from_u128(50),
@@ -2552,6 +2822,29 @@ fn production_fixture(theme: HomeBotTheme, state: ProductionFixtureState) -> Hom
             created_at_unix_ms: 1,
             updated_at_unix_ms: 2,
         }]);
+        if state == ProductionFixtureState::RoutineEditor {
+            if let Some(routine) = app.routines.routines().next().cloned() {
+                app.routine_editor = Some(RoutineEditorDraft::from_summary(&routine));
+            }
+        } else if state == ProductionFixtureState::RoutineRecording {
+            app.routine_recording = Some(RoutineRecordingSummary {
+                id: Uuid::from_u128(52),
+                bot_id: Uuid::from_u128(1),
+                name: "Publish release notes".to_owned(),
+                description: "Demonstrated from a successful launch".to_owned(),
+                actions: vec![RecordedAction {
+                    actor: RecordedActor::User,
+                    step: RoutineStep::BotPrompt {
+                        bot_id: Uuid::from_u128(1),
+                        prompt_template: "Summarise the merged changes".to_owned(),
+                        requires_approval: true,
+                    },
+                }],
+                created_at_unix_ms: 1,
+                updated_at_unix_ms: 2,
+            });
+            "Draft the public announcement".clone_into(&mut app.routine_recording_prompt);
+        }
     }
     app.details_open = state == ProductionFixtureState::ComputerDetails;
     app

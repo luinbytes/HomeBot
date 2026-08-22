@@ -21,11 +21,12 @@ use homebot_protocol::{
     FinalizeAttachmentRequest, GlobalSearchResponse, GroupChatSummary, GroupTimelineResponse,
     MIN_COMPATIBLE_PROTOCOL_VERSION, MessageMutationRequest, PROTOCOL_VERSION, PairingOffer,
     ProtocolRange, PullRequestMetadata, PullRequestMutationResponse, ReactionMutationRequest,
-    RepositoryWorkspaceSummary, RestoreCheckpointRequest, RevokeDeviceSessionRequest,
-    RoutineRunSummary, RoutineSummary, SendMessageRequest, ServerEvent, ServerEventBody,
-    SetInteractionModeRequest, Snapshot, UpdateBotRequest, VcsCommitRequest, VcsCommitResult,
-    VcsCreateBranchRequest, VcsPushRequest, VcsRemoteMutationResponse, VcsStatus,
-    WorkingContextSummary, WorkingTreeDiffResponse, WorkspaceBranchesResponse,
+    RecordedAction, RepositoryWorkspaceSummary, RestoreCheckpointRequest,
+    RevokeDeviceSessionRequest, RoutineDefinition, RoutineRecordingSummary, RoutineRunSummary,
+    RoutineSummary, SendMessageRequest, ServerEvent, ServerEventBody, SetInteractionModeRequest,
+    Snapshot, UpdateBotRequest, VcsCommitRequest, VcsCommitResult, VcsCreateBranchRequest,
+    VcsPushRequest, VcsRemoteMutationResponse, VcsStatus, WorkingContextSummary,
+    WorkingTreeDiffResponse, WorkspaceBranchesResponse,
 };
 use reqwest::{Client, Method, StatusCode};
 use serde::Deserialize;
@@ -167,6 +168,12 @@ pub enum DesktopEvent {
     CheckpointDiff(CheckpointDiffResponse),
     Search(GlobalSearchResponse),
     Routines(Vec<RoutineSummary>),
+    RoutineMutation(RoutineSummary),
+    RoutineRecording(RoutineRecordingSummary),
+    RoutineRuns {
+        routine_id: Uuid,
+        runs: Vec<RoutineRunSummary>,
+    },
     RoutineRun(RoutineRunSummary),
     MutationFailed(TransportFailure),
 }
@@ -210,6 +217,36 @@ pub enum DesktopCommand {
     BrowserWatch(Uuid),
     Search(String),
     LoadRoutines,
+    CreateRoutine {
+        bot_id: Uuid,
+        name: String,
+        description: String,
+        definition: RoutineDefinition,
+        draft: bool,
+    },
+    UpdateRoutine {
+        routine_id: Uuid,
+        name: String,
+        description: String,
+        definition: RoutineDefinition,
+        draft: bool,
+    },
+    DuplicateRoutine {
+        routine_id: Uuid,
+        name: String,
+    },
+    StartRoutineRecording {
+        bot_id: Uuid,
+        name: String,
+        description: String,
+    },
+    AppendRoutineRecording {
+        recording_id: Uuid,
+        action: RecordedAction,
+    },
+    FinishRoutineRecording(Uuid),
+    CancelRoutineRecording(Uuid),
+    LoadRoutineRuns(Uuid),
     RunRoutine {
         routine_id: Uuid,
         dry_run: bool,

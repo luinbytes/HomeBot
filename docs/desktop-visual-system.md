@@ -20,21 +20,24 @@ The native executable uses eframe 0.32.3 with accessibility, OpenGL, Wayland and
 
 `HomeBotTheme::install` translates tokens into egui `Style` and `Visuals`. Future visible components must accept a `HomeBotTheme` or a narrower semantic token set. A component may introduce a documented pixel-level exception only when a legitimate reference capture proves it is necessary.
 
-## Deterministic goldens
+## Production shell and deterministic goldens
 
-The visual harness renders eleven reference states at 1120 × 760 logical points and one pixel per point:
+The ordinary desktop hierarchy is a responsive two-pane shell: an identity-led sidebar occupies 30% of the reference window (bounded from 276 to 324 logical points), while chat remains the dominant surface. Computer, workspace, checkpoint, source-control and context details are opened from the conversation header instead of permanently occupying a third pane. The bottom composer is a persistent rounded action surface; queue, steering and stop are disclosed only while a Bot is running.
 
-- `desktop_empty_light`
-- `desktop_chat_light`
-- `desktop_approval_dark`
-- `desktop_queue_error_dark`
-- `desktop_group_chat_light`
-- `desktop_bot_editor_light`
-- `desktop_disconnected_dark`
-- `desktop_provider_unavailable_light`
-- `desktop_activity_surfaces_dark`
-- `desktop_settings_general_light`
-- `desktop_settings_appearance_dark`
+HomeBot avatars are original procedural characters. Stable Bot name, selected color and selected shape determine silhouette, eye spacing, face and accent. No Grok artwork is imported, traced or redistributed.
+
+The release visual harness now constructs deterministic server projections and renders the actual `HomeBotApp::render` path at 1120 × 760 logical points and one pixel per point. It covers:
+
+- `production_chat_dark`
+- `production_approval_dark`
+- `production_group_chat_dark`
+- `production_disconnected_dark`
+- `production_provider_unavailable_light`
+- `production_computer_details_dark`
+- `production_settings_light`
+- `production_routines_dark`
+
+These images exercise the production sidebar, header, transcript, activity and approval cards, anchored composer, settings/routines navigation and contextual details. The legacy showcase remains a component development aid, not release evidence.
 
 Goldens are stored under `crates/homebot-desktop/tests/snapshots`. The harness uses egui's normal tessellation with a HomeBot-owned CPU triangle renderer. Fixed nearest-neighbor texture sampling and premultiplied-alpha blending remove GPU, driver, Metal, Vulkan, Wayland and X11 variance. The exact same checked-in image is therefore compared on Linux and macOS.
 
@@ -54,4 +57,4 @@ Never update a golden merely to silence a failure. Inspect the old, new and diff
 
 ## Reference and parity discipline
 
-Public SpaceXAI product documentation and launch material define observable surfaces. Exact typography metrics, colors, spacing, hover/focus states and motion remain `Capture required` in the visual reference index until compared with a legitimately accessed current application build. The initial HomeBot tokens are an original, coherent baseline and are not represented as a completed parity comparison.
+Public SpaceXAI product documentation and launch material define observable behavior. A current user-supplied Grok Bot desktop capture (22 August 2026; red arrow annotation excluded) supplied the populated-shell comparison: a wide identity/grid/recent-conversation sidebar, two-pane chat, contextual computer action, card-based messages and a quiet anchored composer. Official current documentation additionally confirms the computer takeover flow, file attachment behavior, Bot lifecycle, settings and routine surfaces. Exact typography metrics, colors, hover/focus states and motion for states not visible in a legitimate capture remain `Capture required` in the visual reference index. HomeBot's own green snapshots prove regression stability, not Grok parity by themselves.

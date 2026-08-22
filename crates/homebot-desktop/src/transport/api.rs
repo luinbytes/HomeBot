@@ -2,12 +2,13 @@ use super::{
     ApprovalDecisionRequest, BotClientCommand, BotEditorDraft, BotMutationRequest, BotResponse,
     Client, ComposerDraft, CreateAttachmentRequest, CreateAttachmentResponse, CreateBotRequest,
     CreateDirectChatRequest, CreateDirectChatResponse, DeleteBotRequest, DesktopCommand,
-    DesktopEvent, Digest, ErrorEnvelope, FinalizeAttachmentRequest, MessageMutationRequest, Method,
-    ReactionMutationRequest, RuntimeConfig, SendMessageRequest, Sender, Sha256, StatusCode,
-    TimelineCommand, TransportFailure, UpdateBotRequest, Uuid, WorkspaceCommand, protocol_error,
-    request_error,
+    DesktopEvent, Digest, ErrorEnvelope, FinalizeAttachmentRequest, GroupTimelineCommand,
+    MessageMutationRequest, Method, ReactionMutationRequest, RuntimeConfig, SendMessageRequest,
+    Sender, Sha256, StatusCode, TimelineCommand, TransportFailure, UpdateBotRequest, Uuid,
+    WorkspaceCommand, protocol_error, request_error,
 };
 
+#[allow(clippy::too_many_lines)] // Exhaustive command routing is intentionally auditable here.
 pub(super) async fn execute_command(
     client: &Client,
     config: &RuntimeConfig,
@@ -37,6 +38,48 @@ pub(super) async fn execute_command(
             chat_id,
             command,
         } => execute_timeline(client, config, bot_id, chat_id, command, events).await,
+        DesktopCommand::LoadGroupTimeline(chat_id) => {
+            let timeline = response_json(
+                authenticated(
+                    client,
+                    config,
+                    Method::GET,
+                    &format!("/api/v1/groups/{chat_id}/timeline"),
+                )
+                .send()
+                .await
+                .map_err(request_error)?,
+            )
+            .await?;
+            let _ = events.send(DesktopEvent::GroupTimeline(timeline));
+            Ok(())
+        }
+        DesktopCommand::CreateGroup {
+            title,
+            bot_ids,
+            ownership_bot_id,
+        } => {
+            let response = post_json(
+                client,
+                config,
+                "/api/v1/groups",
+                &homebot_protocol::CreateGroupChatRequest {
+                    request_id: Uuid::now_v7(),
+                    idempotency_key: Uuid::now_v7(),
+                    title,
+                    bot_ids,
+                    ownership_bot_id,
+                    coordination_max_turns: 24,
+                    max_parallel_bots: 3,
+                },
+            )
+            .await?;
+            let _ = events.send(DesktopEvent::GroupCreated(response));
+            Ok(())
+        }
+        DesktopCommand::Group { chat_id, command } => {
+            execute_group(client, config, chat_id, command, events).await
+        }
         DesktopCommand::UploadAttachment {
             filename,
             media_type,
@@ -102,8 +145,188 @@ pub(super) async fn execute_command(
             let _ = events.send(DesktopEvent::Search(response));
             Ok(())
         }
+        DesktopCommand::LoadRoutines => {
+            let routines = response_json(
+                authenticated(client, config, Method::GET, "/api/v1/routines")
+                    .send()
+                    .await
+                    .map_err(request_error)?,
+            )
+            .await?;
+            let _ = events.send(DesktopEvent::Routines(routines));
+            Ok(())
+        }
+        DesktopCommand::RunRoutine {
+            routine_id,
+            dry_run,
+        } => {
+            let action = if dry_run { "dry-run" } else { "run" };
+            let run = post_json(
+                client,
+                config,
+                &format!("/api/v1/routines/{routine_id}/{action}"),
+                &homebot_protocol::RunRoutineRequest {
+                    request_id: Uuid::now_v7(),
+                    idempotency_key: Uuid::now_v7(),
+                    inputs: serde_json::json!({}),
+                },
+            )
+            .await?;
+            let _ = events.send(DesktopEvent::RoutineRun(run));
+            Ok(())
+        }
+        DesktopCommand::SetRoutineEnabled {
+            routine_id,
+            enabled,
+        } => {
+            let action = if enabled { "enable" } else { "disable" };
+            let _: homebot_protocol::RoutineSummary = post_json(
+                client,
+                config,
+                &format!("/api/v1/routines/{routine_id}/{action}"),
+                &homebot_protocol::PluginMutationRequest {
+                    request_id: Uuid::now_v7(),
+                    idempotency_key: Uuid::now_v7(),
+                },
+            )
+            .await?;
+            Ok(())
+        }
         DesktopCommand::Shutdown => Ok(()),
     }
+}
+
+#[allow(clippy::too_many_lines)] // All group mutations share one authoritative reload boundary.
+async fn execute_group(
+    client: &Client,
+    config: &RuntimeConfig,
+    chat_id: Uuid,
+    command: GroupTimelineCommand,
+    events: &Sender<DesktopEvent>,
+) -> Result<(), TransportFailure> {
+    let group = match command {
+        GroupTimelineCommand::Send(draft) => {
+            let _: homebot_protocol::MessageSummary = post_json(
+                client,
+                config,
+                &format!("/api/v1/groups/{chat_id}/messages"),
+                &homebot_protocol::SendGroupMessageRequest {
+                    request_id: Uuid::now_v7(),
+                    idempotency_key: Uuid::now_v7(),
+                    content: draft.content,
+                    mentioned_bot_ids: draft.mentioned_bot_ids,
+                    shared_context_message_ids: draft.shared_context_message_ids,
+                    reply_to_message_id: None,
+                    references: Vec::new(),
+                },
+            )
+            .await?;
+            None
+        }
+        GroupTimelineCommand::Rename(title) => Some(
+            response_json(
+                authenticated(
+                    client,
+                    config,
+                    Method::PUT,
+                    &format!("/api/v1/groups/{chat_id}"),
+                )
+                .json(&homebot_protocol::RenameGroupChatRequest {
+                    request_id: Uuid::now_v7(),
+                    idempotency_key: Uuid::now_v7(),
+                    title,
+                })
+                .send()
+                .await
+                .map_err(request_error)?,
+            )
+            .await?,
+        ),
+        GroupTimelineCommand::AddParticipant(bot_id) => {
+            let _: homebot_protocol::GroupParticipantSummary = post_json(
+                client,
+                config,
+                &format!("/api/v1/groups/{chat_id}/participants"),
+                &homebot_protocol::AddGroupParticipantRequest {
+                    request_id: Uuid::now_v7(),
+                    idempotency_key: Uuid::now_v7(),
+                    bot_id,
+                },
+            )
+            .await?;
+            None
+        }
+        GroupTimelineCommand::RemoveParticipant(bot_id) => {
+            ensure_success(
+                authenticated(
+                    client,
+                    config,
+                    Method::POST,
+                    &format!("/api/v1/groups/{chat_id}/participants/{bot_id}/remove"),
+                )
+                .json(&homebot_protocol::BotMutationRequest {
+                    request_id: Uuid::now_v7(),
+                    idempotency_key: Uuid::now_v7(),
+                })
+                .send()
+                .await
+                .map_err(request_error)?,
+            )
+            .await?;
+            None
+        }
+        GroupTimelineCommand::Handoff {
+            from_bot_id,
+            to_bot_id,
+            message_id,
+            reason,
+        } => {
+            let _: homebot_protocol::OwnershipHandoffSummary = post_json(
+                client,
+                config,
+                &format!("/api/v1/groups/{chat_id}/handoff"),
+                &homebot_protocol::HandoffGroupRequest {
+                    request_id: Uuid::now_v7(),
+                    idempotency_key: Uuid::now_v7(),
+                    from_bot_id,
+                    to_bot_id,
+                    message_id,
+                    reason,
+                },
+            )
+            .await?;
+            None
+        }
+        GroupTimelineCommand::Stop => Some(
+            post_json(
+                client,
+                config,
+                &format!("/api/v1/groups/{chat_id}/stop"),
+                &homebot_protocol::BotMutationRequest {
+                    request_id: Uuid::now_v7(),
+                    idempotency_key: Uuid::now_v7(),
+                },
+            )
+            .await?,
+        ),
+    };
+    if let Some(group) = group {
+        let _ = events.send(DesktopEvent::GroupMutation(group));
+    }
+    let timeline = response_json(
+        authenticated(
+            client,
+            config,
+            Method::GET,
+            &format!("/api/v1/groups/{chat_id}/timeline"),
+        )
+        .send()
+        .await
+        .map_err(request_error)?,
+    )
+    .await?;
+    let _ = events.send(DesktopEvent::GroupTimeline(timeline));
+    Ok(())
 }
 
 async fn browser_mutation(

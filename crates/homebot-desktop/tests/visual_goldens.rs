@@ -1,19 +1,19 @@
 use egui::Vec2;
 use egui_kittest::Harness;
-use homebot_desktop::{FixtureState, HomeBotTheme, render_fixture};
+use homebot_desktop::{HomeBotTheme, ProductionFixtureState, render_production_fixture};
 
 mod support;
 
-fn snapshot(name: &str, theme: HomeBotTheme, state: FixtureState) {
+fn snapshot(name: &str, theme: HomeBotTheme, state: ProductionFixtureState) {
     let mut harness = Harness::builder()
         .with_size(Vec2::new(
             theme.layout.reference_width,
-            theme.layout.reference_height,
+            homebot_desktop::tokens::Layout::REFERENCE_HEIGHT,
         ))
         .with_pixels_per_point(1.0)
         .renderer(support::CpuRenderer::default())
-        .build(|context| render_fixture(context, theme, state));
-    harness.run();
+        .build(|context| render_production_fixture(context, theme, state));
+    harness.run_steps(2);
     let image = harness
         .render()
         .unwrap_or_else(|error| panic!("visual render failed: {error}"));
@@ -21,80 +21,45 @@ fn snapshot(name: &str, theme: HomeBotTheme, state: FixtureState) {
 }
 
 #[test]
-fn desktop_shell_visual_goldens() {
+fn production_desktop_visual_goldens() {
     snapshot(
-        "desktop_empty_light",
-        HomeBotTheme::light(),
-        FixtureState::Empty,
-    );
-    snapshot(
-        "desktop_chat_light",
-        HomeBotTheme::light(),
-        FixtureState::DirectChat,
-    );
-    snapshot(
-        "desktop_approval_dark",
+        "production_chat_dark",
         HomeBotTheme::dark(),
-        FixtureState::Approval,
+        ProductionFixtureState::PopulatedChat,
     );
     snapshot(
-        "desktop_queue_error_dark",
+        "production_approval_dark",
         HomeBotTheme::dark(),
-        FixtureState::QueueError,
+        ProductionFixtureState::Approval,
     );
     snapshot(
-        "desktop_group_chat_light",
-        HomeBotTheme::light(),
-        FixtureState::GroupChat,
-    );
-    snapshot(
-        "desktop_bot_editor_light",
-        HomeBotTheme::light(),
-        FixtureState::BotEditor,
-    );
-    snapshot(
-        "desktop_disconnected_dark",
+        "production_group_chat_dark",
         HomeBotTheme::dark(),
-        FixtureState::Disconnected,
+        ProductionFixtureState::GroupChat,
     );
     snapshot(
-        "desktop_provider_unavailable_light",
-        HomeBotTheme::light(),
-        FixtureState::ProviderUnavailable,
-    );
-    snapshot(
-        "desktop_activity_surfaces_dark",
+        "production_disconnected_dark",
         HomeBotTheme::dark(),
-        FixtureState::ActivitySurfaces,
+        ProductionFixtureState::Disconnected,
     );
     snapshot(
-        "desktop_settings_general_light",
+        "production_provider_unavailable_light",
         HomeBotTheme::light(),
-        FixtureState::Settings,
+        ProductionFixtureState::ProviderUnavailable,
     );
     snapshot(
-        "desktop_settings_appearance_dark",
+        "production_computer_details_dark",
         HomeBotTheme::dark(),
-        FixtureState::SettingsAppearance,
+        ProductionFixtureState::ComputerDetails,
     );
     snapshot(
-        "desktop_settings_plugins_light",
+        "production_settings_light",
         HomeBotTheme::light(),
-        FixtureState::SettingsPlugins,
+        ProductionFixtureState::Settings,
     );
     snapshot(
-        "desktop_routines_list_light",
-        HomeBotTheme::light(),
-        FixtureState::RoutinesList,
-    );
-    snapshot(
-        "desktop_routine_editor_dark",
+        "production_routines_dark",
         HomeBotTheme::dark(),
-        FixtureState::RoutineEditor,
-    );
-    snapshot(
-        "desktop_routine_recording_light",
-        HomeBotTheme::light(),
-        FixtureState::RoutineRecording,
+        ProductionFixtureState::Routines,
     );
 }

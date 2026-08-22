@@ -70,6 +70,16 @@ impl RoutineProjection {
         }
     }
 
+    pub fn apply_run(&mut self, run: RoutineRunSummary) {
+        let runs = self.runs.entry(run.routine_id).or_default();
+        if let Some(existing) = runs.iter_mut().find(|existing| existing.id == run.id) {
+            *existing = run;
+        } else {
+            runs.push(run);
+        }
+        runs.sort_by_key(|item| std::cmp::Reverse(item.started_at_unix_ms));
+    }
+
     pub fn routines(&self) -> impl Iterator<Item = &RoutineSummary> {
         self.routines.values()
     }

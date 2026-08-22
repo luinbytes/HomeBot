@@ -2,6 +2,8 @@
 
 Baseline: 20 August 2026. This index is the canonical input to HomeBot's future egui and Android golden tests. It records independently observed product behaviour from public, authoritative SpaceXAI material without copying proprietary source code or redistributing proprietary assets.
 
+Comparison update, 22 August 2026: a current user-supplied Grok Bot desktop screenshot establishes the populated default shell as a two-pane layout with a wide visual Bot/group sidebar, recent conversations, chat-led message cards, contextual computer control and anchored composer. Its red arrow annotation is excluded from the reference. The image is not redistributed in this repository. Rows remain `Capture required` wherever this single capture or the official public sources do not show the complete state.
+
 ## Reference set
 
 - **Launch**: [Introducing Grok Bot](https://x.ai/news/introducing-grok-bot), including the official launch video and product examples.
@@ -90,4 +92,4 @@ HomeBot intentionally exceeds initial Grok Bot mobile parity where the official 
 
 Every future visual implementation issue must name the affected IDs, add or update deterministic goldens, record the renderer/platform/font inputs, and keep the status `Capture required` until a legitimate reference comparison has been performed. Feature existence alone never changes a row to `Pass`.
 
-The 6C7-42 HomeBot baseline now has deterministic CPU-rendered goldens for the empty shell, direct chat/activity shell and approval shell in light/dark themes. These cover the initial geometry and component system but remain `Capture required`; see [desktop-visual-system.md](desktop-visual-system.md).
+The HomeBot release baseline now has deterministic CPU-rendered goldens for the real production `HomeBotApp` shell: populated direct chat and composer, activity, approval, group chat, disconnected/provider-unavailable, settings, routines and contextual computer/details. These cover production regression stability but remain `Capture required` except where legitimate comparison evidence is explicitly recorded; see [desktop-visual-system.md](desktop-visual-system.md).

@@ -15,15 +15,16 @@ use homebot_protocol::{
     BrowserActionRequest, BrowserActionResponse, BrowserCommand, BrowserMutationRequest,
     ChatTimelineResponse, ChatWorkspaceSummary, CheckpointDiffResponse, ClientMessage,
     CompactWorkingContextRequest, CreateAttachmentRequest, CreateAttachmentResponse,
-    CreateBotRequest, CreateDirectChatRequest, CreateDirectChatResponse, CreatePairingRequest,
-    CreatePullRequestRequest, CreateRepositoryWorkspaceRequest, DeleteBotRequest,
-    DetachChatWorkspaceRequest, DeviceSessionSummary, ErrorEnvelope, FinalizeAttachmentRequest,
-    GlobalSearchResponse, MIN_COMPATIBLE_PROTOCOL_VERSION, MessageMutationRequest,
-    PROTOCOL_VERSION, PairingOffer, ProtocolRange, PullRequestMetadata,
-    PullRequestMutationResponse, ReactionMutationRequest, RepositoryWorkspaceSummary,
-    RestoreCheckpointRequest, RevokeDeviceSessionRequest, SendMessageRequest, ServerEvent,
-    ServerEventBody, SetInteractionModeRequest, Snapshot, UpdateBotRequest, VcsCommitRequest,
-    VcsCommitResult, VcsCreateBranchRequest, VcsPushRequest, VcsRemoteMutationResponse, VcsStatus,
+    CreateBotRequest, CreateDirectChatRequest, CreateDirectChatResponse, CreateGroupChatResponse,
+    CreatePairingRequest, CreatePullRequestRequest, CreateRepositoryWorkspaceRequest,
+    DeleteBotRequest, DetachChatWorkspaceRequest, DeviceSessionSummary, ErrorEnvelope,
+    FinalizeAttachmentRequest, GlobalSearchResponse, GroupChatSummary, GroupTimelineResponse,
+    MIN_COMPATIBLE_PROTOCOL_VERSION, MessageMutationRequest, PROTOCOL_VERSION, PairingOffer,
+    ProtocolRange, PullRequestMetadata, PullRequestMutationResponse, ReactionMutationRequest,
+    RepositoryWorkspaceSummary, RestoreCheckpointRequest, RevokeDeviceSessionRequest,
+    RoutineRunSummary, RoutineSummary, SendMessageRequest, ServerEvent, ServerEventBody,
+    SetInteractionModeRequest, Snapshot, UpdateBotRequest, VcsCommitRequest, VcsCommitResult,
+    VcsCreateBranchRequest, VcsPushRequest, VcsRemoteMutationResponse, VcsStatus,
     WorkingContextSummary, WorkingTreeDiffResponse, WorkspaceBranchesResponse,
 };
 use reqwest::{Client, Method, StatusCode};
@@ -42,6 +43,7 @@ use uuid::Uuid;
 
 use crate::{
     bot_roster::{BotClientCommand, BotEditorDraft},
+    group_timeline::GroupTimelineCommand,
     timeline::{ComposerDraft, TimelineCommand},
     workspaces::WorkspaceCommand,
 };
@@ -121,6 +123,9 @@ pub enum DesktopEvent {
     },
     Server(ServerEvent),
     Timeline(ChatTimelineResponse),
+    GroupTimeline(GroupTimelineResponse),
+    GroupCreated(CreateGroupChatResponse),
+    GroupMutation(GroupChatSummary),
     BotMutation(BotResponse),
     AttachmentUploaded(Uuid),
     RepositoryWorkspaceRegistered(RepositoryWorkspaceSummary),
@@ -161,6 +166,8 @@ pub enum DesktopEvent {
     BrowserAction(BrowserActionResponse),
     CheckpointDiff(CheckpointDiffResponse),
     Search(GlobalSearchResponse),
+    Routines(Vec<RoutineSummary>),
+    RoutineRun(RoutineRunSummary),
     MutationFailed(TransportFailure),
 }
 
@@ -172,6 +179,16 @@ pub enum DesktopCommand {
         bot_id: Uuid,
         chat_id: Option<Uuid>,
         command: TimelineCommand,
+    },
+    LoadGroupTimeline(Uuid),
+    CreateGroup {
+        title: String,
+        bot_ids: Vec<Uuid>,
+        ownership_bot_id: Uuid,
+    },
+    Group {
+        chat_id: Uuid,
+        command: GroupTimelineCommand,
     },
     UploadAttachment {
         filename: String,
@@ -192,6 +209,15 @@ pub enum DesktopCommand {
     BrowserReturn(Uuid),
     BrowserWatch(Uuid),
     Search(String),
+    LoadRoutines,
+    RunRoutine {
+        routine_id: Uuid,
+        dry_run: bool,
+    },
+    SetRoutineEnabled {
+        routine_id: Uuid,
+        enabled: bool,
+    },
     Shutdown,
 }
 

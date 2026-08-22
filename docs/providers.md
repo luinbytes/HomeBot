@@ -75,7 +75,7 @@ Responses API profiles support streamed text, reasoning/tool activity, usage, ca
 
 ## Community process contract
 
-`GenericProcessAdapter` is an opt-in JSONL bridge, not a shell command template. HomeBot launches the configured executable directly with a cleared environment, explicit arguments and selected environment variables. It writes exactly one request object to stdin:
+`GenericProcessAdapter` is an opt-in JSONL bridge, not a shell command template. HomeBot resolves a simple command name only against its selected, allowlisted executable search path, then launches the executable directly with a cleared environment, explicit arguments and selected environment variables. Absolute executable paths remain supported. It never evaluates a shell or login profile. The adapter writes exactly one request object to stdin:
 
 ```json
 {"kind":"start","operation_id":"...","bot_id":"...","chat_id":"...","prompt":"...","model":null,"mode":"normal","attachments":[]}

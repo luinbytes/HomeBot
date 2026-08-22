@@ -47,7 +47,7 @@ impl GenericProcessProfile {
             program: program.into(),
             arguments: Vec::new(),
             working_directory: None,
-            environment: BTreeMap::new(),
+            environment: safe_generic_environment(),
             models: Vec::new(),
         }
     }
@@ -326,6 +326,13 @@ fn resolve_program(profile: &GenericProcessProfile) -> Option<PathBuf> {
     std::env::split_paths(path)
         .map(|directory| directory.join(&profile.program))
         .find(|candidate| candidate.is_file())
+}
+
+fn safe_generic_environment() -> BTreeMap<OsString, OsString> {
+    let inherited = std::env::var_os("PATH");
+    crate::discovery::executable_search_path(inherited.as_ref())
+        .map(|path| [(OsString::from("PATH"), path)].into_iter().collect())
+        .unwrap_or_default()
 }
 
 fn is_terminal(event: &ProviderEvent) -> bool {

@@ -114,3 +114,47 @@ fn debug_output_excludes_arguments_and_environment_values() -> Result<(), Box<dy
     assert!(!debug.contains("TOKEN\": \"secret"));
     Ok(())
 }
+
+#[cfg(unix)]
+#[tokio::test]
+async fn simple_command_resolves_only_from_the_selected_search_path()
+-> Result<(), Box<dyn std::error::Error>> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let directory = tempfile::tempdir()?;
+    let binary = directory.path().join("homebot-community-provider");
+    std::fs::write(
+        &binary,
+        "#!/bin/sh\nIFS= read -r request\nprintf '%s\\n' '{\"kind\":\"completed\"}'\n",
+    )?;
+    let mut permissions = std::fs::metadata(&binary)?.permissions();
+    permissions.set_mode(0o700);
+    std::fs::set_permissions(&binary, permissions)?;
+    let path = std::env::join_paths([directory.path()])?;
+    let profile = GenericProcessProfile::new(
+        ProviderAdapterId::new("community-path")?,
+        "Community PATH fixture",
+        "homebot-community-provider",
+    )
+    .environment("PATH", path);
+    let adapter = GenericProcessAdapter::new(profile);
+
+    let expected = binary.to_string_lossy().into_owned();
+    assert_eq!(
+        adapter.discover().await?.executable.as_deref(),
+        Some(expected.as_str())
+    );
+    let mut run = adapter
+        .start(StartRequest {
+            operation_id: Uuid::now_v7(),
+            bot_id: Uuid::now_v7(),
+            chat_id: Uuid::now_v7(),
+            prompt: "Hello".to_owned(),
+            model: None,
+            mode: crate::ExecutionMode::Normal,
+            attachments: Vec::new(),
+        })
+        .await?;
+    assert_eq!(run.events.recv().await, Some(ProviderEvent::Completed));
+    Ok(())
+}

@@ -296,6 +296,25 @@ async fn supervisor_bounds_and_redacts_crash_diagnostics() -> Result<(), Box<dyn
 }
 
 #[tokio::test]
+async fn supervisor_stops_reading_an_unterminated_oversized_stderr_frame()
+-> Result<(), Box<dyn std::error::Error>> {
+    let process = SupervisedProcess::spawn(
+        ProcessSpec::new("/bin/sh")
+            .arg("-c")
+            .arg("head -c 8192 /dev/zero | tr '\\000' x >&2; exit 7")
+            .limits(ProcessLimits {
+                max_stderr_bytes: 64 * 1024,
+                shutdown_grace: Duration::from_millis(50),
+            }),
+    )?;
+    let report = process.wait().await?;
+    assert_eq!(report.termination, ProcessTermination::Crashed);
+    assert!(report.stderr_truncated);
+    assert!(report.stderr_tail.is_empty());
+    Ok(())
+}
+
+#[tokio::test]
 async fn supervisor_prefers_clean_stdin_shutdown_then_enforces_deadline()
 -> Result<(), Box<dyn std::error::Error>> {
     let clean = SupervisedProcess::spawn(

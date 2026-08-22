@@ -18,7 +18,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 use tokio::{
-    io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
+    io::{AsyncReadExt, AsyncWriteExt, BufReader},
     process::{ChildStdin, ChildStdout},
     sync::{Mutex, mpsc, watch},
 };
@@ -341,10 +341,10 @@ async fn run_process(
                     break ProcessOutcome::Cancelled;
                 }
             }
-            read = reader.read_line(&mut line) => {
+            read = crate::bounded_io::read_line_bounded(&mut reader, &mut line, MAX_LINE_BYTES) => {
                 match read {
                     Ok(0) => break ProcessOutcome::Eof,
-                    Ok(_) if line.len() > MAX_LINE_BYTES => {
+                    Err(crate::bounded_io::BoundedLineError::TooLong) => {
                         break ProcessOutcome::Failed(protocol_error("Claude Code message exceeded the limit"));
                     }
                     Ok(_) => {
@@ -367,7 +367,10 @@ async fn run_process(
                             break ProcessOutcome::Terminal;
                         }
                     }
-                    Err(_) => break ProcessOutcome::Failed(io_error(std::io::Error::other("read failed"))),
+                    Err(crate::bounded_io::BoundedLineError::Io(error)) => break ProcessOutcome::Failed(io_error(error)),
+                    Err(crate::bounded_io::BoundedLineError::InvalidUtf8) => {
+                        break ProcessOutcome::Failed(protocol_error("Claude Code emitted invalid UTF-8"));
+                    }
                 }
             }
         }

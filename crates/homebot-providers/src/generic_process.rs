@@ -15,7 +15,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 use tokio::{
-    io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
+    io::{AsyncWriteExt, BufReader},
     sync::{Mutex, mpsc, watch},
 };
 use uuid::Uuid;
@@ -190,11 +190,16 @@ async fn consume_generic(
                     break;
                 }
             }
-            read = reader.read_line(&mut line) => {
+            read = crate::bounded_io::read_line_bounded(&mut reader, &mut line, MAX_LINE_BYTES) => {
                 match read {
-                    Ok(0) | Err(_) => break,
-                    Ok(_) if line.len() > MAX_LINE_BYTES => {
+                    Ok(0) | Err(crate::bounded_io::BoundedLineError::Io(_)) => break,
+                    Err(crate::bounded_io::BoundedLineError::TooLong) => {
                         let _ = events.send(ProviderEvent::Failed { error: protocol_error("Generic provider message exceeded the limit") }).await;
+                        terminal = true;
+                        break;
+                    }
+                    Err(crate::bounded_io::BoundedLineError::InvalidUtf8) => {
+                        let _ = events.send(ProviderEvent::Failed { error: protocol_error("Generic provider emitted invalid UTF-8") }).await;
                         terminal = true;
                         break;
                     }

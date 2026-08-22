@@ -8,7 +8,7 @@ use std::{
     time::Duration,
 };
 use tokio::{
-    io::{AsyncBufReadExt, BufReader},
+    io::BufReader,
     process::{Child, ChildStdin, ChildStdout, Command},
     task::JoinHandle,
     time::Instant,
@@ -331,17 +331,17 @@ async fn read_bounded_stderr(
 ) -> BoundedDiagnostics {
     let mut reader = BufReader::new(stderr);
     let mut output = BoundedDiagnostics::default();
-    let mut buffer = Vec::new();
+    let mut line = String::new();
     loop {
-        buffer.clear();
-        let Ok(read) = reader.read_until(b'\n', &mut buffer).await else {
+        let Ok(read) = crate::bounded_io::read_line_bounded(&mut reader, &mut line, 4_096).await
+        else {
             output.truncated = true;
             break;
         };
         if read == 0 {
             break;
         }
-        let mut line = String::from_utf8_lossy(&buffer).trim_end().to_owned();
+        let mut line = line.trim_end().to_owned();
         for secret in &secret_values {
             line = line.replace(secret, "[REDACTED]");
         }

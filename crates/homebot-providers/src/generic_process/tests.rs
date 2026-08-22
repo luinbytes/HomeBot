@@ -158,3 +158,43 @@ async fn simple_command_resolves_only_from_the_selected_search_path()
     assert_eq!(run.events.recv().await, Some(ProviderEvent::Completed));
     Ok(())
 }
+
+#[cfg(unix)]
+#[tokio::test]
+async fn unterminated_oversized_frame_fails_and_reaps_the_process()
+-> Result<(), Box<dyn std::error::Error>> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let directory = tempfile::tempdir()?;
+    let binary = directory.path().join("oversized-community-provider");
+    std::fs::write(
+        &binary,
+        "#!/bin/sh\nIFS= read -r request\nhead -c 4194305 /dev/zero | tr '\\000' x\n",
+    )?;
+    let mut permissions = std::fs::metadata(&binary)?.permissions();
+    permissions.set_mode(0o700);
+    std::fs::set_permissions(&binary, permissions)?;
+    let adapter = GenericProcessAdapter::new(GenericProcessProfile::new(
+        ProviderAdapterId::new("community-oversized")?,
+        "Oversized Community Fixture",
+        &binary,
+    ));
+    let mut run = adapter
+        .start(StartRequest {
+            operation_id: Uuid::now_v7(),
+            bot_id: Uuid::now_v7(),
+            chat_id: Uuid::now_v7(),
+            prompt: "Hello".to_owned(),
+            model: None,
+            mode: crate::ExecutionMode::Normal,
+            attachments: Vec::new(),
+        })
+        .await?;
+    assert!(matches!(
+        run.events.recv().await,
+        Some(ProviderEvent::Failed { error })
+            if error.message == "Generic provider message exceeded the limit"
+    ));
+    assert!(run.events.recv().await.is_none());
+    Ok(())
+}

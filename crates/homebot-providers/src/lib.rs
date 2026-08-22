@@ -1,5 +1,6 @@
 //! Provider-neutral runtime boundary. Provider-native payloads terminate here.
 
+mod bounded_io;
 mod claude;
 mod codex;
 mod contracts;

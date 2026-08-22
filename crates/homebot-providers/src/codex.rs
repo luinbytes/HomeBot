@@ -21,7 +21,7 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use tokio::{
-    io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
+    io::{AsyncWriteExt, BufReader},
     process::{ChildStdin, ChildStdout},
     sync::{Mutex, mpsc, oneshot},
 };
@@ -489,14 +489,23 @@ impl CodexClient {
         let mut line = String::new();
         loop {
             line.clear();
-            let read = reader.read_line(&mut line).await.map_err(io_error)?;
+            let read = crate::bounded_io::read_line_bounded(
+                &mut reader,
+                &mut line,
+                MAX_PROTOCOL_LINE_BYTES,
+            )
+            .await
+            .map_err(|error| match error {
+                crate::bounded_io::BoundedLineError::Io(error) => io_error(error),
+                crate::bounded_io::BoundedLineError::InvalidUtf8 => {
+                    protocol_error("Codex App Server emitted invalid UTF-8")
+                }
+                crate::bounded_io::BoundedLineError::TooLong => {
+                    protocol_error("Codex App Server message exceeded the limit")
+                }
+            })?;
             if read == 0 {
                 return Err(unavailable("Codex App Server closed its event stream"));
-            }
-            if line.len() > MAX_PROTOCOL_LINE_BYTES {
-                return Err(protocol_error(
-                    "Codex App Server message exceeded the limit",
-                ));
             }
             let message: Value = serde_json::from_str(&line)
                 .map_err(|_| protocol_error("Codex App Server emitted invalid JSON"))?;

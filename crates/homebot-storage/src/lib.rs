@@ -16,7 +16,7 @@ use homebot_skills::{AppliedSkill, SkillDefinition};
 use homebot_vcs::{CheckpointPhase, ConversationReconciliation, WorkspaceMode};
 use serde_json::Value;
 use sqlx::{
-    Row, SqlitePool,
+    Row, Sqlite, SqlitePool, Transaction,
     migrate::MigrateError,
     sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous},
 };
@@ -28,7 +28,7 @@ use std::{
 };
 use uuid::Uuid;
 
-pub const SCHEMA_VERSION: u32 = 23;
+pub const SCHEMA_VERSION: u32 = 24;
 static MIGRATOR: std::sync::LazyLock<sqlx::migrate::Migrator> = std::sync::LazyLock::new(|| {
     use sqlx::migrate::{Migration, MigrationType, Migrator};
     use std::borrow::Cow;
@@ -136,6 +136,11 @@ static MIGRATOR: std::sync::LazyLock<sqlx::migrate::Migrator> = std::sync::LazyL
             23,
             "browser takeover leases",
             include_str!("../migrations/0023_browser_takeover_leases.sql"),
+        ),
+        (
+            24,
+            "pairing provenance",
+            include_str!("../migrations/0024_pairing_provenance.sql"),
         ),
     ]
     .into_iter()
@@ -5176,6 +5181,7 @@ impl Storage {
         owner_id: Uuid,
         id: Uuid,
         token_digest: &[u8; 32],
+        native_proof_digest: &[u8; 32],
         endpoint: &str,
         expected_origin: &str,
         endpoint_kind: &str,
@@ -5189,13 +5195,14 @@ impl Storage {
         }
         sqlx::query(
             "INSERT INTO pairing_credentials (
-                id, owner_id, token_digest, endpoint, expected_origin, endpoint_kind,
-                created_at_ms, expires_at_ms
-             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                id, owner_id, token_digest, native_proof_digest, endpoint, expected_origin,
+                endpoint_kind, created_at_ms, expires_at_ms
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(id.to_string())
         .bind(owner_id.to_string())
         .bind(token_digest.as_slice())
+        .bind(native_proof_digest.as_slice())
         .bind(endpoint)
         .bind(expected_origin)
         .bind(endpoint_kind)
@@ -5226,7 +5233,9 @@ impl Storage {
         &self,
         owner_id: Uuid,
         token_digest: &[u8; 32],
+        native_proof_digest: Option<&[u8; 32]>,
         request_origin: Option<&str>,
+        source_digest: &[u8; 32],
         device_id: Uuid,
         device_name: &str,
         session_digest: &[u8; 32],
@@ -5239,24 +5248,9 @@ impl Storage {
             .bind(now_ms.saturating_sub(rate_window_ms))
             .execute(&mut *transaction)
             .await?;
-        let global_attempts: i64 =
-            sqlx::query_scalar("SELECT count(*) FROM pairing_exchange_attempts")
-                .fetch_one(&mut *transaction)
-                .await?;
-        if global_attempts >= 30 {
-            transaction.rollback().await?;
-            return Err(StorageError::PairingRateLimited);
-        }
-        sqlx::query(
-            "INSERT INTO pairing_exchange_attempts (token_digest, attempted_at_ms) VALUES (?, ?)",
-        )
-        .bind(token_digest.as_slice())
-        .bind(now_ms)
-        .execute(&mut *transaction)
-        .await?;
         let row = sqlx::query(
-            "SELECT id, expected_origin, endpoint_kind, expires_at_ms, consumed_at_ms,
-                    failed_attempts
+            "SELECT id, expected_origin, native_proof_digest, endpoint_kind, expires_at_ms,
+                    consumed_at_ms, failed_attempts
              FROM pairing_credentials WHERE owner_id = ? AND token_digest = ?",
         )
         .bind(owner_id.to_string())
@@ -5264,28 +5258,39 @@ impl Storage {
         .fetch_optional(&mut *transaction)
         .await?;
         let Some(row) = row else {
+            if !record_unknown_pairing_attempt(
+                &mut transaction,
+                token_digest,
+                source_digest,
+                now_ms,
+            )
+            .await?
+            {
+                transaction.rollback().await?;
+                return Err(StorageError::PairingRateLimited);
+            }
             transaction.commit().await?;
             return Err(StorageError::PairingNotFound);
         };
         let pairing_id: String = row.try_get("id")?;
         let expected_origin: String = row.try_get("expected_origin")?;
+        let expected_native_proof: Option<Vec<u8>> = row.try_get("native_proof_digest")?;
         let endpoint_kind: String = row.try_get("endpoint_kind")?;
         let expires_at_ms: i64 = row.try_get("expires_at_ms")?;
         let consumed_at_ms: Option<i64> = row.try_get("consumed_at_ms")?;
         let failed_attempts: i64 = row.try_get("failed_attempts")?;
-        if consumed_at_ms.is_some() {
+        if let Err(error) =
+            pairing_credential_state(consumed_at_ms, expires_at_ms, failed_attempts, now_ms)
+        {
             transaction.commit().await?;
-            return Err(StorageError::PairingConsumed);
+            return Err(error);
         }
-        if expires_at_ms <= now_ms {
-            transaction.commit().await?;
-            return Err(StorageError::PairingExpired);
-        }
-        if failed_attempts >= 5 {
-            transaction.commit().await?;
-            return Err(StorageError::PairingRateLimited);
-        }
-        if request_origin.is_some_and(|origin| origin != expected_origin) {
+        if !pairing_provenance_matches(
+            request_origin,
+            native_proof_digest,
+            &expected_origin,
+            expected_native_proof.as_deref(),
+        ) {
             sqlx::query(
                 "UPDATE pairing_credentials SET failed_attempts = failed_attempts + 1 WHERE id = ?",
             )
@@ -5938,6 +5943,71 @@ async fn create_verified_migration_backup(
         )));
     }
     Ok(backup)
+}
+
+async fn record_unknown_pairing_attempt(
+    transaction: &mut Transaction<'_, Sqlite>,
+    token_digest: &[u8; 32],
+    source_digest: &[u8; 32],
+    now_ms: i64,
+) -> Result<bool, StorageError> {
+    let source_attempts: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM pairing_exchange_attempts WHERE source_digest = ?",
+    )
+    .bind(source_digest.as_slice())
+    .fetch_one(&mut **transaction)
+    .await?;
+    if source_attempts >= 30 {
+        return Ok(false);
+    }
+    sqlx::query(
+        "DELETE FROM pairing_exchange_attempts WHERE id IN (
+            SELECT id FROM pairing_exchange_attempts ORDER BY attempted_at_ms, id
+            LIMIT max((SELECT count(*) FROM pairing_exchange_attempts) - 9999, 0)
+         )",
+    )
+    .execute(&mut **transaction)
+    .await?;
+    sqlx::query(
+        "INSERT INTO pairing_exchange_attempts (token_digest, source_digest, attempted_at_ms)
+         VALUES (?, ?, ?)",
+    )
+    .bind(token_digest.as_slice())
+    .bind(source_digest.as_slice())
+    .bind(now_ms)
+    .execute(&mut **transaction)
+    .await?;
+    Ok(true)
+}
+
+fn pairing_provenance_matches(
+    request_origin: Option<&str>,
+    native_proof_digest: Option<&[u8; 32]>,
+    expected_origin: &str,
+    expected_native_proof: Option<&[u8]>,
+) -> bool {
+    match (request_origin, native_proof_digest) {
+        (Some(origin), None) => origin == expected_origin,
+        (None, Some(proof)) => expected_native_proof.is_some_and(|expected| proof == expected),
+        _ => false,
+    }
+}
+
+fn pairing_credential_state(
+    consumed_at_ms: Option<i64>,
+    expires_at_ms: i64,
+    failed_attempts: i64,
+    now_ms: i64,
+) -> Result<(), StorageError> {
+    if consumed_at_ms.is_some() {
+        Err(StorageError::PairingConsumed)
+    } else if expires_at_ms <= now_ms {
+        Err(StorageError::PairingExpired)
+    } else if failed_attempts >= 5 {
+        Err(StorageError::PairingRateLimited)
+    } else {
+        Ok(())
+    }
 }
 
 fn validated_device_name(device_name: &str) -> Result<&str, StorageError> {
@@ -8281,6 +8351,9 @@ mod tests {
         sqlx::raw_sql(include_str!("../migrations/0017_device_pairing.sql"))
             .execute(&pool)
             .await?;
+        sqlx::raw_sql(include_str!("../migrations/0024_pairing_provenance.sql"))
+            .execute(&pool)
+            .await?;
         let result = VcsOperationResultRecord {
             idempotency_key: Uuid::now_v7(),
             owner_id: owner,
@@ -8330,6 +8403,7 @@ mod tests {
                 owner,
                 pairing_id,
                 &[1; 32],
+                &[8; 32],
                 "http://127.0.0.1:7123",
                 "http://127.0.0.1:7123",
                 "loopback",
@@ -8341,7 +8415,9 @@ mod tests {
             .exchange_pairing_credential(
                 owner,
                 &[1; 32],
+                Some(&[8; 32]),
                 None,
+                &[9; 32],
                 Uuid::now_v7(),
                 "Upgrade fixture",
                 &[2; 32],
@@ -9403,6 +9479,7 @@ mod tests {
                 owner,
                 Uuid::now_v7(),
                 &[1; 32],
+                &[8; 32],
                 "https://expired.example",
                 "https://expired.example",
                 "custom_https",
@@ -9416,6 +9493,8 @@ mod tests {
                     owner,
                     &[1; 32],
                     None,
+                    Some("https://expired.example"),
+                    &[9; 32],
                     Uuid::now_v7(),
                     "Expired",
                     &[2; 32],
@@ -9431,6 +9510,7 @@ mod tests {
                 owner,
                 Uuid::now_v7(),
                 &[3; 32],
+                &[8; 32],
                 "https://homebot.example",
                 "https://homebot.example",
                 "custom_https",
@@ -9444,7 +9524,9 @@ mod tests {
                     .exchange_pairing_credential(
                         owner,
                         &[3; 32],
+                        None,
                         Some("https://wrong.example"),
+                        &[9; 32],
                         Uuid::now_v7(),
                         "Wrong origin",
                         &[4; 32],
@@ -9460,7 +9542,9 @@ mod tests {
                 .exchange_pairing_credential(
                     owner,
                     &[3; 32],
+                    None,
                     Some("https://homebot.example"),
+                    &[9; 32],
                     Uuid::now_v7(),
                     "Rate limited",
                     &[5; 32],
@@ -9476,6 +9560,7 @@ mod tests {
                 owner,
                 Uuid::now_v7(),
                 &[6; 32],
+                &[8; 32],
                 "http://127.0.0.1:7123",
                 "http://127.0.0.1:7123",
                 "loopback",
@@ -9487,7 +9572,9 @@ mod tests {
             .exchange_pairing_credential(
                 owner,
                 &[6; 32],
+                Some(&[8; 32]),
                 None,
+                &[9; 32],
                 Uuid::now_v7(),
                 "Persistent device",
                 &[7; 32],

@@ -178,10 +178,14 @@ class HomeBotClient(
             require(offer.token.startsWith("hbpair_") && offer.token.length <= 128) {
                 "Pairing credential is invalid"
             }
+            require(offer.proof.startsWith("hbproof_") && offer.proof.length <= 128) {
+                "Pairing proof is invalid"
+            }
             require(deviceName.trim().length in 1..80) { "Device name must contain 1 to 80 characters" }
             val request = ExchangePairingRequest(
                 request_id = UUID.randomUUID().toString(),
                 pairing_token = offer.token,
+                native_proof = offer.proof,
                 device_name = deviceName.trim(),
             )
             val response = executeJson(
@@ -1114,7 +1118,7 @@ class HomeBotClient(
         data class Failed(val reason: DisconnectReason) : Negotiation
     }
 
-    private data class PairingLink(val endpoint: String, val token: String) {
+    private data class PairingLink(val endpoint: String, val token: String, val proof: String) {
         companion object {
             fun parse(raw: String): PairingLink {
                 val uri = URI(raw.trim())
@@ -1131,6 +1135,7 @@ class HomeBotClient(
                 return PairingLink(
                     endpoint = values["endpoint"] ?: error("Pairing link omitted endpoint"),
                     token = values["token"] ?: error("Pairing link omitted token"),
+                    proof = values["proof"] ?: error("Pairing link omitted proof"),
                 )
             }
         }

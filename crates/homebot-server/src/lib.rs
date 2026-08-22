@@ -97,6 +97,39 @@ enum AuthenticatedIdentity {
     Device { id: Uuid },
 }
 
+impl AuthenticatedIdentity {
+    const fn device_id(&self) -> Uuid {
+        match self {
+            Self::Owner => Uuid::nil(),
+            Self::Device { id } => *id,
+        }
+    }
+
+    const fn is_owner(&self) -> bool {
+        matches!(self, Self::Owner)
+    }
+}
+
+async fn require_device_capability(
+    state: &AppState,
+    identity: &AuthenticatedIdentity,
+    request: &homebot_tools::CapabilityRequest,
+) -> Result<(), bots::ApiError> {
+    if identity.is_owner() {
+        return Ok(());
+    }
+    state.ensure_policy_loaded().await?;
+    match state.policy_engine.effect_for(request).await {
+        homebot_tools::PolicyEffect::Allow => Ok(()),
+        homebot_tools::PolicyEffect::Deny => Err(bots::ApiError::forbidden(
+            "This device is not allowed to perform that action",
+        )),
+        homebot_tools::PolicyEffect::RequireApproval => Err(bots::ApiError::forbidden(
+            "This device needs an owner capability rule before it can perform that action",
+        )),
+    }
+}
+
 #[derive(Clone)]
 pub struct AppState {
     storage: Storage,

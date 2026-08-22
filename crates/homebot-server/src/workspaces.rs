@@ -1,7 +1,7 @@
 //! Authenticated repository registration and per-chat isolated Git worktrees.
 
 use axum::{
-    Json,
+    Extension, Json,
     extract::{Path, State},
     http::StatusCode,
 };
@@ -11,12 +11,13 @@ use homebot_protocol::{
     WorkspaceBranchesResponse, WorkspaceMode,
 };
 use homebot_storage::{ChatWorkspaceRecord, IdempotencyClaim, RepositoryWorkspaceRecord};
+use homebot_tools::{CapabilityClass, CapabilityRequest, OperationContext};
 use homebot_vcs::{GitRuntime, VcsError};
 use std::sync::Arc;
 use uuid::Uuid;
 
 use crate::{
-    AppState,
+    AppState, AuthenticatedIdentity,
     bots::{ApiError, claim},
     persist_event, unix_time_ms,
 };
@@ -29,8 +30,34 @@ pub(super) async fn list(
 
 pub(super) async fn create(
     State(state): State<AppState>,
+    Extension(identity): Extension<AuthenticatedIdentity>,
     Json(request): Json<CreateRepositoryWorkspaceRequest>,
 ) -> Result<(StatusCode, Json<RepositoryWorkspaceSummary>), ApiError> {
+    let runtime = runtime(&state)?;
+    let inspection = runtime
+        .inspect_repository(std::path::Path::new(&request.root_path))
+        .await
+        .map_err(|error| vcs_error(&error))?;
+    crate::require_device_capability(
+        &state,
+        &identity,
+        &CapabilityRequest {
+            context: OperationContext {
+                operation_id: request.request_id,
+                owner_id: state.owner_id,
+                device_id: identity.device_id(),
+                bot_id: Uuid::nil(),
+                chat_id: Uuid::nil(),
+                workspace_id: request.idempotency_key,
+            },
+            capability: CapabilityClass::GitWrite,
+            action: "git.workspace.register".to_owned(),
+            canonical_resource: inspection.root.to_string_lossy().into_owned(),
+            summary: "Register a local repository workspace".to_owned(),
+            destructive: false,
+        },
+    )
+    .await?;
     let replayed = matches!(
         claim(
             &state,
@@ -51,11 +78,6 @@ pub(super) async fn create(
             Json(repository_summary(&state, &record).await),
         ));
     }
-    let runtime = runtime(&state)?;
-    let inspection = runtime
-        .inspect_repository(std::path::Path::new(&request.root_path))
-        .await
-        .map_err(|error| vcs_error(&error))?;
     let root_path = inspection
         .root
         .to_str()
@@ -118,9 +140,38 @@ pub(super) async fn chat(
 
 pub(super) async fn attach(
     State(state): State<AppState>,
+    Extension(identity): Extension<AuthenticatedIdentity>,
     Path(chat_id): Path<Uuid>,
     Json(request): Json<AttachChatWorkspaceRequest>,
 ) -> Result<(StatusCode, Json<ChatWorkspaceSummary>), ApiError> {
+    let workspace = state
+        .storage
+        .repository_workspace(state.owner_id, request.workspace_id)
+        .await?;
+    let chat = state
+        .storage
+        .get_direct_chat(state.owner_id, chat_id)
+        .await?;
+    crate::require_device_capability(
+        &state,
+        &identity,
+        &CapabilityRequest {
+            context: OperationContext {
+                operation_id: request.request_id,
+                owner_id: state.owner_id,
+                device_id: identity.device_id(),
+                bot_id: chat.bot_id,
+                chat_id,
+                workspace_id: workspace.id,
+            },
+            capability: CapabilityClass::GitWrite,
+            action: "git.workspace.attach".to_owned(),
+            canonical_resource: format!("workspace:{}:chat:{chat_id}", workspace.id),
+            summary: "Attach a repository workspace to a chat".to_owned(),
+            destructive: request.mode == WorkspaceMode::Isolated,
+        },
+    )
+    .await?;
     let replayed = matches!(
         claim(
             &state,
@@ -147,10 +198,6 @@ pub(super) async fn attach(
     {
         return Err(ApiError::conflict("This chat already has a workspace"));
     }
-    let workspace = state
-        .storage
-        .repository_workspace(state.owner_id, request.workspace_id)
-        .await?;
     let runtime = runtime(&state)?;
     let inspection = runtime
         .inspect_repository(std::path::Path::new(&workspace.root_path))
@@ -196,9 +243,39 @@ pub(super) async fn attach(
 
 pub(super) async fn detach(
     State(state): State<AppState>,
+    Extension(identity): Extension<AuthenticatedIdentity>,
     Path(chat_id): Path<Uuid>,
     Json(request): Json<DetachChatWorkspaceRequest>,
 ) -> Result<StatusCode, ApiError> {
+    let chat = state
+        .storage
+        .get_direct_chat(state.owner_id, chat_id)
+        .await?;
+    let workspace_id = state
+        .storage
+        .chat_workspace(state.owner_id, chat_id)
+        .await?
+        .map_or(Uuid::nil(), |workspace| workspace.workspace_id);
+    crate::require_device_capability(
+        &state,
+        &identity,
+        &CapabilityRequest {
+            context: OperationContext {
+                operation_id: request.request_id,
+                owner_id: state.owner_id,
+                device_id: identity.device_id(),
+                bot_id: chat.bot_id,
+                chat_id,
+                workspace_id,
+            },
+            capability: CapabilityClass::GitWrite,
+            action: "git.workspace.detach".to_owned(),
+            canonical_resource: format!("workspace:{workspace_id}:chat:{chat_id}"),
+            summary: "Detach a repository workspace from a chat".to_owned(),
+            destructive: true,
+        },
+    )
+    .await?;
     let replayed = matches!(
         claim(
             &state,

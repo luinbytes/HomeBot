@@ -6,7 +6,7 @@ use super::{
     persist_event, unix_time_ms,
 };
 use axum::{
-    Json,
+    Extension, Json,
     extract::{Path, State},
     http::StatusCode,
 };
@@ -19,6 +19,8 @@ use homebot_storage::{PluginConnectionUpdate, PluginRecord, PluginToolRecord};
 use serde::{Deserialize, Serialize};
 use std::{ffi::OsString, path::PathBuf};
 use uuid::Uuid;
+
+use crate::AuthenticatedIdentity;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -40,8 +42,10 @@ pub(super) async fn list(
 
 pub(super) async fn create(
     State(state): State<AppState>,
+    Extension(identity): Extension<AuthenticatedIdentity>,
     Json(request): Json<CreateLocalMcpPluginRequest>,
 ) -> Result<(StatusCode, Json<PluginSummary>), ApiError> {
+    require_owner(&identity)?;
     let _ = claim(
         &state,
         request.idempotency_key,
@@ -103,9 +107,11 @@ pub(super) async fn create(
 
 pub(super) async fn connect(
     State(state): State<AppState>,
+    Extension(identity): Extension<AuthenticatedIdentity>,
     Path(plugin_id): Path<Uuid>,
     Json(request): Json<PluginMutationRequest>,
 ) -> Result<Json<PluginSummary>, ApiError> {
+    require_owner(&identity)?;
     let _ = claim(
         &state,
         request.idempotency_key,
@@ -192,9 +198,11 @@ pub(super) fn adapter_for(record: &PluginRecord) -> Result<LocalMcpAdapter, ApiE
 
 pub(super) async fn enable(
     State(state): State<AppState>,
+    Extension(identity): Extension<AuthenticatedIdentity>,
     Path(plugin_id): Path<Uuid>,
     Json(request): Json<PluginMutationRequest>,
 ) -> Result<Json<PluginSummary>, ApiError> {
+    require_owner(&identity)?;
     set_enabled(&state, plugin_id, request, true)
         .await
         .map(Json)
@@ -202,9 +210,11 @@ pub(super) async fn enable(
 
 pub(super) async fn disable(
     State(state): State<AppState>,
+    Extension(identity): Extension<AuthenticatedIdentity>,
     Path(plugin_id): Path<Uuid>,
     Json(request): Json<PluginMutationRequest>,
 ) -> Result<Json<PluginSummary>, ApiError> {
+    require_owner(&identity)?;
     set_enabled(&state, plugin_id, request, false)
         .await
         .map(Json)
@@ -259,9 +269,11 @@ async fn set_enabled(
 
 pub(super) async fn assign(
     State(state): State<AppState>,
+    Extension(identity): Extension<AuthenticatedIdentity>,
     Path(plugin_id): Path<Uuid>,
     Json(request): Json<PluginAssignmentRequest>,
 ) -> Result<Json<PluginSummary>, ApiError> {
+    require_owner(&identity)?;
     let _ = claim(
         &state,
         request.idempotency_key,
@@ -284,8 +296,10 @@ pub(super) async fn assign(
 
 pub(super) async fn delete(
     State(state): State<AppState>,
+    Extension(identity): Extension<AuthenticatedIdentity>,
     Path(plugin_id): Path<Uuid>,
 ) -> Result<StatusCode, ApiError> {
+    require_owner(&identity)?;
     state
         .storage
         .delete_plugin(state.owner_id, plugin_id)
@@ -367,4 +381,14 @@ fn optional_visible(value: &str, max: usize, label: &str) -> Result<String, ApiE
         return Err(ApiError::validation(&format!("{label} is invalid")));
     }
     Ok(value.trim().to_owned())
+}
+
+fn require_owner(identity: &AuthenticatedIdentity) -> Result<(), ApiError> {
+    if identity.is_owner() {
+        Ok(())
+    } else {
+        Err(ApiError::forbidden(
+            "Only the HomeBot owner can change local plugins",
+        ))
+    }
 }

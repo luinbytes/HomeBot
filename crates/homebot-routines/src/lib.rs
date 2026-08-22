@@ -215,6 +215,15 @@ pub fn definition_from_recording(
 #[async_trait]
 pub trait RoutineActionExecutor: Send + Sync {
     async fn validate_step(&self, step: &RoutineStep, inputs: &Value) -> Result<(), RoutineError>;
+    /// Returns whether authoritative policy requires an approval before this
+    /// step can run. The default preserves definition-authored behavior.
+    async fn approval_required(
+        &self,
+        step: &RoutineStep,
+        _inputs: &Value,
+    ) -> Result<bool, RoutineError> {
+        Ok(step.requires_approval())
+    }
     async fn execute_step(&self, step: &RoutineStep, inputs: &Value)
     -> Result<Value, RoutineError>;
 }
@@ -245,7 +254,7 @@ pub async fn replay(
                 status: RoutineStepStatus::Planned,
                 output: None,
             });
-        } else if step.requires_approval() {
+        } else if executor.approval_required(step, inputs).await? {
             results.push(RoutineExecutionResult {
                 step_index,
                 status: RoutineStepStatus::ApprovalRequired,

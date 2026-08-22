@@ -1,13 +1,13 @@
 //! Authenticated versioned routine editor, recorder, and manual replay API.
 
 use super::{
-    AppState,
+    AppState, AuthenticatedIdentity,
     bots::{ApiError, claim},
     persist_event, unix_time_ms,
 };
 use async_trait::async_trait;
 use axum::{
-    Json,
+    Extension, Json,
     extract::{Path, State},
     http::StatusCode,
 };
@@ -25,6 +25,7 @@ use homebot_storage::IdempotencyClaim;
 use homebot_storage::{
     RoutineJobRecord, RoutineRecord, RoutineRecordingRecord, RoutineRunRecord, RoutineUpdate,
 };
+use homebot_tools::{CapabilityClass, CapabilityRequest, OperationContext, PolicyEffect};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
@@ -345,17 +346,23 @@ pub(super) async fn cancel_recording(
 
 pub(super) async fn run_now(
     State(state): State<AppState>,
+    Extension(identity): Extension<AuthenticatedIdentity>,
     Path(routine_id): Path<Uuid>,
     Json(request): Json<RunRoutineRequest>,
 ) -> Result<Json<RoutineRunSummary>, ApiError> {
-    execute(&state, routine_id, request, false).await.map(Json)
+    execute(&state, routine_id, request, false, identity.device_id())
+        .await
+        .map(Json)
 }
 pub(super) async fn dry_run(
     State(state): State<AppState>,
+    Extension(identity): Extension<AuthenticatedIdentity>,
     Path(routine_id): Path<Uuid>,
     Json(request): Json<RunRoutineRequest>,
 ) -> Result<Json<RoutineRunSummary>, ApiError> {
-    execute(&state, routine_id, request, true).await.map(Json)
+    execute(&state, routine_id, request, true, identity.device_id())
+        .await
+        .map(Json)
 }
 
 async fn execute(
@@ -363,6 +370,7 @@ async fn execute(
     routine_id: Uuid,
     request: RunRoutineRequest,
     dry_run: bool,
+    device_id: Uuid,
 ) -> Result<RoutineRunSummary, ApiError> {
     let claim = claim(
         state,
@@ -391,6 +399,8 @@ async fn execute(
     let executor = ServerExecutor {
         state,
         routine_bot_id: routine.bot_id,
+        operation_id: request.request_id,
+        device_id,
     };
     let (results, status, error_message) =
         match replay(&executor, &routine.definition, &request.inputs, dry_run).await {
@@ -451,6 +461,8 @@ pub(super) async fn execute_job(
     let executor = ServerExecutor {
         state,
         routine_bot_id: routine.bot_id,
+        operation_id: job.id,
+        device_id: Uuid::nil(),
     };
     let (results, status, error_message) =
         match replay(&executor, &routine.definition, &job.inputs, false).await {
@@ -525,6 +537,8 @@ pub(super) async fn runs(
 struct ServerExecutor<'a> {
     state: &'a AppState,
     routine_bot_id: Uuid,
+    operation_id: Uuid,
+    device_id: Uuid,
 }
 #[async_trait]
 impl RoutineActionExecutor for ServerExecutor<'_> {
@@ -576,6 +590,47 @@ impl RoutineActionExecutor for ServerExecutor<'_> {
         }
         Ok(())
     }
+
+    async fn approval_required(
+        &self,
+        step: &RoutineStep,
+        _inputs: &Value,
+    ) -> Result<bool, RoutineError> {
+        let RoutineStep::PluginTool {
+            plugin_id,
+            tool_name,
+            requires_approval,
+            ..
+        } = step
+        else {
+            return Ok(step.requires_approval());
+        };
+        self.state
+            .ensure_policy_loaded()
+            .await
+            .map_err(|_| RoutineError::StepFailed)?;
+        let request = CapabilityRequest {
+            context: OperationContext {
+                operation_id: self.operation_id,
+                owner_id: self.state.owner_id,
+                device_id: self.device_id,
+                bot_id: self.routine_bot_id,
+                chat_id: Uuid::nil(),
+                workspace_id: Uuid::nil(),
+            },
+            capability: CapabilityClass::PluginWrite,
+            action: format!("plugin.tool.call.{tool_name}"),
+            canonical_resource: format!("plugin:{plugin_id}:tool:{tool_name}"),
+            summary: format!("Run plugin tool {tool_name} from a routine"),
+            destructive: true,
+        };
+        match self.state.policy_engine.effect_for(&request).await {
+            PolicyEffect::Deny => Err(RoutineError::StepFailed),
+            PolicyEffect::RequireApproval => Ok(true),
+            PolicyEffect::Allow => Ok(*requires_approval),
+        }
+    }
+
     async fn execute_step(
         &self,
         step: &RoutineStep,

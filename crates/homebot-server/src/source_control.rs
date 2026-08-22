@@ -1,7 +1,7 @@
 //! Authenticated, server-owned source-control surfaces and remote-operation approvals.
 
 use axum::{
-    Json,
+    Extension, Json,
     extract::{Path, Query, State},
     http::StatusCode,
 };
@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use uuid::Uuid;
 
 use crate::{
-    AppState,
+    AppState, AuthenticatedIdentity,
     bots::{ApiError, claim},
     unix_time_ms,
 };
@@ -67,10 +67,22 @@ pub(super) async fn diff(
 
 pub(super) async fn commit(
     State(state): State<AppState>,
+    Extension(identity): Extension<AuthenticatedIdentity>,
     Path(chat_id): Path<Uuid>,
     Json(request): Json<VcsCommitRequest>,
 ) -> Result<(StatusCode, Json<VcsCommitResult>), ApiError> {
-    let (_, path) = super::checkpoints::workspace_path(&state, chat_id).await?;
+    let (workspace, path) = super::checkpoints::workspace_path(&state, chat_id).await?;
+    authorize_local_write(
+        &state,
+        &identity,
+        chat_id,
+        workspace.workspace_id,
+        request.request_id,
+        "git.commit",
+        "Create a Git commit",
+        false,
+    )
+    .await?;
     let replayed =
         claim_mutation(&state, chat_id, request.idempotency_key, "commit", &request).await?;
     if replayed {
@@ -90,10 +102,22 @@ pub(super) async fn commit(
 
 pub(super) async fn create_branch(
     State(state): State<AppState>,
+    Extension(identity): Extension<AuthenticatedIdentity>,
     Path(chat_id): Path<Uuid>,
     Json(request): Json<VcsCreateBranchRequest>,
 ) -> Result<(StatusCode, Json<VcsStatus>), ApiError> {
-    let (_, path) = super::checkpoints::workspace_path(&state, chat_id).await?;
+    let (workspace, path) = super::checkpoints::workspace_path(&state, chat_id).await?;
+    authorize_local_write(
+        &state,
+        &identity,
+        chat_id,
+        workspace.workspace_id,
+        request.request_id,
+        "git.branch.create",
+        "Create a Git branch",
+        false,
+    )
+    .await?;
     let replayed = claim_mutation(
         &state,
         chat_id,
@@ -134,6 +158,7 @@ pub(super) async fn create_branch(
 
 pub(super) async fn push(
     State(state): State<AppState>,
+    Extension(identity): Extension<AuthenticatedIdentity>,
     Path(chat_id): Path<Uuid>,
     Json(request): Json<VcsPushRequest>,
 ) -> Result<(StatusCode, Json<VcsRemoteMutationResponse>), ApiError> {
@@ -162,7 +187,7 @@ pub(super) async fn push(
         context: OperationContext {
             operation_id: request.request_id,
             owner_id: state.owner_id,
-            device_id: Uuid::nil(),
+            device_id: identity.device_id(),
             bot_id: chat.bot_id,
             chat_id,
             workspace_id: workspace.workspace_id,
@@ -255,6 +280,7 @@ pub(super) async fn pull_request_metadata(
 #[allow(clippy::too_many_lines)]
 pub(super) async fn create_pull_request(
     State(state): State<AppState>,
+    Extension(identity): Extension<AuthenticatedIdentity>,
     Path(chat_id): Path<Uuid>,
     Json(request): Json<CreatePullRequestRequest>,
 ) -> Result<(StatusCode, Json<PullRequestMutationResponse>), ApiError> {
@@ -294,7 +320,7 @@ pub(super) async fn create_pull_request(
         context: OperationContext {
             operation_id: request.request_id,
             owner_id: state.owner_id,
-            device_id: Uuid::nil(),
+            device_id: identity.device_id(),
             bot_id: chat.bot_id,
             chat_id,
             workspace_id: workspace.workspace_id,
@@ -498,6 +524,39 @@ async fn publish(state: &AppState, chat_id: Uuid, status: VcsStatus) -> Result<(
     .await
 }
 
+#[allow(clippy::too_many_arguments)]
+async fn authorize_local_write(
+    state: &AppState,
+    identity: &AuthenticatedIdentity,
+    chat_id: Uuid,
+    workspace_id: Uuid,
+    operation_id: Uuid,
+    action: &str,
+    summary: &str,
+    destructive: bool,
+) -> Result<(), ApiError> {
+    let chat = state
+        .storage
+        .get_direct_chat(state.owner_id, chat_id)
+        .await?;
+    let capability = CapabilityRequest {
+        context: OperationContext {
+            operation_id,
+            owner_id: state.owner_id,
+            device_id: identity.device_id(),
+            bot_id: chat.bot_id,
+            chat_id,
+            workspace_id,
+        },
+        capability: CapabilityClass::GitWrite,
+        action: action.to_owned(),
+        canonical_resource: format!("workspace:{workspace_id}:chat:{chat_id}"),
+        summary: summary.to_owned(),
+        destructive,
+    };
+    crate::require_device_capability(state, identity, &capability).await
+}
+
 fn runtime(state: &AppState) -> Result<std::sync::Arc<homebot_vcs::GitRuntime>, ApiError> {
     state
         .git_runtime
@@ -511,7 +570,7 @@ fn vcs_error(error: &homebot_vcs::VcsError) -> ApiError {
 
 fn policy_error(error: &ToolError) -> ApiError {
     match error {
-        ToolError::Denied => ApiError::conflict("Git remote operation was denied"),
+        ToolError::Denied => ApiError::forbidden("Git remote operation was denied"),
         ToolError::InvalidApproval => {
             ApiError::conflict("Git remote approval is invalid or no longer usable")
         }

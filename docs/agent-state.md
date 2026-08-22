@@ -6,11 +6,11 @@ This file is operational state for coding agents. It is not user-facing product 
 
 ## Current state
 
-- Current milestone: M6 packaging, hardening and the v1 parity gate. M0 through M5 are verified complete after the final coherence corrections passed remote CI.
-- Current Linear issues: 6C7-66 and 6C7-75 remain externally blocked `In Progress`; final gate 6C7-71 remains Todo and its blocker graph contains only those two issues. Corrective issues 6C7-80, 6C7-82, 6C7-88 and 6C7-89 are verified Done.
+- Current milestone: M6 packaging, hardening and the v1 parity gate. M1, M2 and M5 are temporarily reopened while the final coherence corrections receive remote verification; the implementation is on public `main`.
+- Current Linear issues: 6C7-66 and 6C7-75 remain externally blocked `In Progress`; final gate 6C7-71 remains Todo and blocked by them plus the active corrective issues 6C7-80, 6C7-82, 6C7-88 and 6C7-89 until their exact tree passes remote CI.
 - Current Git branch: public `main` is authoritative. Local audit commits may have different metadata when authenticated publication uses GitHub's blob/tree/commit/ref API; compare exact trees rather than local commit IDs.
-- Latest public and verified implementation commit: `6e98b9a8f05ac417fd0e26651523ebb674c24bb0` (exact implementation tree `b12e53dec734f8ad438924479d68410148098304`). It adds complete Android Bot/routine management parity, restores safe simple-command resolution for production generic-process profiles, and removes an unsupported desktop reaction glyph from the production path and checked-in screenshots.
-- Latest verified GitHub Actions run: `32577987026`, all sixteen jobs passed for exact final audit tree `8004f556c1d09507db75fd8157e6b4135b2823c8`, now public at merge commit `e6b380c87fce6c277b85a13c914743f42fd23be2`. The run includes Android lint/tests/debug and minified builds/CI-only signing, strict Rust quality, dependency gates, Linux and both macOS builds/goldens/packages/resources, Arch lifecycle, security, protocol generation and performance/accessibility checks.
+- Latest public implementation commit: `6e98b9a8f05ac417fd0e26651523ebb674c24bb0` (exact implementation tree `b12e53dec734f8ad438924479d68410148098304`). It adds complete Android Bot/routine management parity, restores safe simple-command resolution for production generic-process profiles, and removes an unsupported desktop reaction glyph from the production path and checked-in screenshots.
+- Latest verified GitHub Actions run: `32575392734`, all sixteen jobs passed for documentation tree `90039323c7b9ea6509a8cb9013961239a141bd0e`, merged as public `main` commit `a523c55b2ae4548b93ed49493dd45499571854c2`. The latest product implementation remains `9ba660df513b2de0d2f3d02b8501b955ad4714e2` (tree `29958ae7bdc4bf4c9560e2be2a8cb883f8cdd03f`).
 - Public repository: `https://github.com/luinbytes/HomeBot`.
 - Required commit identity: `luinbytes <42706009+luinbytes@users.noreply.github.com>`.
 
@@ -38,7 +38,7 @@ Architecture decisions currently frozen:
 
 Current blockers:
 
-- The coherence audit found and closed three non-external gaps: Android lacked reachable complete Bot and routine management controls (6C7-82/89), production generic-process profiles could not resolve a configured simple command after clearing their child environment (6C7-88), and the default desktop reaction control rendered an unsupported glyph (6C7-80). Exact final tree `8004f556c1d09507db75fd8157e6b4135b2823c8` passed all sixteen remote jobs. No additional automatable release blocker remains.
+- The coherence audit found three non-external gaps and tracks them narrowly: Android lacked reachable complete Bot and routine management controls (6C7-82/89), production generic-process profiles could not resolve a configured simple command after clearing their child environment (6C7-88), and the default desktop reaction control rendered an unsupported glyph (reopened 6C7-80). Corrections are public on `main`; keep these issues and their M1/M2/M5 epics open until remote CI verifies the exact tree.
 - External final-release blockers remain: neither Codex nor Claude is installed/authenticated for genuine provider smoke tests; Apple Developer ID/notarisation credentials and clean Intel/Apple Silicon machines are unavailable; and physical Arch/Omarchy and Android devices with VoiceOver/TalkBack-equivalent acceptance facilities are unavailable.
 - `egui` 0.32.3 transitively uses unmaintained `ttf-parser` 0.25.1. RUSTSEC-2026-0192 reports no known vulnerability or safe upgrade; the exact-revision 6C7-69 review accepted the warning with a required pre-v1 dependency recheck.
 
@@ -64,8 +64,8 @@ Current blockers:
 - 6C7-63, Android routine/run/trigger controls, Skills assignment, plugin/MCP controls, provider/endpoint settings, opaque secret references and paired-device self management with owner administration still denied.
 - 6C7-64, event-driven Android Bot/approval/routine/error notifications, exact deep links and connectivity-driven reconnect without permanent polling.
 - M5 epic 6C7-59: native Android and secure remote parity verified complete.
-- 6C7-82 and 6C7-89 corrective implementation: Android now reaches every authoritative routine create/edit/duplicate/delete/dry-run/recording mutation and every Bot pin/hide/review-hidden/duplicate/archive/delete mutation, with exact route/authentication tests and server-projection refresh after success.
-- 6C7-88 corrective implementation: a production generic-process profile seeds only the selected executable search path into its otherwise cleared environment, resolves before launch, and remains shell-free.
+- 6C7-82 and 6C7-89 corrective implementation: Android now reaches every authoritative routine create/edit/duplicate/delete/dry-run/recording mutation and every Bot pin/hide/review-hidden/duplicate/archive/delete mutation, with exact route/authentication tests and server-projection refresh after success. Completion awaits remote CI.
+- 6C7-88 corrective implementation: a production generic-process profile seeds only the selected executable search path into its otherwise cleared environment, resolves before launch, and remains shell-free. Completion awaits remote CI.
 - 6C7-67, AUR-ready Arch/Omarchy desktop and headless packaging with a clean install/update/uninstall CI lifecycle.
 - 6C7-68, explicit manifest-driven desktop update staging, verified pre-migration backups, too-new-schema refusal and deterministic recovery coverage.
 - 6C7-69, repository-wide security hardening, parser/resource bounds, hostile repository/MCP/provider fixtures, all-capability negative approvals and a clean exact-revision security scan.
@@ -88,7 +88,7 @@ Current blockers:
 
 Verified at the latest remote baseline:
 
-- GitHub Actions run `32577987026` passed all sixteen jobs for exact coherence-audit tree `8004f556c1d09507db75fd8157e6b4135b2823c8`, merged as public `main` commit `e6b380c87fce6c277b85a13c914743f42fd23be2`. Android quality compiled and validated the full authoritative Bot/routine management path; Rust quality covered the generic-process regression and generated contract; all production visual golden, package, security, dependency and resource jobs passed.
+- Coherence-audit candidate `99a0e7767f780f7d149b35602aaf4014c398e62c` contains implementation tree `b12e53dec734f8ad438924479d68410148098304` plus this operational-state reconciliation. Its pull-request CI is the required Android and cross-platform acceptance evidence before 6C7-80/82/88/89 can close.
 - GitHub Actions run `32536602259` passed all sixteen jobs for public 6C7-79 tree `daf86edd51011b5b87c310108f573bbecb16fdb2`, merged as `ca8edf47`. It verifies all HomeBot Rust packages/server/desktop as 1.0.0, Android BuildConfig and protocol identity from root `VERSION`, 1.0.0 minified/signed-pipeline APK, 1.0.0 Intel/Apple Silicon bundles, and clean Arch 1.0.0 install/update/uninstall with matching manifests/checksums.
 - GitHub Actions run `32534100793` passed all sixteen jobs for public 6C7-78 tree `97d83a132c116fc0b205bf61bbddd31064642b8e`, merged as `84084ff8`. Android lint/tests, debug and minified release assembly, ephemeral CI signing, `apksigner` verification, package/version validation, manifest/checksum generation and artifact upload all passed. The CI-only release-pipeline artifact from run `32533932893` has workflow-archive digest `sha256:03266a922fc915aa5c69b05ca7f235323d9a9cfb679457f1c45f8d6ba5ab787e` and is explicitly not a release candidate.
 - GitHub Actions run `32532554784` passed all sixteen jobs for macOS notarisation-pipeline tree `53f29dae2c1fdcf3d6b152efe24d90cdcad5e8d1`, merged as `a3f44842`. Automated evidence covers deterministic bundles, architecture validation, notarisation ZIPs, fail-closed Developer ID/notary commands, manifests and checksums; real Apple signing/notarisation and physical Macs remain open in 6C7-66/75.
@@ -149,7 +149,7 @@ Verified locally at the current baseline:
 - 6C7-58's complete local gate passes: strict all-target clippy, every workspace test suite, all 15 visual fixtures, schema drift, generated Android binding drift and cargo-deny advisories/bans/licenses/sources.
 - Its server fixtures prove typed steering priority/FIFO follow-ups, duplicate replay, cancel-order stability, restart durability, three automatic queued turns, default/plan/default capability routing, unsupported-mode denial, compaction/reset concurrency exclusion, transcript preservation, fresh provider-context isolation and restart recovery. The 32-test server suite passed three consecutive 16-thread stress runs after the SQLite write-reservation fix.
 
-6C7-73 and M0 through M5 remain verified Done. M6 epic 6C7-65 and macOS packaging issue 6C7-66 are In Progress.
+6C7-73 and M3/M4 remain verified Done. M1 epic 6C7-34, M2 epic 6C7-41 and M5 epic 6C7-59 are temporarily In Progress for the coherence corrections above. M6 epic 6C7-65 and macOS packaging issue 6C7-66 are In Progress.
 
 ## Known failures and incomplete implementation
 

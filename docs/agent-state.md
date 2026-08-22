@@ -6,11 +6,11 @@ This file is operational state for coding agents. It is not user-facing product 
 
 ## Current state
 
-- Current milestone: corrective M2/M3 production-client verification alongside M6 packaging, hardening and the v1 parity gate. M0, M1, M4 and M5 remain verified complete.
-- Current Linear issues: 6C7-52, authoritative desktop routine projection (`In Progress`, active); 6C7-81, README/agent-state reconciliation (`Todo`); 6C7-66 and 6C7-75 remain externally blocked `In Progress`. 6C7-80 and the corrective desktop group work in 6C7-45 are verified Done. Final gate 6C7-71 remains Todo.
-- Current Git branch: local `audit/6c7-75-release-readiness`, based on public `main`; the production desktop correction is in the working tree and is not yet remote-verified.
-- Latest public and verified implementation commit: `369f3555d7720313796a020efe79864be5c69fc6` (exact implementation tree `a4006e34df58730d1037b698ecb7c766d52684f0`). It includes production provider composition/release work plus the real `HomeBotApp` visual-parity correction and authoritative desktop group projection.
-- Latest verified GitHub Actions run: `32574135885`, all sixteen jobs passed for the production desktop tree, including Rust/release-version quality, Android, dependency, Linux/Arch packaging, both macOS architectures' production-app goldens/packages, and resource probes.
+- Current milestone: M6 packaging, hardening and the v1 parity gate. M0 through M5 are verified complete again after the production desktop corrections.
+- Current Linear issues: 6C7-81, README/agent-state reconciliation (`In Progress`, active); 6C7-66 and 6C7-75 remain externally blocked `In Progress`. 6C7-80, 6C7-45, 6C7-52, M2 epic 6C7-41 and M3 epic 6C7-48 are verified Done. Final gate 6C7-71 remains Todo.
+- Current Git branch: local `audit/6c7-75-release-readiness`; its verified implementation tree matches public `main`, with this documentation reconciliation pending publication.
+- Latest public and verified implementation commit: `9ba660df513b2de0d2f3d02b8501b955ad4714e2` (exact implementation tree `29958ae7bdc4bf4c9560e2be2a8cb883f8cdd03f`). It includes production provider/release work, the real `HomeBotApp` visual/group correction, and the complete authenticated desktop routine workflow.
+- Latest verified GitHub Actions run: `32574801691`, all sixteen jobs passed for the routine-corrected tree, including Rust/release-version quality, Android, dependency, Linux/Arch packaging, both macOS architectures' ten production-app goldens/packages, and resource probes.
 - Public repository: `https://github.com/luinbytes/HomeBot`.
 - Required commit identity: `luinbytes <42706009+luinbytes@users.noreply.github.com>`.
 
@@ -38,7 +38,7 @@ Architecture decisions currently frozen:
 
 Current blockers:
 
-- Non-external corrective work is active in 6C7-52 and 6C7-81. Production visual parity (6C7-80) and authoritative group transport (6C7-45) are remote-verified Done. The remaining routine correction is locally implemented and awaiting its complete gate/public evidence.
+- The only active non-external work is this 6C7-81 documentation reconciliation. Production visual parity, authoritative group transport, and the complete routine workflow are remote-verified Done.
 - External final-release blockers remain: neither Codex nor Claude is installed/authenticated for genuine provider smoke tests; Apple Developer ID/notarisation credentials and clean Intel/Apple Silicon machines are unavailable; and physical Arch/Omarchy and Android devices with VoiceOver/TalkBack-equivalent acceptance facilities are unavailable.
 - `egui` 0.32.3 transitively uses unmaintained `ttf-parser` 0.25.1. RUSTSEC-2026-0192 reports no known vulnerability or safe upgrade; the exact-revision 6C7-69 review accepted the warning with a required pre-v1 dependency recheck.
 
@@ -46,13 +46,13 @@ Current blockers:
 
 - M0 epic 6C7-30: baseline, parity inventory, protocol contract, and security model.
 - M1 epic 6C7-34: Rust/CI foundation, SQLite/outbox/recovery, authenticated HTTP/WebSocket transport, provider runtime, Codex, Claude/OpenAI-compatible/community adapters, and local filesystem/PTY/browser capabilities.
-- M2 epic 6C7-41 previously delivered the egui visual system, native shell, Bot lifecycle, direct chats, activity/artifact surfaces, settings/notifications and authenticated application/runtime lifecycle. It is reopened while 6C7-80 and the concrete desktop group projection correction in 6C7-45 are verified.
+- M2 epic 6C7-41: egui visual system, high-fidelity production shell, Bot lifecycle, direct/group chats, activity/artifact surfaces, settings/notifications and authenticated application/runtime lifecycle, including production-path corrective verification.
 - 6C7-50, local MCP/plugin registry, exact client recovery states, health/discovery, enablement/removal and per-Bot assignment.
-- 6C7-52's server-side durable routine create/edit/versioning, recording conversion, deterministic replay, dry run, Run now, approval preservation, restart persistence and failures remain verified. Its claimed production desktop projection was incomplete and is reopened for correction.
+- 6C7-52, durable routine create/edit/versioning, recording conversion, deterministic replay, dry run, Run now, approval preservation, restart persistence/failures, and complete authenticated production desktop list/editor/recording/history flows.
 - 6C7-73, real `HomeBotApp` authenticated transport, local authoritative-server supervision, snapshot/replay reconnect, HTTP mutation routing and restart/failure verification. M2 epic 6C7-41 is Done again with corrective evidence.
 - 6C7-53, durable headless one-shot/interval/timezone schedules, missed-run recovery, outbox-backed event/plugin triggers, deduplicated webhooks, version-pinned jobs, concurrency/overlap policy, retries, cancellation, redacted run history and v10→v11 migration safety.
 - 6C7-49, provider-neutral versioned Skills, authenticated library/import/export/assignment, deterministic provider assembly, exact historical message versions, desktop projection and Android/schema contract.
-- M3 epic 6C7-48's server, plugin/MCP, secret, scheduler and Skill work remains implemented; its status must reflect the reopened production desktop routine correction in 6C7-52.
+- M3 epic 6C7-48: plugins/MCP, OS-backed secrets, routine recording/replay/editor/history, schedules/triggers and reusable Skills.
 - 6C7-55, owner-scoped repository registration, primary/isolated per-chat workspaces, deterministic branches, guarded cleanup, authenticated protocol/events, desktop transport/projection and Android/schema parity.
 - 6C7-56, hidden-ref before/after turn checkpoints, exact binary-capable per-turn/full-chat diffs, safe restore, provider-conversation fork reconciliation, authenticated desktop/server contracts and Android/schema parity.
 - 6C7-57, normalized status/staged and unstaged diff/commit/branch/push/PR workflows, server-side capability approvals, durable exact replay, hostile-repository hook denial, authenticated desktop projection and Android/schema parity.
@@ -73,15 +73,14 @@ Current blockers:
 - 6C7-77, production provider configuration/registry composition, real `ProviderRuntime` injection into `AppState`, safe profile projection, configured Bot-turn resolution, clean configuration failures and fixture-provider exclusion.
 - 6C7-78, deterministic Android v1 version injection, minified release assembly, fail-closed APK signature/package/version verification, manifest/certificate evidence/checksums and explicitly non-release CI signing.
 - 6C7-79, single `1.0.0` candidate identity across Cargo/server/desktop, Android app/protocol client, macOS, Arch and Android packaging, with a fail-closed consistency gate.
-- Most recent completed issue: 6C7-79. Corrective issues 6C7-80, 6C7-45 and 6C7-52 are active and must not be represented as complete before remote verification.
+- Most recent completed implementation issue: 6C7-52's corrective production desktop workflow; 6C7-80 and 6C7-45 are also remote-verified Done.
 - Focused repository presentation pass: README badges and real desktop previews added from checked-in visual goldens; tracked-file hygiene audited with no junk removals required and `.gitignore` expanded for common Rust, Android, editor, environment, Python, Node, log and temporary outputs.
 
 ## Immediate next work
 
-1. Finish the production `HomeBotApp` correction: verify the eight production-path goldens, authenticated group/routine flows, full workspace gate and remote CI; then close 6C7-80/45/52 only with evidence and reconcile 6C7-41/48.
-2. Finish 6C7-81 by keeping README previews and roadmap wording synchronized with the production app and actual Linear state.
-3. On a macOS release host with Developer ID and stored notary credentials, run the exact commands in `docs/release-acceptance.md`; on authenticated provider and physical-platform hosts, execute 6C7-75's documented evidence matrix.
-4. Only after every corrective and external gate is genuinely Done, execute 6C7-71, create the immutable v1.0.0 tag/release, download every public artifact, reverify manifests/checksums/signatures, and close M6.
+1. Publish and remote-verify this final 6C7-81 documentation reconciliation, then close it with exact commit/CI evidence.
+2. On a macOS release host with Developer ID and stored notary credentials, run the exact commands in `docs/release-acceptance.md`; on authenticated provider and physical-platform hosts, execute 6C7-75's documented evidence matrix.
+3. Only after 6C7-66 and 6C7-75 are genuinely Done, execute 6C7-71, create the immutable v1.0.0 tag/release, download every public artifact, reverify manifests/checksums/signatures, and close M6.
 
 ## Verification state
 
@@ -144,11 +143,11 @@ Verified locally at the current baseline:
 - 6C7-58's complete local gate passes: strict all-target clippy, every workspace test suite, all 15 visual fixtures, schema drift, generated Android binding drift and cargo-deny advisories/bans/licenses/sources.
 - Its server fixtures prove typed steering priority/FIFO follow-ups, duplicate replay, cancel-order stability, restart durability, three automatic queued turns, default/plan/default capability routing, unsupported-mode denial, compaction/reset concurrency exclusion, transcript preservation, fresh provider-context isolation and restart recovery. The 32-test server suite passed three consecutive 16-thread stress runs after the SQLite write-reservation fix.
 
-6C7-73 remains verified Done. M2 epic 6C7-41 and M3 child 6C7-52 are reopened because production-path evidence exposed concrete client integration gaps; M4 and M5 remain verified Done. M6 epic 6C7-65 and macOS packaging issue 6C7-66 are In Progress.
+6C7-73 remains verified Done. M2 epic 6C7-41 and M3 epic 6C7-48 are verified Done again after the production visual/group/routine corrections passed remote CI. M4 and M5 remain verified Done. M6 epic 6C7-65 and macOS packaging issue 6C7-66 are In Progress.
 
 ## Known failures and incomplete implementation
 
-- 6C7-52 and 6C7-81 require pushed implementation, remote CI and final acceptance reconciliation. The previously published complete gate passed all 16 remote jobs. The routine correction adds authenticated create/edit/duplicate, demonstration recording/append/finish/cancel, Run now/dry run, enable/pause and run-history flows, a supervised-server round trip with restart persistence, and production routine editor/recording goldens. Its complete serialized `./scripts/check.sh` gate passes locally: 177 Rust tests, ten production screenshot scenarios, schema/generated Android drift, packaging, security, performance and accessibility checks.
+- 6C7-81 requires publication and remote CI. The complete routine correction is public and Actions `32574801691` passed all sixteen jobs: authenticated create/edit/duplicate, demonstration recording/append/finish/cancel, Run now/dry run, enable/pause, run-history, supervised restart persistence, ten production screenshots, schema/Android drift, packaging, security, performance and accessibility checks.
 - 6C7-66 remains In Progress because real Developer ID signing/notarisation/stapling and clean Intel/Apple Silicon first-run/provider discovery have not occurred. CI's ad-hoc artifacts and simulated notary responses do not satisfy it.
 - 6C7-75 remains In Progress because real authenticated Codex/Claude round trips and physical Intel Mac, Apple Silicon Mac, Arch/Omarchy and Android install/upgrade/accessibility checks are unavailable in this environment.
 - The Android production signing keystore and physical device are unavailable. CI's `ci-ephemeral` APK proves the pipeline only and must never be published as v1.

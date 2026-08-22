@@ -7,8 +7,10 @@ repository.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+base64.workspace = true
 egui.workspace = true
 eframe.workspace = true
+ed25519-dalek.workspace = true
 futures-util.workspace = true
 homebot-protocol.workspace = true
 homebot-server = { version = "=1.0.0", path = "../homebot-server" }

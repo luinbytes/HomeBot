@@ -29,6 +29,31 @@ assert manifest["protocol_minimum"] == 1
 assert manifest["protocol_maximum"] == 1
 assert len(manifest["sha256"]) == 64
 PY
+openssl genpkey -algorithm ED25519 -out "$temporary/update-private.pem" >/dev/null 2>&1
+scripts/sign-update-manifest.py \
+  --input "$temporary/manifest.json" --output "$temporary/update.json" \
+  --private-key "$temporary/update-private.pem"
+python3 - "$temporary/update.json" <<'PY'
+import base64
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as source:
+    manifest = json.load(source)
+assert manifest["schema_version"] == 2
+assert len(manifest["key_id"]) == 16
+assert len(base64.b64decode(manifest["signature"], validate=True)) == 64
+PY
+python3 scripts/release-manifest.py \
+  --output "$temporary/ci-manifest.json" --artifact Cargo.toml \
+  --platform linux --architecture x86_64 --version "$version" --signing ci-ephemeral
+if scripts/sign-update-manifest.py \
+  --input "$temporary/ci-manifest.json" --output "$temporary/unsafe-update.json" \
+  --private-key "$temporary/update-private.pem"; then
+  echo "CI-only artifact unexpectedly became an update candidate" >&2
+  exit 1
+fi
+test ! -e "$temporary/unsafe-update.json"
 python3 -c "import xml.etree.ElementTree as tree; tree.parse('packaging/arch/homebot.svg')"
 
 mkdir -p "$temporary/bin" "$temporary/HomeBot.app"

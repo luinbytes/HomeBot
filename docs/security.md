@@ -33,7 +33,7 @@ The local owner may perform local repository registration, worktree association,
 | Credential exfiltration | OS-backed secret store, explicit secret-aware tool, redaction, no generic model/log access | Ordinary tool/provider context cannot read a stored secret |
 | Malicious prompt or tool output | Treat content as data, capability checks after model decision, structured approval | Text saying “approved” never satisfies an approval |
 | Exposed LAN/public listener | Loopback default, explicit remote config, TLS requirement, startup warning, auth and rate limits | Fresh config refuses non-loopback bind |
-| Stolen pairing material | Short expiry, single use, digest-only storage, exact browser origin or separate native proof, source-aware invalid-token throttling, revocation | Missing/mixed provenance, second exchange, and post-expiry exchange fail; random tokens cannot block a valid offer |
+| Stolen pairing link | Short expiry, single use, hashed token, endpoint binding, rate limit, revocation | Second exchange and post-expiry exchange fail |
 | Path traversal | Canonicalise beneath approved roots, reject `..`, absolute escape, device paths | Traversal cannot read outside scope |
 | Symlink escape or race | Descriptor-relative operations where possible, revalidate target, no-follow policy | Symlink swap cannot escape root |
 | Command injection | Structured argv/cwd/env, no implicit shell, filtered environment | Metacharacters remain literal arguments |

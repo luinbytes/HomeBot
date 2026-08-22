@@ -149,6 +149,55 @@ fn clean_local_launch_supervises_server_and_persists_real_api_state()
         })
         .ok_or("missing chat event")?;
 
+    let mut group_bot_ids = vec![bot.id];
+    for name in ["Patch", "Scout"] {
+        transport.send(DesktopCommand::Bot(BotClientCommand::Create(draft(name))))?;
+        let created = receive_until(&transport, Duration::from_secs(10), |event| {
+            matches!(event, DesktopEvent::BotMutation(_))
+        })?;
+        group_bot_ids.push(
+            created
+                .iter()
+                .find_map(|event| match event {
+                    DesktopEvent::BotMutation(response) if response.bot.name == name => {
+                        Some(response.bot.id)
+                    }
+                    _ => None,
+                })
+                .ok_or("missing group Bot mutation")?,
+        );
+    }
+    transport.send(DesktopCommand::CreateGroup {
+        title: "Release crew".to_owned(),
+        bot_ids: group_bot_ids.clone(),
+        ownership_bot_id: group_bot_ids[0],
+    })?;
+    let group_id = receive_until(&transport, Duration::from_secs(10), |event| {
+        matches!(event, DesktopEvent::GroupCreated(_))
+    })?
+    .into_iter()
+    .find_map(|event| match event {
+        DesktopEvent::GroupCreated(response) => Some(response.group.id),
+        _ => None,
+    })
+    .ok_or("missing created group")?;
+    transport.send(DesktopCommand::Group {
+        chat_id: group_id,
+        command: GroupTimelineCommand::Send(crate::group_timeline::GroupComposerDraft {
+            content: "Coordinate the release".to_owned(),
+            mentioned_bot_ids: vec![group_bot_ids[1]],
+            shared_context_message_ids: Vec::new(),
+        }),
+    })?;
+    let group_timeline = receive_until(&transport, Duration::from_secs(10), |event| {
+        matches!(event, DesktopEvent::GroupTimeline(_))
+    })?;
+    assert!(group_timeline.iter().any(|event| matches!(
+        event,
+        DesktopEvent::GroupTimeline(timeline)
+            if timeline.group.id == group_id && timeline.messages.len() == 1
+    )));
+
     let repository = directory.path().join("repository");
     git_repository(&repository)?;
     transport.send(DesktopCommand::Workspace(
@@ -238,9 +287,10 @@ fn clean_local_launch_supervises_server_and_persists_real_api_state()
         _ => None,
     })
     .ok_or("missing restart snapshot")?;
-    assert_eq!(snapshot.bots.len(), 1);
+    assert_eq!(snapshot.bots.len(), 3);
     assert_eq!(snapshot.bots[0].name, "Nova");
     assert_eq!(snapshot.chats.len(), 1);
+    assert_eq!(snapshot.group_chats.len(), 1);
     Ok(())
 }
 

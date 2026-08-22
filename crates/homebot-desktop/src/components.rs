@@ -53,17 +53,121 @@ pub fn avatar(ui: &mut Ui, theme: HomeBotTheme, bot: BotIdentity<'_>, small: boo
             painter.add(Shape::convex_polygon(points, bot.color, Stroke::NONE))
         }
     };
-    painter.text(
-        rect.center(),
-        egui::Align2::CENTER_CENTER,
-        bot.initials,
-        theme.typography.font(if small {
-            theme.typography.micro
+    // HomeBot avatars are deliberately original, procedural characters. Their
+    // face geometry is derived from the stable identity instead of relying on
+    // generic initial badges or bundled artwork.
+    let seed = bot.name.bytes().fold(0_u32, |value, byte| {
+        value.wrapping_mul(31) + u32::from(byte)
+    });
+    let eye_y = rect.center().y - size * if small { 0.07 } else { 0.09 };
+    let eye_gap = size * (0.13 + f32::from((seed % 3) as u8) * 0.015);
+    let eye_radius = (size * 0.055).max(1.2);
+    for x in [rect.center().x - eye_gap, rect.center().x + eye_gap] {
+        painter.circle_filled(
+            egui::pos2(x, eye_y),
+            eye_radius,
+            theme.palette.avatar_foreground,
+        );
+    }
+    if !small {
+        let mouth_y = rect.center().y + size * 0.14;
+        let mouth_width = size * 0.18;
+        painter.line_segment(
+            [
+                egui::pos2(rect.center().x - mouth_width, mouth_y),
+                egui::pos2(rect.center().x + mouth_width, mouth_y),
+            ],
+            Stroke::new((size * 0.035).max(1.0), theme.palette.avatar_foreground),
+        );
+        let accent = egui::Rect::from_center_size(
+            egui::pos2(rect.right() - size * 0.12, rect.top() + size * 0.14),
+            Vec2::splat(size * 0.16),
+        );
+        painter.circle_filled(accent.center(), accent.width() / 2.0, theme.palette.canvas);
+    }
+}
+
+pub fn bot_tile(
+    ui: &mut Ui,
+    theme: HomeBotTheme,
+    bot: BotIdentity<'_>,
+    selected: bool,
+) -> egui::Response {
+    let fill = if selected {
+        theme.palette.surface_selected
+    } else {
+        theme.palette.transparent
+    };
+    Frame::NONE
+        .fill(fill)
+        .corner_radius(CornerRadius::same(theme.radii.md))
+        .inner_margin(egui::Margin::same(theme.insets.sm))
+        .show(ui, |ui| {
+            ui.set_min_size(Vec2::new(
+                crate::tokens::Layout::BOT_TILE_MIN_WIDTH,
+                theme.layout.bot_tile_height,
+            ));
+            ui.vertical_centered(|ui| {
+                avatar(ui, theme, bot, false);
+                ui.add_space(theme.spacing.xs);
+                ui.label(
+                    RichText::new(bot.name)
+                        .font(theme.typography.font(theme.typography.body_compact))
+                        .color(theme.palette.text_primary)
+                        .strong(),
+                );
+                ui.label(
+                    RichText::new(bot.role)
+                        .font(theme.typography.font(theme.typography.micro))
+                        .color(theme.palette.text_tertiary),
+                );
+            });
+        })
+        .response
+        .interact(Sense::click())
+}
+
+pub fn recent_conversation_row(
+    ui: &mut Ui,
+    theme: HomeBotTheme,
+    title: &str,
+    preview: &str,
+    metadata: &str,
+    selected: bool,
+) -> egui::Response {
+    Frame::NONE
+        .fill(if selected {
+            theme.palette.surface_selected
         } else {
-            theme.typography.caption
-        }),
-        theme.palette.avatar_foreground,
-    );
+            theme.palette.transparent
+        })
+        .corner_radius(CornerRadius::same(theme.radii.sm))
+        .inner_margin(egui::Margin::symmetric(theme.insets.sm, theme.insets.sm))
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.vertical(|ui| {
+                    ui.label(
+                        RichText::new(title)
+                            .strong()
+                            .color(theme.palette.text_primary),
+                    );
+                    ui.label(
+                        RichText::new(preview)
+                            .font(theme.typography.font(theme.typography.caption))
+                            .color(theme.palette.text_tertiary),
+                    );
+                });
+                ui.with_layout(Layout::right_to_left(Align::TOP), |ui| {
+                    ui.label(
+                        RichText::new(metadata)
+                            .font(theme.typography.font(theme.typography.micro))
+                            .color(theme.palette.text_tertiary),
+                    );
+                });
+            });
+        })
+        .response
+        .interact(Sense::click())
 }
 
 pub fn roster_row(
@@ -134,29 +238,51 @@ pub fn section_label(ui: &mut Ui, theme: HomeBotTheme, text: &str) {
 }
 
 pub fn message(ui: &mut Ui, theme: HomeBotTheme, bot: Option<BotIdentity<'_>>, text: &str) {
-    ui.horizontal_top(|ui| {
-        if let Some(identity) = bot {
-            avatar(ui, theme, identity, true);
+    let assistant = bot.is_some();
+    ui.with_layout(
+        if assistant {
+            Layout::left_to_right(Align::TOP)
         } else {
-            ui.add_space(theme.layout.avatar_small);
-        }
-        ui.add_space(theme.spacing.xs);
-        ui.vertical(|ui| {
+            Layout::right_to_left(Align::TOP)
+        },
+        |ui| {
             if let Some(identity) = bot {
-                ui.label(
-                    RichText::new(identity.name)
-                        .font(theme.typography.font(theme.typography.body_compact))
-                        .color(theme.palette.text_primary)
-                        .strong(),
-                );
+                avatar(ui, theme, identity, true);
+                ui.add_space(theme.spacing.xs);
             }
-            ui.label(
-                RichText::new(text)
-                    .font(theme.typography.font(theme.typography.body))
-                    .color(theme.palette.text_primary),
-            );
-        });
-    });
+            Frame::NONE
+                .fill(if assistant {
+                    theme.palette.surface
+                } else {
+                    theme.palette.surface_selected
+                })
+                .corner_radius(CornerRadius::same(theme.radii.lg))
+                .inner_margin(egui::Margin::symmetric(theme.insets.lg, theme.insets.md))
+                .show(ui, |ui| {
+                    ui.set_max_width(if assistant {
+                        theme.layout.assistant_message_max_width
+                    } else {
+                        theme.layout.user_message_max_width
+                    });
+                    if let Some(identity) = bot {
+                        ui.label(
+                            RichText::new(identity.name)
+                                .font(theme.typography.font(theme.typography.caption))
+                                .color(theme.palette.text_secondary)
+                                .strong(),
+                        );
+                    }
+                    ui.add(
+                        egui::Label::new(
+                            RichText::new(text)
+                                .font(theme.typography.font(theme.typography.body))
+                                .color(theme.palette.text_primary),
+                        )
+                        .wrap(),
+                    );
+                });
+        },
+    );
 }
 
 pub fn activity_card(ui: &mut Ui, theme: HomeBotTheme, title: &str, detail: &str, risky: bool) {

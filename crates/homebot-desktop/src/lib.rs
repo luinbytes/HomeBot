@@ -15,5 +15,6 @@ pub mod transport;
 pub mod updater;
 pub mod workspaces;
 
+pub use app::{ProductionFixtureState, render_production_fixture};
 pub use showcase::{FixtureState, render_fixture};
 pub use tokens::{HomeBotTheme, ThemeMode};

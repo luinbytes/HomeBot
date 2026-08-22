@@ -17,7 +17,7 @@ Bring the providers you already use, including Codex CLI, Claude Code, and OpenA
 
 ## Desktop preview
 
-Real renders from HomeBot's cross-platform desktop visual-regression suite.
+Deterministic renders of the production `HomeBotApp`, hydrated through the same server-owned projections used at runtime.
 
 | Bot roster | Chat and activity | Coding workflow |
 | --- | --- | --- |
@@ -39,18 +39,18 @@ Real renders from HomeBot's cross-platform desktop visual-regression suite.
 
 ### Still in progress before v1
 
-- The first-class native Android client and full mobile parity
-- Android notifications, background reconnect, deep links, routines/plugins/settings, and device management
-- macOS Intel/Apple Silicon release packaging and signing/notarisation
-- Arch/Omarchy packaging and headless service distribution
-- Updater, migration recovery, performance/accessibility budgets, security hardening, and the final parity gate
+- Final production-desktop fidelity verification against current, legitimate Grok Bot references
+- Final desktop group and routine workflow verification through the authenticated server transport
+- Developer ID signing, notarisation, and clean Intel/Apple Silicon first-run acceptance
+- Physical Arch/Omarchy and Android install, upgrade, reconnect, and assistive-technology acceptance
 - Real authenticated Codex CLI and Claude Code release smoke tests on environments where those providers are installed
+- The immutable final parity gate and public `v1.0.0` release
 
 The hosted cloud VM is the one intentional Grok Bot parity exclusion. Your HomeBot host replaces it.
 
 ## Status and installation
 
-HomeBot is currently in **M6: Packaging, Hardening & v1 Parity Gate**. M0 through M5 are complete. Native macOS/Arch package pipelines and migration/update recovery are active release workstreams.
+HomeBot is currently reconciling the final desktop parity corrections alongside **M6: Packaging, Hardening & v1 Parity Gate**. Automated Android, Arch, updater, recovery, security, performance, and unsigned macOS packaging gates are implemented. Production desktop comparison, live-provider acceptance, Apple signing/notarisation, and physical-platform validation remain open.
 
 There are still **no supported release packages**. Follow [INSTALL.md](INSTALL.md) for human installation status or [AGENT_INSTALL.md](AGENT_INSTALL.md) for deterministic automation instructions. Release readiness is tracked against [the parity matrix](docs/parity-matrix.md).
 
@@ -62,8 +62,8 @@ Supported v1 targets are macOS x86_64 and arm64, Linux x86_64 with Arch/Omarchy 
 | --- | --- |
 | M0 · Product & Architecture Baseline | Complete |
 | M1 · Local Runtime Foundation | Complete |
-| M2 · Grok Bot Desktop Parity | Complete |
-| M3 · Routines, Skills & Plugins | Complete |
+| M2 · Grok Bot Desktop Parity | In progress (production-path correction) |
+| M3 · Routines, Skills & Plugins | In progress (desktop projection correction) |
 | M4 · T3 Code Developer Superpowers | Complete |
 | M5 · Android & Remote Parity | Complete |
 | M6 · Packaging, Hardening & v1 Parity Gate | In progress |

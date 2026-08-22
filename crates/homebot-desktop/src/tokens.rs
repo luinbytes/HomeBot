@@ -80,13 +80,18 @@ pub struct Radii {
 #[derive(Clone, Copy, Debug)]
 pub struct Layout {
     pub reference_width: f32,
-    pub reference_height: f32,
     pub sidebar_width: f32,
     pub content_max_width: f32,
     pub titlebar_height: f32,
     pub roster_row_height: f32,
     pub avatar_size: f32,
     pub avatar_small: f32,
+    pub bot_tile_height: f32,
+    pub sidebar_search_height: f32,
+    pub sidebar_action_height: f32,
+    pub assistant_message_max_width: f32,
+    pub user_message_max_width: f32,
+    pub composer_editor_height: f32,
     pub composer_min_height: f32,
     pub composer_max_width: f32,
     pub empty_state_top_padding: f32,
@@ -305,15 +310,27 @@ impl Radii {
 }
 
 impl Layout {
+    pub const REFERENCE_HEIGHT: f32 = 760.0;
+    pub const SIDEBAR_MIN_WIDTH: f32 = 276.0;
+    pub const SIDEBAR_RATIO: f32 = 0.30;
+    pub const BOT_TILE_MIN_WIDTH: f32 = 116.0;
+    pub const COMPOSER_ACTION_RESERVE: f32 = 76.0;
+    pub const CONTEXTUAL_ACTION_HEIGHT: f32 = 24.0;
+
     const VALUES: Self = Self {
         reference_width: 1120.0,
-        reference_height: 760.0,
-        sidebar_width: 252.0,
+        sidebar_width: 324.0,
         content_max_width: 720.0,
         titlebar_height: 54.0,
         roster_row_height: 58.0,
-        avatar_size: 34.0,
+        avatar_size: 52.0,
         avatar_small: 24.0,
+        bot_tile_height: 104.0,
+        sidebar_search_height: 38.0,
+        sidebar_action_height: 34.0,
+        assistant_message_max_width: 620.0,
+        user_message_max_width: 500.0,
+        composer_editor_height: 42.0,
         composer_min_height: 74.0,
         composer_max_width: 720.0,
         empty_state_top_padding: 210.0,

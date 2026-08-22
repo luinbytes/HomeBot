@@ -1,8 +1,15 @@
 use eframe::egui;
-use egui::{Align, CentralPanel, Layout, RichText, SidePanel, TopBottomPanel};
+use egui::{
+    Align, CentralPanel, CornerRadius, Frame, Layout, RichText, SidePanel, Stroke, TopBottomPanel,
+};
 use homebot_protocol::{
-    BotAttention, BotColor, BotProviderStatus, BotShape, BotSummary, ChatSummary,
-    ProviderProfileSummary, PullRequestMetadata, ServerEvent, ServerEventBody, VcsStatus,
+    ActivityDetail, ActivityKind, ActivityPresentation, ActivityStatus, ActivitySummary,
+    ApprovalStatus, ApprovalSummary, BotAdvancedSettings, BotAttention, BotColor,
+    BotPermissionProfile, BotProviderStatus, BotShape, BotSummary, ChatSummary,
+    ChatTimelineResponse, GroupBotStatus, GroupChatSummary, GroupParticipantRole,
+    GroupParticipantSummary, GroupTimelineResponse, MessageAuthor, MessagePart, MessageStatus,
+    MessageSummary, ProviderProfileSummary, PullRequestMetadata, RiskLevel, RoutineDefinition,
+    RoutineStep, RoutineSummary, ServerEvent, ServerEventBody, VcsStatus,
 };
 use std::sync::mpsc::{Receiver, channel};
 use std::time::Instant;
@@ -11,12 +18,17 @@ use uuid::Uuid;
 use crate::{
     bot_roster::{BotEditorDraft, BotRosterModel, ConnectionState, EditorError},
     components::{
-        AttentionIndicator, AvatarShape, BotIdentity, activity_card, message, roster_row,
-        section_label,
+        AttentionIndicator, AvatarShape, BotIdentity, activity_card, bot_tile, message,
+        recent_conversation_row, section_label,
     },
+    group_timeline::{GroupComposerError, GroupTimelineModel},
     notifications::{DeepLink, NotificationCenter, NotificationSink, SystemNotificationSink},
     performance::LocalPerformanceTelemetry,
-    settings::{DesktopSettings, SettingsAction, SettingsSection, UpdateState, settings_view},
+    routines::RoutineProjection,
+    settings::{
+        DesktopSettings, SettingsAction, SettingsSection, ThemePreference, UpdateState,
+        settings_view,
+    },
     skills::SkillProjection,
     timeline::{ComposerError, TimelineModel},
     tokens::HomeBotTheme,
@@ -58,12 +70,17 @@ struct SearchProjection {
     results: Vec<homebot_protocol::SearchResultSummary>,
 }
 
+// These flags represent independent transient overlays and focus requests rather than a single
+// mutually exclusive state machine (settings, routines, details, composer focus, pairing ack).
+#[allow(clippy::struct_excessive_bools)]
 pub struct HomeBotApp {
     pub roster: BotRosterModel,
     pub theme: HomeBotTheme,
     pub timeline: TimelineModel,
+    pub group_timeline: GroupTimelineModel,
     pub settings: DesktopSettings,
     pub skills: SkillProjection,
+    pub routines: RoutineProjection,
     pub workspaces: WorkspaceProjection,
     pub checkpoint_diff: Option<homebot_protocol::CheckpointDiffResponse>,
     pub devices: Vec<homebot_protocol::DeviceSessionSummary>,
@@ -77,6 +94,7 @@ pub struct HomeBotApp {
     vcs_branch_name: String,
     vcs_base_branch: String,
     vcs_pr_title: String,
+    group_title_draft: String,
     pending_push: Option<PendingPush>,
     pending_pull_request: Option<PendingPullRequest>,
     pub active_deep_link: Option<DeepLink>,
@@ -84,11 +102,15 @@ pub struct HomeBotApp {
     notification_sink: SystemNotificationSink,
     deep_link_receiver: Receiver<DeepLink>,
     settings_open: bool,
+    routines_open: bool,
+    details_open: bool,
     search: Option<SearchProjection>,
     editor_error: Option<EditorError>,
     composer_error: Option<ComposerError>,
     transport_error: Option<String>,
     chats: Vec<ChatSummary>,
+    groups: Vec<GroupChatSummary>,
+    selected_group: Option<Uuid>,
     transport: Option<DesktopTransport>,
     updater: Option<UpdateCoordinator>,
     update_candidate: Option<UpdateCandidate>,
@@ -104,8 +126,10 @@ impl Default for HomeBotApp {
             roster: BotRosterModel::default(),
             theme: HomeBotTheme::light(),
             timeline: TimelineModel::default(),
+            group_timeline: GroupTimelineModel::default(),
             settings: DesktopSettings::default(),
             skills: SkillProjection::default(),
+            routines: RoutineProjection::default(),
             workspaces: WorkspaceProjection::default(),
             checkpoint_diff: None,
             devices: Vec::new(),
@@ -119,6 +143,7 @@ impl Default for HomeBotApp {
             vcs_branch_name: String::new(),
             vcs_base_branch: "main".to_owned(),
             vcs_pr_title: String::new(),
+            group_title_draft: String::new(),
             pending_push: None,
             pending_pull_request: None,
             active_deep_link: None,
@@ -126,11 +151,15 @@ impl Default for HomeBotApp {
             notification_sink: SystemNotificationSink::new(deep_link_sender),
             deep_link_receiver,
             settings_open: false,
+            routines_open: false,
+            details_open: false,
             search: None,
             editor_error: None,
             composer_error: None,
             transport_error: None,
             chats: Vec::new(),
+            groups: Vec::new(),
+            selected_group: None,
             transport: None,
             updater: None,
             update_candidate: None,
@@ -175,6 +204,7 @@ impl HomeBotApp {
     pub fn render(&mut self, context: &egui::Context) {
         let frame_started = Instant::now();
         self.handle_keyboard_shortcuts(context);
+        self.handle_dropped_files(context);
         self.pump_transport(context);
         self.pump_updater();
         let activated: Vec<_> = self.deep_link_receiver.try_iter().collect();
@@ -190,6 +220,9 @@ impl HomeBotApp {
         self.theme.install(context);
         self.sidebar(context);
         self.titlebar(context);
+        if self.should_show_composer() {
+            self.composer_panel(context);
+        }
         CentralPanel::default().show(context, |ui| {
             if self.settings_open {
                 if let Some(action) = settings_view(ui, self.theme, &mut self.settings) {
@@ -200,6 +233,8 @@ impl HomeBotApp {
                     self.capability_policy_controls(ui);
                     self.shared_browser_controls(ui);
                 }
+            } else if self.routines_open {
+                self.routine_content(ui);
             } else if self.search.is_some() {
                 self.search_content(ui);
             } else {
@@ -225,20 +260,49 @@ impl HomeBotApp {
         });
         if settings {
             self.settings_open = !self.settings_open;
+            self.routines_open = false;
         }
         if create_bot {
             self.settings_open = false;
+            self.routines_open = false;
             self.roster.begin_create();
         }
         if composer {
             self.settings_open = false;
+            self.routines_open = false;
             self.focus_composer = true;
         }
         if escape {
             self.settings_open = false;
+            self.routines_open = false;
             self.roster.editor = None;
             self.editor_error = None;
             self.delete_confirmation = None;
+        }
+    }
+
+    fn handle_dropped_files(&mut self, context: &egui::Context) {
+        let files = context.input(|input| input.raw.dropped_files.clone());
+        for file in files.into_iter().take(6) {
+            let filename = file.name.clone();
+            let bytes = file.bytes.map_or_else(
+                || file.path.as_ref().and_then(|path| std::fs::read(path).ok()),
+                |bytes| Some(bytes.to_vec()),
+            );
+            if let Some(bytes) = bytes {
+                self.send_transport(DesktopCommand::UploadAttachment {
+                    filename,
+                    media_type: if file.mime.is_empty() {
+                        "application/octet-stream".to_owned()
+                    } else {
+                        file.mime
+                    },
+                    bytes,
+                });
+            } else {
+                self.transport_error =
+                    Some("HomeBot could not read the dropped attachment.".to_owned());
+            }
         }
     }
 
@@ -301,6 +365,7 @@ impl HomeBotApp {
         }
     }
 
+    #[allow(clippy::too_many_lines)] // Exhaustive dispatch keeps every server event visible here.
     fn pump_transport(&mut self, context: &egui::Context) {
         let events = self
             .transport
@@ -329,7 +394,9 @@ impl HomeBotApp {
                 }
                 DesktopEvent::Server(event) => {
                     self.skills.apply(&event);
+                    self.routines.apply(&event);
                     self.workspaces.apply(&event);
+                    let _ = self.group_timeline.apply_event(event.clone());
                     let bot_id = match &event.body {
                         ServerEventBody::BotChanged { bot } => {
                             self.roster.apply_change(bot.clone());
@@ -342,6 +409,19 @@ impl HomeBotApp {
                                 self.send_transport(DesktopCommand::LoadTimeline(chat.id));
                             }
                             Some(chat.bot_id)
+                        }
+                        ServerEventBody::GroupChatChanged { group } => {
+                            if let Some(existing) =
+                                self.groups.iter_mut().find(|item| item.id == group.id)
+                            {
+                                *existing = group.clone();
+                            } else {
+                                self.groups.push(group.clone());
+                            }
+                            if self.selected_group == Some(group.id) {
+                                self.send_transport(DesktopCommand::LoadGroupTimeline(group.id));
+                            }
+                            None
                         }
                         _ => self.roster.selected,
                     };
@@ -372,6 +452,23 @@ impl HomeBotApp {
                     }
                 }
                 DesktopEvent::Timeline(timeline) => self.timeline.hydrate(timeline),
+                DesktopEvent::GroupTimeline(timeline) => self.group_timeline.hydrate(timeline),
+                DesktopEvent::GroupCreated(response) => {
+                    let group = response.group;
+                    self.group_title_draft.clone_from(&group.title);
+                    self.groups.push(group.clone());
+                    self.roster.selected = None;
+                    self.selected_group = Some(group.id);
+                    self.send_transport(DesktopCommand::LoadGroupTimeline(group.id));
+                }
+                DesktopEvent::GroupMutation(group) => {
+                    if let Some(existing) = self.groups.iter_mut().find(|item| item.id == group.id)
+                    {
+                        *existing = group;
+                    } else {
+                        self.groups.push(group);
+                    }
+                }
                 DesktopEvent::BotMutation(response) => self.roster.apply_change(response.bot),
                 DesktopEvent::AttachmentUploaded(attachment_id) => {
                     self.timeline.composer.attachment_ids.push(attachment_id);
@@ -394,6 +491,8 @@ impl HomeBotApp {
                 DesktopEvent::DeviceRevoked(device) => self.apply_device_revoked(device),
                 DesktopEvent::CheckpointDiff(diff) => self.checkpoint_diff = Some(diff),
                 DesktopEvent::Search(response) => self.apply_search(response),
+                DesktopEvent::Routines(routines) => self.routines.hydrate(routines),
+                DesktopEvent::RoutineRun(run) => self.routines.apply_run(run),
                 DesktopEvent::MutationFailed(error) => {
                     self.transport_error = Some(error.to_string());
                 }
@@ -429,6 +528,7 @@ impl HomeBotApp {
     fn apply_snapshot(&mut self, snapshot: homebot_protocol::Snapshot) {
         self.roster.apply_snapshot(snapshot.bots);
         self.chats = snapshot.chats;
+        self.groups = snapshot.group_chats;
         self.skills.hydrate(snapshot.skills);
         self.workspaces
             .hydrate(snapshot.repository_workspaces, snapshot.chat_workspaces);
@@ -551,6 +651,14 @@ impl HomeBotApp {
         for command in self.roster.take_commands() {
             self.send_transport(DesktopCommand::Bot(command));
         }
+        if let Some(chat_id) = self.selected_group {
+            for command in self.group_timeline.take_commands() {
+                self.send_transport(DesktopCommand::Group { chat_id, command });
+            }
+            let _ = self.timeline.take_commands();
+            return;
+        }
+        let _ = self.group_timeline.take_commands();
         let Some(bot_id) = self.roster.selected else {
             let _ = self.timeline.take_commands();
             return;
@@ -738,6 +846,7 @@ impl HomeBotApp {
             self.roster.selected = Some(bot_id);
         }
         self.settings_open = false;
+        self.routines_open = false;
         self.search = None;
         if self.transport.is_some() {
             self.send_transport(DesktopCommand::LoadTimeline(deep_link.chat_id));
@@ -745,9 +854,20 @@ impl HomeBotApp {
         self.active_deep_link = Some(deep_link);
     }
 
+    #[allow(clippy::too_many_lines)] // One ordered hierarchy; splitting it obscures bottom pinning.
     fn sidebar(&mut self, context: &egui::Context) {
+        let available = context.screen_rect().width();
+        let width = (available * crate::tokens::Layout::SIDEBAR_RATIO).clamp(
+            crate::tokens::Layout::SIDEBAR_MIN_WIDTH,
+            self.theme.layout.sidebar_width,
+        );
         SidePanel::left("bot_roster")
-            .exact_width(self.theme.layout.sidebar_width)
+            .exact_width(width)
+            .frame(
+                Frame::NONE
+                    .fill(self.theme.palette.sidebar)
+                    .inner_margin(egui::Margin::same(self.theme.insets.md)),
+            )
             .show(context, |ui| {
                 ui.horizontal(|ui| {
                     ui.label(
@@ -756,45 +876,186 @@ impl HomeBotApp {
                             .strong(),
                     );
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        if ui.button("+").on_hover_text("Create Bot").clicked() {
-                            self.roster.begin_create();
-                        }
+                        ui.menu_button("+", |ui| {
+                            if ui.button("Create Bot").clicked() {
+                                self.roster.begin_create();
+                                ui.close();
+                            }
+                            let bot_ids = self
+                                .roster
+                                .visible_bots()
+                                .into_iter()
+                                .take(3)
+                                .map(|bot| bot.id)
+                                .collect::<Vec<_>>();
+                            if ui
+                                .add_enabled(bot_ids.len() >= 2, egui::Button::new("Create group"))
+                                .clicked()
+                            {
+                                self.send_transport(DesktopCommand::CreateGroup {
+                                    title: "New group".to_owned(),
+                                    ownership_bot_id: bot_ids[0],
+                                    bot_ids,
+                                });
+                                ui.close();
+                            }
+                        });
                     });
                 });
-                ui.add_space(self.theme.spacing.xl);
-                section_label(ui, self.theme, "Bots");
+                ui.add_space(self.theme.spacing.md);
+                if ui
+                    .add_sized(
+                        [
+                            ui.available_width(),
+                            self.theme.layout.sidebar_search_height,
+                        ],
+                        egui::Button::new("Search HomeBot"),
+                    )
+                    .clicked()
+                {
+                    self.settings_open = false;
+                    self.routines_open = false;
+                    self.search.get_or_insert_with(SearchProjection::default);
+                }
+                ui.add_space(self.theme.spacing.lg);
+                section_label(ui, self.theme, "Your team");
                 let visible: Vec<BotSummary> =
                     self.roster.visible_bots().into_iter().cloned().collect();
-                for bot in visible {
-                    let identity = identity(self.theme, &bot);
-                    let response = roster_row(
+                for pair in visible.chunks(2) {
+                    ui.columns(2, |columns| {
+                        for (column, bot) in columns.iter_mut().zip(pair) {
+                            let response = bot_tile(
+                                column,
+                                self.theme,
+                                identity(self.theme, bot),
+                                self.roster.selected == Some(bot.id),
+                            );
+                            if response.clicked() {
+                                self.selected_group = None;
+                                self.roster.selected = Some(bot.id);
+                                self.load_selected_timeline();
+                                if bot.unread_count > 0 {
+                                    self.roster.queue_mark_read(bot.id);
+                                }
+                            }
+                        }
+                    });
+                }
+                if !self.groups.is_empty() {
+                    ui.add_space(self.theme.spacing.sm);
+                    for group in self.groups.clone().into_iter().take(2) {
+                        let response = recent_conversation_row(
+                            ui,
+                            self.theme,
+                            &format!("Group · {}", group.title),
+                            "Group chat",
+                            if group.stop_requested {
+                                "Stopped"
+                            } else {
+                                "Active"
+                            },
+                            self.selected_group == Some(group.id),
+                        );
+                        if response.clicked() {
+                            self.roster.selected = None;
+                            self.selected_group = Some(group.id);
+                            self.group_title_draft.clone_from(&group.title);
+                            self.send_transport(DesktopCommand::LoadGroupTimeline(group.id));
+                        }
+                    }
+                }
+                ui.add_space(self.theme.spacing.lg);
+                section_label(ui, self.theme, "Recent");
+                let recent = self.chats.clone();
+                for chat in recent.iter().take(4) {
+                    let bot_unread = self
+                        .roster
+                        .bots
+                        .iter()
+                        .find(|bot| bot.id == chat.bot_id)
+                        .is_some_and(|bot| bot.unread_count > 0);
+                    let preview = if chat.running {
+                        "Working now…"
+                    } else if chat.queued_count > 0 {
+                        "Queued follow-up"
+                    } else {
+                        "Open conversation"
+                    };
+                    let response = recent_conversation_row(
                         ui,
                         self.theme,
-                        identity,
-                        self.roster.selected == Some(bot.id),
+                        &chat.title,
+                        preview,
+                        if chat.unread_count > 0 {
+                            "New"
+                        } else {
+                            "Today"
+                        },
+                        self.timeline
+                            .chat
+                            .as_ref()
+                            .is_some_and(|current| current.id == chat.id),
                     );
                     if response.clicked() {
-                        self.roster.selected = Some(bot.id);
-                        self.load_selected_timeline();
-                        if bot.unread_count > 0 {
-                            self.roster.queue_mark_read(bot.id);
+                        self.selected_group = None;
+                        self.roster.selected = Some(chat.bot_id);
+                        self.send_transport(DesktopCommand::LoadTimeline(chat.id));
+                        if bot_unread {
+                            self.roster.queue_mark_read(chat.bot_id);
                         }
                     }
                 }
                 ui.with_layout(Layout::bottom_up(Align::LEFT), |ui| {
-                    let _ = ui.checkbox(&mut self.roster.show_archived, "Show archived Bots");
-                    if ui.button("Settings").clicked() {
+                    if ui
+                        .add_sized(
+                            [
+                                ui.available_width(),
+                                self.theme.layout.sidebar_action_height,
+                            ],
+                            egui::Button::new("Account & settings"),
+                        )
+                        .clicked()
+                    {
                         self.settings_open = true;
+                        self.routines_open = false;
                         self.search = None;
                     }
-                    if ui.button("Search").clicked() {
-                        self.settings_open = false;
-                        self.search.get_or_insert_with(SearchProjection::default);
+                    if ui
+                        .add_sized(
+                            [
+                                ui.available_width(),
+                                self.theme.layout.sidebar_action_height,
+                            ],
+                            egui::Button::new("Plugins"),
+                        )
+                        .clicked()
+                    {
+                        self.settings_open = true;
+                        self.routines_open = false;
+                        self.settings.section = SettingsSection::Plugins;
+                        self.search = None;
                     }
+                    if ui
+                        .add_sized(
+                            [
+                                ui.available_width(),
+                                self.theme.layout.sidebar_action_height,
+                            ],
+                            egui::Button::new("Routines"),
+                        )
+                        .clicked()
+                    {
+                        self.settings_open = false;
+                        self.routines_open = true;
+                        self.search = None;
+                        self.send_transport(DesktopCommand::LoadRoutines);
+                    }
+                    let _ = ui.checkbox(&mut self.roster.show_archived, "Show archived Bots");
                 });
             });
     }
 
+    #[allow(clippy::too_many_lines)] // Contextual menus share the titlebar's right-to-left layout.
     fn titlebar(&mut self, context: &egui::Context) {
         TopBottomPanel::top("bot_titlebar")
             .exact_height(self.theme.layout.titlebar_height)
@@ -804,10 +1065,17 @@ impl HomeBotApp {
                         .roster
                         .selected
                         .and_then(|id| self.roster.bots.iter().find(|bot| bot.id == id));
+                    let selected_group = self
+                        .selected_group
+                        .and_then(|id| self.groups.iter().find(|group| group.id == id));
                     ui.label(if self.settings_open {
                         "Settings"
+                    } else if self.routines_open {
+                        "Routines"
                     } else if self.search.is_some() {
                         "Search"
+                    } else if let Some(group) = selected_group {
+                        group.title.as_str()
                     } else {
                         selected.map_or("Bots", |bot| bot.name.as_str())
                     });
@@ -815,6 +1083,14 @@ impl HomeBotApp {
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                             if ui.button("Done").clicked() {
                                 self.settings_open = false;
+                            }
+                        });
+                        return;
+                    }
+                    if self.routines_open {
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            if ui.button("Done").clicked() {
+                                self.routines_open = false;
                             }
                         });
                         return;
@@ -829,29 +1105,62 @@ impl HomeBotApp {
                     }
                     if let Some(bot) = selected.cloned() {
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            if ui.button("Edit").clicked() {
-                                self.roster.begin_edit(bot.id);
-                            }
                             if ui
-                                .button(if bot.pinned { "Unpin" } else { "Pin" })
+                                .button("Computer")
+                                .on_hover_text("Computer and details")
                                 .clicked()
                             {
-                                self.roster.queue_pin(bot.id, bot.pinned);
+                                self.details_open = !self.details_open;
                             }
-                            if ui.button("Duplicate").clicked() {
-                                self.roster.queue_duplicate(bot.id);
+                            ui.menu_button("•••", |ui| {
+                                if ui.button("Edit Bot").clicked() {
+                                    self.roster.begin_edit(bot.id);
+                                    ui.close();
+                                }
+                                if ui
+                                    .button(if bot.pinned { "Unpin" } else { "Pin" })
+                                    .clicked()
+                                {
+                                    self.roster.queue_pin(bot.id, bot.pinned);
+                                    ui.close();
+                                }
+                                if ui.button("Duplicate").clicked() {
+                                    self.roster.queue_duplicate(bot.id);
+                                    ui.close();
+                                }
+                                if ui.button("Hide").clicked() {
+                                    self.roster.queue_hide(bot.id, bot.hidden);
+                                    ui.close();
+                                }
+                                if ui
+                                    .button(if bot.archived { "Restore" } else { "Archive" })
+                                    .clicked()
+                                {
+                                    self.roster.queue_archive(bot.id, bot.archived);
+                                    ui.close();
+                                }
+                                if ui.button("Delete…").clicked() {
+                                    self.delete_confirmation =
+                                        Some((bot.id, bot.name.clone(), String::new()));
+                                    ui.close();
+                                }
+                            });
+                        });
+                    } else if let Some(group) = selected_group.cloned() {
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            if ui
+                                .button("Computer")
+                                .on_hover_text("Computer and details")
+                                .clicked()
+                            {
+                                self.details_open = !self.details_open;
                             }
-                            if ui.button("Hide").clicked() {
-                                self.roster.queue_hide(bot.id, bot.hidden);
-                            }
-                            if ui.button("Delete…").clicked() {
-                                self.delete_confirmation =
-                                    Some((bot.id, bot.name.clone(), String::new()));
-                            }
-                            let label = if bot.archived { "Restore" } else { "Archive" };
-                            if ui.button(label).clicked() {
-                                self.roster.queue_archive(bot.id, bot.archived);
-                            }
+                            ui.menu_button("•••", |ui| {
+                                if !group.stop_requested && ui.button("Stop group").clicked() {
+                                    self.group_timeline.stop();
+                                    ui.close();
+                                }
+                            });
                         });
                     }
                 });
@@ -859,9 +1168,159 @@ impl HomeBotApp {
     }
 
     fn content(&mut self, ui: &mut egui::Ui) {
+        if self.roster.connection == ConnectionState::Connected && self.selected_group.is_some() {
+            self.group_content(ui);
+            return;
+        }
+        match self.roster.connection {
+            ConnectionState::Connected if !self.roster.visible_bots().is_empty() => {
+                if let Some(bot) = self
+                    .roster
+                    .selected
+                    .and_then(|id| self.roster.bots.iter().find(|bot| bot.id == id))
+                    .cloned()
+                {
+                    self.timeline_content(ui, &bot);
+                } else {
+                    self.empty_state(ui, "Choose a Bot", "Pick a teammate from the sidebar.");
+                }
+            }
+            state => self.empty_state_for_connection(ui, state),
+        }
+    }
+
+    #[allow(clippy::too_many_lines)] // Group status, details and transcript are one scroll surface.
+    fn group_content(&mut self, ui: &mut egui::Ui) {
+        ui.vertical_centered(|ui| {
+            ui.set_max_width(self.theme.layout.content_max_width);
+            let participant_names = self
+                .group_timeline
+                .participants
+                .iter()
+                .filter_map(|participant| {
+                    self.roster
+                        .bots
+                        .iter()
+                        .find(|bot| bot.id == participant.bot_id)
+                        .map(|bot| format!("{} · {:?}", bot.name, participant.status))
+                })
+                .collect::<Vec<_>>();
+            ui.label(
+                RichText::new(participant_names.join("   "))
+                    .font(self.theme.typography.font(self.theme.typography.caption))
+                    .color(self.theme.palette.text_secondary),
+            );
+            if self.details_open {
+                let group = self.group_timeline.group.clone();
+                let participants = self.group_timeline.participants.clone();
+                Frame::NONE
+                    .fill(self.theme.palette.surface)
+                    .corner_radius(CornerRadius::same(self.theme.radii.md))
+                    .inner_margin(egui::Margin::same(self.theme.insets.md))
+                    .show(ui, |ui| {
+                        ui.strong("Group coordination");
+                        if let Some(group) = &group {
+                            ui.label(format!(
+                                "{} of {} coordination turns · up to {} Bots in parallel",
+                                group.coordination_turns_used,
+                                group.coordination_max_turns,
+                                group.max_parallel_bots
+                            ));
+                            ui.horizontal(|ui| {
+                                ui.text_edit_singleline(&mut self.group_title_draft);
+                                if ui.button("Rename").clicked() {
+                                    self.group_timeline.rename(&self.group_title_draft);
+                                }
+                            });
+                            for participant in &participants {
+                                let name = self
+                                    .roster
+                                    .bots
+                                    .iter()
+                                    .find(|bot| bot.id == participant.bot_id)
+                                    .map_or("Bot", |bot| bot.name.as_str());
+                                ui.horizontal(|ui| {
+                                    ui.label(format!("{name} · {:?}", participant.status));
+                                    if participant.bot_id != group.ownership_bot_id
+                                        && ui.small_button("Hand off").clicked()
+                                    {
+                                        self.group_timeline.handoff(
+                                            participant.bot_id,
+                                            self.group_timeline.messages.last().map(|item| item.id),
+                                            "User requested ownership handoff",
+                                        );
+                                    }
+                                    if participant.bot_id != group.ownership_bot_id
+                                        && participants.len() > 2
+                                        && ui.small_button("Remove").clicked()
+                                    {
+                                        self.group_timeline.remove_participant(participant.bot_id);
+                                    }
+                                });
+                            }
+                            if let Some(bot) = self.roster.bots.iter().find(|bot| {
+                                !participants
+                                    .iter()
+                                    .any(|participant| participant.bot_id == bot.id)
+                            }) && ui.button(format!("Add {}", bot.name)).clicked()
+                            {
+                                self.group_timeline.add_participant(bot.id);
+                            }
+                        }
+                    });
+            }
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                for item in self.group_timeline.messages.clone() {
+                    let text =
+                        item.parts
+                            .iter()
+                            .filter_map(|part| match part {
+                                MessagePart::Text { text, .. }
+                                | MessagePart::Notice { text, .. } => Some(text.as_str()),
+                                MessagePart::Attachment { .. } => None,
+                            })
+                            .collect::<Vec<_>>()
+                            .join("\n");
+                    let bot = item
+                        .author_bot_id
+                        .and_then(|id| self.roster.bots.iter().find(|bot| bot.id == id));
+                    message(
+                        ui,
+                        self.theme,
+                        bot.map(|bot| identity(self.theme, bot)),
+                        &text,
+                    );
+                    ui.add_space(self.theme.spacing.md);
+                }
+                for handoff in &self.group_timeline.handoffs {
+                    let from = self
+                        .roster
+                        .bots
+                        .iter()
+                        .find(|bot| bot.id == handoff.from_bot_id)
+                        .map_or("Bot", |bot| bot.name.as_str());
+                    let to = self
+                        .roster
+                        .bots
+                        .iter()
+                        .find(|bot| bot.id == handoff.to_bot_id)
+                        .map_or("Bot", |bot| bot.name.as_str());
+                    activity_card(
+                        ui,
+                        self.theme,
+                        &format!("{from} handed work to {to}"),
+                        &handoff.reason,
+                        false,
+                    );
+                }
+            });
+        });
+    }
+
+    fn empty_state_for_connection(&mut self, ui: &mut egui::Ui, state: ConnectionState) {
         ui.vertical_centered(|ui| {
             ui.add_space(self.theme.layout.empty_state_top_padding);
-            match self.roster.connection {
+            match state {
                 ConnectionState::Disconnected => {
                     ui.heading("HomeBot is offline");
                     ui.label("Your Bots are safe on the server. Reconnect to make changes.");
@@ -880,19 +1339,16 @@ impl HomeBotApp {
                         self.roster.begin_create();
                     }
                 }
-                ConnectionState::Connected => {
-                    if let Some(bot) = self
-                        .roster
-                        .selected
-                        .and_then(|id| self.roster.bots.iter().find(|bot| bot.id == id))
-                        .cloned()
-                    {
-                        self.timeline_content(ui, &bot);
-                    } else {
-                        ui.heading("Choose a Bot");
-                    }
-                }
+                ConnectionState::Connected => {}
             }
+        });
+    }
+
+    fn empty_state(&self, ui: &mut egui::Ui, title: &str, detail: &str) {
+        ui.vertical_centered(|ui| {
+            ui.add_space(self.theme.layout.empty_state_top_padding);
+            ui.heading(title);
+            ui.label(detail);
         });
     }
 
@@ -942,118 +1398,337 @@ impl HomeBotApp {
                         });
                     } else if result.routine_id.is_some() {
                         self.search = None;
-                        self.settings_open = true;
-                        self.settings.section = SettingsSection::General;
+                        self.settings_open = false;
+                        self.routines_open = true;
+                        self.send_transport(DesktopCommand::LoadRoutines);
                     }
                 }
             }
         });
     }
 
-    fn timeline_content(&mut self, ui: &mut egui::Ui, bot: &BotSummary) {
-        ui.set_max_width(self.theme.layout.content_max_width);
-        ui.heading(&bot.name);
-        self.workspace_controls(ui);
-        self.checkpoint_controls(ui);
-        if bot.provider == BotProviderStatus::Unavailable {
-            ui.colored_label(
-                self.theme.palette.warning,
-                "This Bot's provider is unavailable. Open Advanced settings to choose another.",
-            );
-        }
-        egui::ScrollArea::vertical()
-            .stick_to_bottom(self.timeline.scroll.at_bottom)
-            .show(ui, |ui| {
-                let messages = self.timeline.messages.clone();
-                for item in &messages {
-                    let text = item
-                        .parts
-                        .iter()
-                        .filter_map(|part| match part {
-                            homebot_protocol::MessagePart::Text { text, .. }
-                            | homebot_protocol::MessagePart::Notice { text, .. } => {
-                                Some(text.as_str())
-                            }
-                            homebot_protocol::MessagePart::Attachment { .. } => None,
-                        })
-                        .collect::<Vec<_>>()
-                        .join("\n");
-                    let identity = (item.author == homebot_protocol::MessageAuthor::Bot)
-                        .then(|| identity(self.theme, bot));
-                    message(ui, self.theme, identity, &text);
-                    message_reference_labels(ui, item);
-                    ui.horizontal(|ui| {
-                        for reaction in &item.reactions {
-                            if ui
-                                .button(format!("{} {}", reaction.emoji, reaction.count))
-                                .clicked()
-                            {
-                                self.timeline.set_reaction(
-                                    item.id,
-                                    reaction.emoji.clone(),
-                                    !reaction.reacted_by_user,
-                                );
-                            }
-                        }
-                        if !item.reactions.iter().any(|reaction| reaction.emoji == "👍")
-                            && ui.small_button("React 👍").clicked()
-                        {
-                            self.timeline.set_reaction(item.id, "👍", true);
-                        }
-                        if ui.small_button("Reply").clicked() {
-                            self.timeline.begin_reply(item.id);
-                        }
+    fn routine_content(&mut self, ui: &mut egui::Ui) {
+        ui.vertical_centered(|ui| {
+            ui.set_max_width(self.theme.layout.content_max_width);
+            ui.add_space(self.theme.spacing.xl);
+            ui.heading("Routines");
+            ui.label("Repeat useful work without keeping a client open.");
+            ui.add_space(self.theme.spacing.lg);
+            let routines = self.routines.routines().cloned().collect::<Vec<_>>();
+            if routines.is_empty() {
+                Frame::NONE
+                    .fill(self.theme.palette.surface)
+                    .corner_radius(CornerRadius::same(self.theme.radii.lg))
+                    .inner_margin(egui::Margin::same(self.theme.insets.xl))
+                    .show(ui, |ui| {
+                        ui.strong("No routines yet");
+                        ui.label("Teach a Bot a workflow, then edit and run it here.");
                     });
-                    ui.add_space(self.theme.spacing.md);
-                }
-                for item in &self.timeline.activities {
-                    activity_card(
-                        ui,
-                        self.theme,
-                        &item.title,
-                        &item.detail,
-                        item.requires_attention,
-                    );
-                }
-                let pending: Vec<_> = self
-                    .timeline
-                    .approvals
-                    .iter()
-                    .filter(|approval| approval.status == homebot_protocol::ApprovalStatus::Pending)
-                    .cloned()
-                    .collect();
-                for approval in pending {
-                    ui.group(|ui| {
-                        ui.strong(&approval.title);
-                        ui.label(&approval.detail);
+            }
+            for routine in routines {
+                Frame::NONE
+                    .fill(self.theme.palette.surface)
+                    .stroke(Stroke::new(
+                        self.theme.layout.hairline,
+                        self.theme.palette.border,
+                    ))
+                    .corner_radius(CornerRadius::same(self.theme.radii.md))
+                    .inner_margin(egui::Margin::same(self.theme.insets.lg))
+                    .show(ui, |ui| {
                         ui.horizontal(|ui| {
-                            if ui.button("Allow once").clicked() {
-                                self.timeline.decide_approval(approval.id, true);
-                            }
-                            if ui.button("Deny").clicked() {
-                                self.timeline.decide_approval(approval.id, false);
-                            }
+                            ui.vertical(|ui| {
+                                ui.strong(&routine.name);
+                                ui.label(&routine.description);
+                                ui.small(format!(
+                                    "Version {} · {} structured steps",
+                                    routine.version,
+                                    routine.definition.steps.len()
+                                ));
+                            });
+                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                if ui.button("Run now").clicked() {
+                                    self.send_transport(DesktopCommand::RunRoutine {
+                                        routine_id: routine.id,
+                                        dry_run: false,
+                                    });
+                                }
+                                if ui.button("Dry run").clicked() {
+                                    self.send_transport(DesktopCommand::RunRoutine {
+                                        routine_id: routine.id,
+                                        dry_run: true,
+                                    });
+                                }
+                                if ui
+                                    .button(if routine.enabled { "Pause" } else { "Enable" })
+                                    .clicked()
+                                {
+                                    self.send_transport(DesktopCommand::SetRoutineEnabled {
+                                        routine_id: routine.id,
+                                        enabled: !routine.enabled,
+                                    });
+                                }
+                            });
                         });
+                        for run in self.routines.runs(routine.id).iter().take(3) {
+                            ui.label(format!(
+                                "{} · {}{}",
+                                run.status,
+                                run.attempt_count,
+                                if run.dry_run { " · dry run" } else { "" }
+                            ));
+                        }
                     });
-                }
-                for prompt in &self.timeline.queued_prompts {
-                    let label = match prompt.kind {
-                        homebot_protocol::QueuedPromptKind::FollowUp => "Queued",
-                        homebot_protocol::QueuedPromptKind::Steering => "Steering",
-                    };
-                    ui.label(format!(
-                        "{label} {} · {}",
-                        prompt.position + 1,
-                        prompt.content
-                    ));
-                }
+                ui.add_space(self.theme.spacing.sm);
+            }
+        });
+    }
+
+    #[allow(clippy::too_many_lines)] // Message, activity and approval ordering must remain explicit.
+    fn timeline_content(&mut self, ui: &mut egui::Ui, bot: &BotSummary) {
+        ui.vertical_centered(|ui| {
+            ui.set_max_width(self.theme.layout.content_max_width);
+            if bot.provider == BotProviderStatus::Unavailable {
+                Frame::NONE
+                    .fill(self.theme.palette.accent_soft)
+                    .corner_radius(CornerRadius::same(self.theme.radii.md))
+                    .inner_margin(egui::Margin::same(self.theme.insets.md))
+                    .show(ui, |ui| {
+                        ui.colored_label(
+                            self.theme.palette.warning,
+                            "Provider unavailable · choose another in Bot settings.",
+                        );
+                    });
+            }
+            if self.details_open {
+                Frame::NONE
+                    .fill(self.theme.palette.surface)
+                    .stroke(Stroke::new(
+                        self.theme.layout.hairline,
+                        self.theme.palette.border,
+                    ))
+                    .corner_radius(CornerRadius::same(self.theme.radii.md))
+                    .inner_margin(egui::Margin::same(self.theme.insets.md))
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.strong("Computer & coding details");
+                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                if ui.small_button("Close").clicked() {
+                                    self.details_open = false;
+                                }
+                            });
+                        });
+                        self.workspace_controls(ui);
+                        self.checkpoint_controls(ui);
+                        self.working_context_controls(ui);
+                    });
+                ui.add_space(self.theme.spacing.md);
+            }
+            egui::ScrollArea::vertical()
+                .stick_to_bottom(self.timeline.scroll.at_bottom)
+                .show(ui, |ui| {
+                    let messages = self.timeline.messages.clone();
+                    for item in &messages {
+                        let text = item
+                            .parts
+                            .iter()
+                            .filter_map(|part| match part {
+                                homebot_protocol::MessagePart::Text { text, .. }
+                                | homebot_protocol::MessagePart::Notice { text, .. } => {
+                                    Some(text.as_str())
+                                }
+                                homebot_protocol::MessagePart::Attachment { .. } => None,
+                            })
+                            .collect::<Vec<_>>()
+                            .join("\n");
+                        let identity = (item.author == homebot_protocol::MessageAuthor::Bot)
+                            .then(|| identity(self.theme, bot));
+                        message(ui, self.theme, identity, &text);
+                        message_reference_labels(ui, item);
+                        ui.allocate_ui_with_layout(
+                            egui::vec2(
+                                ui.available_width(),
+                                crate::tokens::Layout::CONTEXTUAL_ACTION_HEIGHT,
+                            ),
+                            if item.author == homebot_protocol::MessageAuthor::Bot {
+                                Layout::left_to_right(Align::Center)
+                            } else {
+                                Layout::right_to_left(Align::Center)
+                            },
+                            |ui| {
+                                for reaction in &item.reactions {
+                                    if ui
+                                        .button(format!("{} {}", reaction.emoji, reaction.count))
+                                        .clicked()
+                                    {
+                                        self.timeline.set_reaction(
+                                            item.id,
+                                            reaction.emoji.clone(),
+                                            !reaction.reacted_by_user,
+                                        );
+                                    }
+                                }
+                                if !item.reactions.iter().any(|reaction| reaction.emoji == "👍")
+                                    && ui.small_button("React 👍").clicked()
+                                {
+                                    self.timeline.set_reaction(item.id, "👍", true);
+                                }
+                                if ui.small_button("Reply").clicked() {
+                                    self.timeline.begin_reply(item.id);
+                                }
+                            },
+                        );
+                        ui.add_space(self.theme.spacing.md);
+                    }
+                    for item in &self.timeline.activities {
+                        activity_card(
+                            ui,
+                            self.theme,
+                            &item.title,
+                            &item.detail,
+                            item.requires_attention,
+                        );
+                    }
+                    let pending: Vec<_> = self
+                        .timeline
+                        .approvals
+                        .iter()
+                        .filter(|approval| {
+                            approval.status == homebot_protocol::ApprovalStatus::Pending
+                        })
+                        .cloned()
+                        .collect();
+                    for approval in pending {
+                        Frame::NONE
+                            .fill(self.theme.palette.accent_soft)
+                            .stroke(Stroke::new(
+                                self.theme.layout.hairline,
+                                self.theme.palette.warning,
+                            ))
+                            .corner_radius(CornerRadius::same(self.theme.radii.md))
+                            .inner_margin(egui::Margin::same(self.theme.insets.lg))
+                            .show(ui, |ui| {
+                                ui.strong(&approval.title);
+                                ui.label(&approval.detail);
+                                ui.horizontal(|ui| {
+                                    if ui.button("Allow once").clicked() {
+                                        self.timeline.decide_approval(approval.id, true);
+                                    }
+                                    if ui.button("Deny").clicked() {
+                                        self.timeline.decide_approval(approval.id, false);
+                                    }
+                                });
+                            });
+                    }
+                    for prompt in &self.timeline.queued_prompts {
+                        let label = match prompt.kind {
+                            homebot_protocol::QueuedPromptKind::FollowUp => "Queued",
+                            homebot_protocol::QueuedPromptKind::Steering => "Steering",
+                        };
+                        ui.label(format!(
+                            "{label} {} · {}",
+                            prompt.position + 1,
+                            prompt.content
+                        ));
+                    }
+                });
+        });
+    }
+
+    fn should_show_composer(&self) -> bool {
+        !self.settings_open
+            && !self.routines_open
+            && self.search.is_none()
+            && self.roster.connection == ConnectionState::Connected
+            && (self.roster.selected.is_some() || self.selected_group.is_some())
+    }
+
+    fn composer_panel(&mut self, context: &egui::Context) {
+        TopBottomPanel::bottom("homebot_composer")
+            .frame(Frame::NONE.fill(self.theme.palette.canvas).inner_margin(
+                egui::Margin::symmetric(self.theme.insets.xl, self.theme.insets.md),
+            ))
+            .show(context, |ui| {
+                ui.vertical_centered(|ui| {
+                    ui.set_max_width(self.theme.layout.composer_max_width);
+                    if self.selected_group.is_some() {
+                        self.group_composer_controls(ui);
+                    } else {
+                        self.composer_controls(ui);
+                    }
+                });
             });
-        self.working_context_controls(ui);
-        self.composer_controls(ui);
+    }
+
+    fn group_composer_controls(&mut self, ui: &mut egui::Ui) {
+        Frame::NONE
+            .fill(self.theme.palette.surface)
+            .stroke(Stroke::new(
+                self.theme.layout.hairline,
+                self.theme.palette.border,
+            ))
+            .corner_radius(CornerRadius::same(self.theme.radii.pill))
+            .shadow(self.theme.panel_shadow)
+            .inner_margin(egui::Margin::symmetric(
+                self.theme.insets.md,
+                self.theme.insets.sm,
+            ))
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.menu_button("+", |ui| {
+                        ui.label("Mention a Bot");
+                        for participant in self.group_timeline.participants.clone() {
+                            let Some(bot) = self
+                                .roster
+                                .bots
+                                .iter()
+                                .find(|bot| bot.id == participant.bot_id)
+                            else {
+                                continue;
+                            };
+                            let mut selected = self
+                                .group_timeline
+                                .composer
+                                .mentioned_bot_ids
+                                .contains(&bot.id);
+                            if ui.checkbox(&mut selected, &bot.name).changed() {
+                                if selected {
+                                    self.group_timeline.composer.mentioned_bot_ids.push(bot.id);
+                                } else {
+                                    self.group_timeline
+                                        .composer
+                                        .mentioned_bot_ids
+                                        .retain(|id| *id != bot.id);
+                                }
+                            }
+                        }
+                    });
+                    ui.add_sized(
+                        [
+                            ui.available_width() - crate::tokens::Layout::COMPOSER_ACTION_RESERVE,
+                            self.theme.layout.composer_editor_height,
+                        ],
+                        egui::TextEdit::multiline(&mut self.group_timeline.composer.content)
+                            .hint_text("Message the group")
+                            .frame(false),
+                    );
+                    if ui.button("Send").clicked()
+                        && let Err(error) = self.group_timeline.submit()
+                    {
+                        self.transport_error = Some(
+                            match error {
+                                GroupComposerError::EmptyComposer => "Write a message first.",
+                                GroupComposerError::UnknownMention => {
+                                    "Every mentioned Bot must belong to this group."
+                                }
+                            }
+                            .to_owned(),
+                        );
+                    }
+                });
+            });
     }
 
     fn composer_controls(&mut self, ui: &mut egui::Ui) {
-        ui.separator();
         if let Some(message_id) = self.timeline.composer.reply_to_message_id {
             ui.horizontal(|ui| {
                 ui.label(format!(
@@ -1070,32 +1745,84 @@ impl HomeBotApp {
                 }
             });
         }
-        let composer = ui.text_edit_multiline(&mut self.timeline.composer.content);
-        if self.focus_composer {
-            composer.request_focus();
-            self.focus_composer = false;
-        }
+        let running = self.timeline.chat.as_ref().is_some_and(|chat| chat.running);
+        let composer_hint = self
+            .roster
+            .selected
+            .and_then(|id| self.roster.bots.iter().find(|bot| bot.id == id))
+            .map_or_else(
+                || "Message a Bot".to_owned(),
+                |bot| format!("Message {}", bot.name),
+            );
+        Frame::NONE
+            .fill(self.theme.palette.surface)
+            .stroke(Stroke::new(
+                self.theme.layout.hairline,
+                self.theme.palette.border,
+            ))
+            .corner_radius(CornerRadius::same(self.theme.radii.pill))
+            .shadow(self.theme.panel_shadow)
+            .inner_margin(egui::Margin::symmetric(
+                self.theme.insets.md,
+                self.theme.insets.sm,
+            ))
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.menu_button("+", |ui| {
+                        ui.label("Drop up to six files anywhere in HomeBot to attach them.");
+                        if !self.timeline.composer.attachment_ids.is_empty() {
+                            ui.label(format!(
+                                "{} attached",
+                                self.timeline.composer.attachment_ids.len()
+                            ));
+                        }
+                    });
+                    let composer = ui.add_sized(
+                        [
+                            ui.available_width() - crate::tokens::Layout::COMPOSER_ACTION_RESERVE,
+                            self.theme.layout.composer_editor_height,
+                        ],
+                        egui::TextEdit::multiline(&mut self.timeline.composer.content)
+                            .hint_text(composer_hint)
+                            .frame(false),
+                    );
+                    if self.focus_composer {
+                        composer.request_focus();
+                        self.focus_composer = false;
+                    }
+                    if running {
+                        ui.menu_button("●", |ui| {
+                            if ui.button("Queue follow-up").clicked() {
+                                self.composer_error = self.timeline.submit(false).err();
+                                ui.close();
+                            }
+                            if ui.button("Steer current work").clicked() {
+                                self.composer_error = self.timeline.submit(true).err();
+                                ui.close();
+                            }
+                            if ui.button("Stop Bot").clicked() {
+                                self.timeline.stop();
+                                ui.close();
+                            }
+                        });
+                    } else if ui.button("Send").on_hover_text("Send message").clicked() {
+                        self.composer_error = self.timeline.submit(false).err();
+                    }
+                });
+            });
         if self.composer_error == Some(ComposerError::EmptyComposer) {
             ui.colored_label(
                 self.theme.palette.danger,
                 "Write a message or attach a file first.",
             );
         }
-        ui.horizontal(|ui| {
-            let running = self.timeline.chat.as_ref().is_some_and(|chat| chat.running);
-            if ui.button(if running { "Queue" } else { "Send" }).clicked() {
-                self.composer_error = self.timeline.submit(false).err();
-            }
-            if running && ui.button("Steer").clicked() {
-                self.composer_error = self.timeline.submit(true).err();
-            }
-            if running && ui.button("Stop").clicked() {
-                self.timeline.stop();
-            }
-            if self.timeline.scroll.unseen_updates > 0 && ui.button("Jump to latest").clicked() {
-                self.timeline.set_at_bottom(true);
-            }
-        });
+        if self.timeline.scroll.unseen_updates > 0 {
+            ui.horizontal_centered(|ui| {
+                if ui.button("Jump to latest").clicked() {
+                    self.timeline.set_at_bottom(true);
+                }
+            });
+        }
     }
 
     fn working_context_controls(&mut self, ui: &mut egui::Ui) {
@@ -1620,6 +2347,300 @@ const fn editor_message(error: EditorError) -> &'static str {
     }
 }
 
+/// Deterministic visual states rendered through the real production app shell.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ProductionFixtureState {
+    PopulatedChat,
+    Approval,
+    GroupChat,
+    Disconnected,
+    ProviderUnavailable,
+    Settings,
+    Routines,
+    ComputerDetails,
+}
+
+/// Renders a deterministic fixture through `HomeBotApp::render` without a live server.
+///
+/// This is intentionally a thin state-construction boundary: all shell geometry,
+/// navigation, transcript, activity, approval and composer rendering remains the
+/// production application path.
+pub fn render_production_fixture(
+    context: &egui::Context,
+    theme: HomeBotTheme,
+    state: ProductionFixtureState,
+) {
+    let mut app = production_fixture(theme, state);
+    app.render(context);
+}
+
+#[allow(clippy::too_many_lines)] // A single deterministic fixture prevents scenario drift.
+fn production_fixture(theme: HomeBotTheme, state: ProductionFixtureState) -> HomeBotApp {
+    let mut app = HomeBotApp::default();
+    app.settings.theme = if theme.mode == crate::tokens::ThemeMode::Dark {
+        ThemePreference::Dark
+    } else {
+        ThemePreference::Light
+    };
+    app.theme = theme;
+    if state == ProductionFixtureState::Disconnected {
+        app.roster.connection = ConnectionState::Disconnected;
+        app.transport_error = Some("The server will reconnect automatically.".to_owned());
+        return app;
+    }
+
+    let mut bots = vec![
+        fixture_bot(
+            1,
+            "Nova",
+            "Research",
+            BotColor::Violet,
+            BotShape::RoundedSquare,
+        ),
+        fixture_bot(2, "Patch", "Code", BotColor::Green, BotShape::Hexagon),
+        fixture_bot(3, "Scout", "Web", BotColor::Orange, BotShape::Circle),
+        fixture_bot(
+            4,
+            "Mica",
+            "Operations",
+            BotColor::Rose,
+            BotShape::RoundedSquare,
+        ),
+    ];
+    if state == ProductionFixtureState::ProviderUnavailable {
+        bots[0].provider = BotProviderStatus::Unavailable;
+    }
+    let chat = ChatSummary {
+        id: Uuid::from_u128(10),
+        title: if state == ProductionFixtureState::GroupChat {
+            "Launch crew".to_owned()
+        } else {
+            "Homepage launch".to_owned()
+        },
+        bot_id: bots[0].id,
+        unread_count: 0,
+        running: false,
+        queued_count: 0,
+        last_sequence: 9,
+    };
+    app.roster.apply_snapshot(bots);
+    app.roster.selected = Some(Uuid::from_u128(1));
+    app.chats = vec![
+        chat.clone(),
+        ChatSummary {
+            id: Uuid::from_u128(11),
+            title: "Weekly product pulse".to_owned(),
+            bot_id: Uuid::from_u128(2),
+            unread_count: 2,
+            running: true,
+            queued_count: 1,
+            last_sequence: 7,
+        },
+        ChatSummary {
+            id: Uuid::from_u128(12),
+            title: "Customer research".to_owned(),
+            bot_id: Uuid::from_u128(3),
+            unread_count: 0,
+            running: false,
+            queued_count: 0,
+            last_sequence: 4,
+        },
+    ];
+    app.timeline.hydrate(ChatTimelineResponse {
+        chat,
+        messages: fixture_messages(state),
+        activities: vec![ActivitySummary {
+            id: Uuid::from_u128(30),
+            chat_id: Uuid::from_u128(10),
+            message_id: Some(Uuid::from_u128(22)),
+            title: "Updated launch checklist".to_owned(),
+            detail: "3 files reviewed · tests passed".to_owned(),
+            kind: ActivityKind::Filesystem,
+            presentation: ActivityPresentation {
+                risk: RiskLevel::Low,
+                detail: ActivityDetail::Generic {
+                    summary: "Prepared the release checklist".to_owned(),
+                },
+                copy_text: None,
+                open_artifact_id: None,
+            },
+            status: ActivityStatus::Succeeded,
+            requires_attention: false,
+            started_at_ms: 3,
+            finished_at_ms: Some(4),
+        }],
+        approvals: if state == ProductionFixtureState::Approval {
+            vec![ApprovalSummary {
+                id: Uuid::from_u128(31),
+                chat_id: Uuid::from_u128(10),
+                message_id: Some(Uuid::from_u128(22)),
+                title: "Approval needed".to_owned(),
+                detail: "Patch wants to push the release branch to origin.".to_owned(),
+                status: ApprovalStatus::Pending,
+                created_at_ms: 5,
+                decided_at_ms: None,
+            }]
+        } else {
+            Vec::new()
+        },
+        queued_prompts: Vec::new(),
+        working_context: None,
+        checkpoints: Vec::new(),
+        boundary_sequence: 9,
+    });
+    app.timeline.set_at_bottom(false);
+    if state == ProductionFixtureState::GroupChat {
+        let group = GroupChatSummary {
+            id: Uuid::from_u128(40),
+            title: "Launch crew".to_owned(),
+            ownership_bot_id: Uuid::from_u128(1),
+            coordination_max_turns: 12,
+            coordination_turns_used: 3,
+            max_parallel_bots: 3,
+            stop_requested: false,
+        };
+        app.groups = vec![group.clone()];
+        app.selected_group = Some(group.id);
+        app.roster.selected = None;
+        app.group_timeline.hydrate(GroupTimelineResponse {
+            group,
+            participants: [1_u128, 2, 3]
+                .into_iter()
+                .map(|id| GroupParticipantSummary {
+                    chat_id: Uuid::from_u128(40),
+                    bot_id: Uuid::from_u128(id),
+                    role: if id == 1 {
+                        GroupParticipantRole::Owner
+                    } else {
+                        GroupParticipantRole::Member
+                    },
+                    status: if id == 2 {
+                        GroupBotStatus::Running
+                    } else {
+                        GroupBotStatus::Completed
+                    },
+                    active_operation_id: None,
+                    updated_at_ms: 4,
+                })
+                .collect(),
+            messages: fixture_messages(state),
+            handoffs: Vec::new(),
+            boundary_sequence: 9,
+        });
+    }
+    app.settings_open = state == ProductionFixtureState::Settings;
+    app.routines_open = state == ProductionFixtureState::Routines;
+    if app.routines_open {
+        app.routines.hydrate(vec![RoutineSummary {
+            id: Uuid::from_u128(50),
+            bot_id: Uuid::from_u128(1),
+            name: "Weekly product pulse".to_owned(),
+            description: "Review metrics and prepare the Monday brief.".to_owned(),
+            enabled: true,
+            draft: false,
+            active_version_id: Uuid::from_u128(51),
+            version: 3,
+            definition: RoutineDefinition {
+                inputs: Vec::new(),
+                steps: vec![RoutineStep::BotPrompt {
+                    bot_id: Uuid::from_u128(1),
+                    prompt_template: "Prepare this week's product pulse.".to_owned(),
+                    requires_approval: false,
+                }],
+                expected_outputs: Vec::new(),
+            },
+            created_at_unix_ms: 1,
+            updated_at_unix_ms: 2,
+        }]);
+    }
+    app.details_open = state == ProductionFixtureState::ComputerDetails;
+    app
+}
+
+fn fixture_bot(id: u128, name: &str, title: &str, color: BotColor, shape: BotShape) -> BotSummary {
+    BotSummary {
+        id: Uuid::from_u128(id),
+        name: name.to_owned(),
+        title: title.to_owned(),
+        description: format!("{title} teammate"),
+        shape,
+        color,
+        archived: false,
+        pinned: id < 3,
+        hidden: false,
+        unread_count: u32::from(id == 2),
+        attention: if id == 2 {
+            BotAttention::Working
+        } else {
+            BotAttention::None
+        },
+        provider: BotProviderStatus::Ready,
+        advanced: BotAdvancedSettings {
+            provider_profile_id: None,
+            permission_profile: BotPermissionProfile::AskBeforeChanges,
+        },
+    }
+}
+
+fn fixture_messages(state: ProductionFixtureState) -> Vec<MessageSummary> {
+    let chat_id = Uuid::from_u128(if state == ProductionFixtureState::GroupChat {
+        40
+    } else {
+        10
+    });
+    let user = MessageSummary {
+        id: Uuid::from_u128(21),
+        chat_id,
+        author: MessageAuthor::User,
+        author_bot_id: None,
+        status: MessageStatus::Completed,
+        parts: vec![MessagePart::Text {
+            id: Uuid::from_u128(211),
+            ordinal: 0,
+            text: if state == ProductionFixtureState::GroupChat {
+                "@Nova and @Patch, get the launch ready together.".to_owned()
+            } else {
+                "Can you prepare the homepage launch checklist?".to_owned()
+            },
+        }],
+        reply_to_message_id: None,
+        mentioned_bot_ids: Vec::new(),
+        shared_context_message_ids: Vec::new(),
+        applied_skills: Vec::new(),
+        reactions: Vec::new(),
+        references: Vec::new(),
+        created_at_ms: 1,
+        completed_at_ms: Some(1),
+        error: None,
+    };
+    let bot = MessageSummary {
+        id: Uuid::from_u128(22),
+        chat_id,
+        author: MessageAuthor::Bot,
+        author_bot_id: Some(Uuid::from_u128(1)),
+        status: MessageStatus::Completed,
+        parts: vec![MessagePart::Text {
+            id: Uuid::from_u128(221),
+            ordinal: 0,
+            text: if state == ProductionFixtureState::GroupChat {
+                "We split the work: I checked the brief while Patch verified the repository. The launch is ready for review.".to_owned()
+            } else {
+                "Done. I checked the copy, links, analytics events, and rollback steps. The remaining decision is the launch window.".to_owned()
+            },
+        }],
+        reply_to_message_id: Some(user.id),
+        mentioned_bot_ids: Vec::new(),
+        shared_context_message_ids: vec![user.id],
+        applied_skills: Vec::new(),
+        reactions: Vec::new(),
+        references: Vec::new(),
+        created_at_ms: 2,
+        completed_at_ms: Some(3),
+        error: None,
+    };
+    vec![user, bot]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1646,5 +2667,14 @@ mod tests {
         app.open_deep_link(link.clone());
         assert_eq!(app.roster.selected, link.bot_id);
         assert_eq!(app.active_deep_link, Some(link));
+    }
+
+    #[test]
+    fn production_group_fixture_uses_real_group_projection() {
+        let app = production_fixture(HomeBotTheme::dark(), ProductionFixtureState::GroupChat);
+        assert_eq!(app.selected_group, Some(Uuid::from_u128(40)));
+        assert!(app.roster.selected.is_none());
+        assert_eq!(app.group_timeline.participants.len(), 3);
+        assert_eq!(app.group_timeline.messages.len(), 2);
     }
 }

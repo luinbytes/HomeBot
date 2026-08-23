@@ -1,6 +1,6 @@
 # Release acceptance operator runbook
 
-This is the deterministic handoff for Linear 6C7-66, 6C7-75, and 6C7-71. Run it from an exact clean `main` commit with authenticated Codex CLI, Claude Code, Apple Developer ID/notary credentials, physical Intel and Apple Silicon Macs, an Arch/Omarchy host, and an Android device. Never paste credentials, command environments, Keychain contents, or provider transcripts into evidence.
+This is the deterministic handoff for GitHub Issues #47, #48, and #49 (historical Linear IDs 6C7-66, 6C7-75, and 6C7-71). Run it from an exact clean `main` commit with authenticated Codex CLI, Claude Code, Apple Developer ID/notary credentials, physical Intel and Apple Silicon Macs, an Arch/Omarchy host, and an Android device. Never paste credentials, command environments, Keychain contents, or provider transcripts into evidence.
 
 ## Record the immutable candidate
 
@@ -61,7 +61,7 @@ Record artifact SHA-256 values, notary request ID/status, `codesign -dv --verbos
 
 Start the exact packaged server with an owner token file and a fresh database. Confirm `/health`, create one Bot against each projected profile, create a direct chat, and send `Reply with exactly HOMEBOT_PROVIDER_OK`. For Codex and Claude independently record pass/fail for auth discovery, streamed response, activity/tool event, approval decision, cancellation, server restart/resume, plan mode, and context compaction where the provider advertises the capability. Use the authenticated public API shapes documented in `docs/protocol.md`; redact transcript content other than the fixed marker. A missing advertised capability is `N/A (not advertised)`, not Pass.
 
-Evidence must include OS/architecture, package hash, CLI version, HomeBot profile ID, start/end UTC timestamps, advertised capabilities, normalized HomeBot terminal status, and the relevant Linear parity row. It must not include the owner token, provider credential, pairing token, environment dump, or provider-native payload.
+Evidence must include OS/architecture, package hash, CLI version, HomeBot profile ID, start/end UTC timestamps, advertised capabilities, normalized HomeBot terminal status, and the relevant GitHub #48/parity-matrix row. It must not include the owner token, provider credential, pairing token, environment dump, or provider-native payload.
 
 ## Physical platform matrix
 
@@ -99,4 +99,4 @@ git tag -s v1.0.0 "$HOMEBOT_CANDIDATE_SHA"
 git push origin v1.0.0
 ```
 
-Upload the immutable macOS Intel/Apple Silicon archives, Arch package and service assets, Android APK, manifests, notarisation evidence, and checksum files to GitHub release `v1.0.0`. Download each public asset into a new directory and re-run its checksum verification. Then update 6C7-66, 6C7-75, and 6C7-71 with the secret-free evidence locations and hashes before closing M6.
+Upload the immutable macOS Intel/Apple Silicon archives, Arch package and service assets, Android APK, manifests, notarisation evidence, and checksum files to GitHub release `v1.0.0`. Download each public asset into a new directory and re-run its checksum verification. Then update GitHub Issues #47, #48, and #49 with the secret-free evidence locations and hashes before closing #42.

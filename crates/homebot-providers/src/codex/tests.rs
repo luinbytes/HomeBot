@@ -57,6 +57,31 @@ fn explicit_profiles_are_independent_and_do_not_debug_environment_values()
 }
 
 #[tokio::test]
+async fn turn_fails_closed_without_an_effective_model() -> Result<(), Box<dyn std::error::Error>> {
+    let adapter = CodexAdapter::new(CodexProfile::new(
+        ProviderAdapterId::new("codex-plan")?,
+        "missing-codex",
+    ));
+    let result = adapter
+        .begin_turn(
+            Uuid::now_v7(),
+            "thread".to_owned(),
+            "Plan".to_owned(),
+            None,
+            ExecutionMode::Plan,
+        )
+        .await;
+    assert!(matches!(
+        result,
+        Err(ProviderError {
+            code: ProviderErrorCode::ProtocolViolation,
+            ..
+        })
+    ));
+    Ok(())
+}
+
+#[tokio::test]
 async fn smoke_test_skips_explicitly_when_codex_is_not_installed()
 -> Result<(), Box<dyn std::error::Error>> {
     let profile = CodexProfile::new(ProviderAdapterId::new("codex-smoke")?, "codex");
@@ -88,6 +113,10 @@ async fn app_server_fixture_streams_and_resolves_approval() -> Result<(), Box<dy
 while IFS= read -r line; do
   case "$line" in
     *'"method":"initialize"'*)
+      case "$line" in
+        *'"capabilities":{"experimentalApi":true}'*) ;;
+        *) exit 2 ;;
+      esac
       printf '%s\n' '{"id":1,"result":{"userAgent":"fixture","platformFamily":"unix","platformOs":"test"}}'
       ;;
     *'"method":"thread/start"'*)
@@ -95,9 +124,13 @@ while IFS= read -r line; do
         *'"approvalPolicy":"untrusted"'*'"sandbox":"read-only"'*) ;;
         *) exit 2 ;;
       esac
-      printf '%s\n' '{"id":2,"result":{"thread":{"id":"thr_fixture"}}}'
+      printf '%s\n' '{"id":2,"result":{"thread":{"id":"thr_fixture"},"model":"fixture-model"}}'
       ;;
     *'"method":"turn/start"'*)
+      case "$line" in
+        *'"collaborationMode":{"mode":"default","settings":{"developer_instructions":null,"model":"fixture-model"}}'*) ;;
+        *) exit 2 ;;
+      esac
       printf '%s\n' '{"id":3,"result":{"turn":{"id":"turn_fixture","status":"inProgress","items":[],"error":null}}}'
       printf '%s\n' '{"method":"item/commandExecution/requestApproval","id":900,"params":{"threadId":"thr_fixture","turnId":"turn_fixture","itemId":"item_fixture","command":["cargo","test"],"cwd":"/workspace","reason":"Run tests"}}'
       ;;
@@ -167,6 +200,10 @@ async fn app_server_fixture_resumes_and_interrupts_a_turn() -> Result<(), Box<dy
 while IFS= read -r line; do
   case "$line" in
     *'"method":"initialize"'*)
+      case "$line" in
+        *'"capabilities":{"experimentalApi":true}'*) ;;
+        *) exit 2 ;;
+      esac
       printf '%s\n' '{"id":1,"result":{}}'
       ;;
     *'"method":"thread/resume"'*)
@@ -174,9 +211,13 @@ while IFS= read -r line; do
         *'"approvalPolicy":"untrusted"'*'"sandbox":"read-only"'*) ;;
         *) exit 2 ;;
       esac
-      printf '%s\n' '{"id":2,"result":{"thread":{"id":"thr_existing"}}}'
+      printf '%s\n' '{"id":2,"result":{"thread":{"id":"thr_existing"},"model":"fixture-model"}}'
       ;;
     *'"method":"turn/start"'*)
+      case "$line" in
+        *'"collaborationMode":{"mode":"plan","settings":{"developer_instructions":null,"model":"fixture-model"}}'*) ;;
+        *) exit 2 ;;
+      esac
       printf '%s\n' '{"id":3,"result":{"turn":{"id":"turn_interrupt","status":"inProgress","items":[],"error":null}}}'
       ;;
     *'"method":"turn/interrupt"'*)
@@ -203,7 +244,7 @@ done
             conversation_id: "thr_existing".to_owned(),
             prompt: "Continue".to_owned(),
             model: None,
-            mode: ExecutionMode::Normal,
+            mode: ExecutionMode::Plan,
             attachments: Vec::new(),
         })
         .await?;

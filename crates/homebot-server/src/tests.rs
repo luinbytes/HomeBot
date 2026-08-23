@@ -4910,9 +4910,8 @@ async fn repository_workspace_preserves_dirty_primary_and_guards_worktree_cleanu
     assert_eq!(attached.mode, WorkspaceMode::Isolated);
     assert_eq!(attached.condition, WorkingTreeCondition::Clean);
     assert!(
-        attached
-            .effective_path
-            .starts_with(&managed.to_string_lossy().into_owned())
+        std::path::Path::new(&attached.effective_path)
+            .starts_with(std::fs::canonicalize(&managed)?)
     );
     assert_eq!(
         std::fs::read_to_string(repository.path().join("README.md"))?,

@@ -28,7 +28,7 @@ use std::{
 };
 use uuid::Uuid;
 
-pub const SCHEMA_VERSION: u32 = 22;
+pub const SCHEMA_VERSION: u32 = 23;
 static MIGRATOR: std::sync::LazyLock<sqlx::migrate::Migrator> = std::sync::LazyLock::new(|| {
     use sqlx::migrate::{Migration, MigrationType, Migrator};
     use std::borrow::Cow;
@@ -132,6 +132,11 @@ static MIGRATOR: std::sync::LazyLock<sqlx::migrate::Migrator> = std::sync::LazyL
             "browser sessions",
             include_str!("../migrations/0022_browser_sessions.sql"),
         ),
+        (
+            23,
+            "browser takeover leases",
+            include_str!("../migrations/0023_browser_takeover_leases.sql"),
+        ),
     ]
     .into_iter()
     .map(|(version, description, sql)| {
@@ -230,6 +235,8 @@ pub enum StorageError {
     PairingRateLimited,
     #[error("Device session was not found")]
     DeviceSessionNotFound,
+    #[error("Browser takeover lease changed concurrently")]
+    BrowserTakeoverConflict,
     #[error("database JSON is invalid: {0}")]
     Serialization(String),
 }
@@ -631,6 +638,8 @@ pub struct BrowserSessionRecord {
     pub controller: String,
     pub status: String,
     pub pending_approval_id: Option<Uuid>,
+    pub controlling_device_id: Option<Uuid>,
+    pub takeover_expires_at_ms: Option<i64>,
     pub created_at_ms: i64,
     pub updated_at_ms: i64,
 }
@@ -3960,13 +3969,15 @@ impl Storage {
                 "browser session scope is not owner accessible".to_owned(),
             ));
         }
-        sqlx::query("INSERT INTO browser_sessions (id, owner_id, chat_id, bot_id, profile_id, runtime_session_id, current_url, controller, status, pending_approval_id, created_at_ms, updated_at_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+        sqlx::query("INSERT INTO browser_sessions (id, owner_id, chat_id, bot_id, profile_id, runtime_session_id, current_url, controller, status, pending_approval_id, controlling_device_id, takeover_expires_at_ms, created_at_ms, updated_at_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
             .bind(session.id.to_string()).bind(session.owner_id.to_string())
             .bind(session.chat_id.to_string()).bind(session.bot_id.to_string())
             .bind(session.profile_id.to_string())
             .bind(session.runtime_session_id.map(|id| id.to_string())).bind(&session.current_url)
             .bind(&session.controller).bind(&session.status)
             .bind(session.pending_approval_id.map(|id| id.to_string()))
+            .bind(session.controlling_device_id.map(|id| id.to_string()))
+            .bind(session.takeover_expires_at_ms)
             .bind(session.created_at_ms).bind(session.updated_at_ms)
             .execute(&mut *transaction).await?;
         transaction.commit().await?;
@@ -4013,6 +4024,65 @@ impl Storage {
             return Err(StorageError::Integrity(
                 "browser session was not found".to_owned(),
             ));
+        }
+        self.browser_session(owner_id, session_id).await
+    }
+
+    /// Atomically acquires the device-owned human takeover lease.
+    ///
+    /// # Errors
+    /// Returns state, ownership, or database errors.
+    pub async fn claim_browser_takeover(
+        &self,
+        owner_id: Uuid,
+        session_id: Uuid,
+        controlling_device_id: Uuid,
+        takeover_expires_at_ms: i64,
+        now_ms: i64,
+    ) -> Result<BrowserSessionRecord, StorageError> {
+        if takeover_expires_at_ms <= now_ms {
+            return Err(StorageError::Integrity(
+                "browser takeover lease must expire in the future".to_owned(),
+            ));
+        }
+        let device_id = controlling_device_id.to_string();
+        let updated = sqlx::query("UPDATE browser_sessions SET controller = 'user', status = 'active', pending_approval_id = NULL, controlling_device_id = ?, takeover_expires_at_ms = ?, updated_at_ms = ? WHERE id = ? AND owner_id = ? AND (controller != 'user' OR controlling_device_id = ? OR takeover_expires_at_ms IS NULL OR takeover_expires_at_ms <= ?)")
+            .bind(&device_id)
+            .bind(takeover_expires_at_ms)
+            .bind(now_ms)
+            .bind(session_id.to_string())
+            .bind(owner_id.to_string())
+            .bind(&device_id)
+            .bind(now_ms)
+            .execute(&self.pool).await?;
+        if updated.rows_affected() != 1 {
+            return Err(StorageError::BrowserTakeoverConflict);
+        }
+        self.browser_session(owner_id, session_id).await
+    }
+
+    /// Atomically returns a human-controlled browser to its Bot.
+    ///
+    /// A device can release its own lease after expiry, but cannot release another device's
+    /// lease. A session that is already Bot-controlled is an idempotent success.
+    ///
+    /// # Errors
+    /// Returns state, ownership, or database errors.
+    pub async fn release_browser_takeover(
+        &self,
+        owner_id: Uuid,
+        session_id: Uuid,
+        controlling_device_id: Uuid,
+        now_ms: i64,
+    ) -> Result<BrowserSessionRecord, StorageError> {
+        let updated = sqlx::query("UPDATE browser_sessions SET controller = 'bot', status = 'active', pending_approval_id = NULL, controlling_device_id = NULL, takeover_expires_at_ms = NULL, updated_at_ms = ? WHERE id = ? AND owner_id = ? AND (controller != 'user' OR controlling_device_id = ?)")
+            .bind(now_ms)
+            .bind(session_id.to_string())
+            .bind(owner_id.to_string())
+            .bind(controlling_device_id.to_string())
+            .execute(&self.pool).await?;
+        if updated.rows_affected() != 1 {
+            return Err(StorageError::BrowserTakeoverConflict);
         }
         self.browser_session(owner_id, session_id).await
     }
@@ -6439,6 +6509,12 @@ fn browser_session_from_row(
             .as_deref()
             .map(parse_uuid)
             .transpose()?,
+        controlling_device_id: row
+            .try_get::<Option<String>, _>("controlling_device_id")?
+            .as_deref()
+            .map(parse_uuid)
+            .transpose()?,
+        takeover_expires_at_ms: row.try_get("takeover_expires_at_ms")?,
         created_at_ms: row.try_get("created_at_ms")?,
         updated_at_ms: row.try_get("updated_at_ms")?,
     })

@@ -6239,6 +6239,28 @@ async fn browser_session_watch_takeover_approval_return_and_restart_are_server_o
             .is_some()
     );
 
+    let controlling_token = "browser-controller-device";
+    let controlling_device_id = Uuid::now_v7();
+    let competing_token = "browser-competing-device";
+    let competing_device_id = Uuid::now_v7();
+    for (id, name, token) in [
+        (
+            controlling_device_id,
+            "Controlling phone",
+            controlling_token,
+        ),
+        (competing_device_id, "Competing phone", competing_token),
+    ] {
+        let digest: [u8; 32] = Sha256::digest(token.as_bytes()).into();
+        sqlx::query("INSERT INTO device_sessions (id, owner_id, name, token_digest, endpoint_kind, created_at_ms) VALUES (?, ?, ?, ?, 'loopback', 1)")
+            .bind(id.to_string())
+            .bind(Uuid::nil().to_string())
+            .bind(name)
+            .bind(digest.as_slice())
+            .execute(storage.pool())
+            .await?;
+    }
+
     let mut takeover = BrowserMutationRequest {
         request_id: Uuid::now_v7(),
         idempotency_key: Uuid::now_v7(),
@@ -6246,11 +6268,12 @@ async fn browser_session_watch_takeover_approval_return_and_restart_are_server_o
     };
     let pending = app
         .clone()
-        .oneshot(json_request(
-            "POST",
-            &format!("/api/v1/browser-sessions/{session_id}/takeover"),
-            &takeover,
-        ))
+        .oneshot(
+            Request::post(format!("/api/v1/browser-sessions/{session_id}/takeover"))
+                .header("authorization", format!("Bearer {controlling_token}"))
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&takeover)?))?,
+        )
         .await?;
     assert_eq!(pending.status(), StatusCode::ACCEPTED);
     let pending: BrowserActionResponse = response_json(pending).await?;
@@ -6271,11 +6294,12 @@ async fn browser_session_watch_takeover_approval_return_and_restart_are_server_o
     takeover.approval_id = Some(approval.id);
     let controlled = app
         .clone()
-        .oneshot(json_request(
-            "POST",
-            &format!("/api/v1/browser-sessions/{session_id}/takeover"),
-            &takeover,
-        ))
+        .oneshot(
+            Request::post(format!("/api/v1/browser-sessions/{session_id}/takeover"))
+                .header("authorization", format!("Bearer {controlling_token}"))
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&takeover)?))?,
+        )
         .await?;
     assert_eq!(controlled.status(), StatusCode::OK);
     assert_eq!(
@@ -6285,16 +6309,120 @@ async fn browser_session_watch_takeover_approval_return_and_restart_are_server_o
             .controller,
         BrowserController::User
     );
-    let returned = app
+    let leased = storage.browser_session(Uuid::nil(), session_id).await?;
+    assert_eq!(leased.controlling_device_id, Some(controlling_device_id));
+    assert!(leased.takeover_expires_at_ms.is_some());
+
+    let blocked_bot_action = app
+        .clone()
         .oneshot(json_request(
             "POST",
-            &format!("/api/v1/browser-sessions/{session_id}/return"),
-            &BrowserMutationRequest {
+            &format!("/api/v1/browser-sessions/{session_id}/actions"),
+            &BrowserActionRequest {
                 request_id: Uuid::now_v7(),
                 idempotency_key: Uuid::now_v7(),
+                command: BrowserCommand::CurrentUrl,
                 approval_id: None,
             },
         ))
+        .await?;
+    assert_eq!(blocked_bot_action.status(), StatusCode::FORBIDDEN);
+
+    sqlx::query("UPDATE browser_sessions SET takeover_expires_at_ms = 1 WHERE id = ?")
+        .bind(session_id.to_string())
+        .execute(storage.pool())
+        .await?;
+    let expired_action = app
+        .clone()
+        .oneshot(
+            Request::post(format!("/api/v1/browser-sessions/{session_id}/actions"))
+                .header("authorization", format!("Bearer {controlling_token}"))
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&BrowserActionRequest {
+                    request_id: Uuid::now_v7(),
+                    idempotency_key: Uuid::now_v7(),
+                    command: BrowserCommand::CurrentUrl,
+                    approval_id: None,
+                })?))?,
+        )
+        .await?;
+    assert_eq!(expired_action.status(), StatusCode::CONFLICT);
+
+    let mut competing_takeover = BrowserMutationRequest {
+        request_id: Uuid::now_v7(),
+        idempotency_key: Uuid::now_v7(),
+        approval_id: None,
+    };
+    let pending = app
+        .clone()
+        .oneshot(
+            Request::post(format!("/api/v1/browser-sessions/{session_id}/takeover"))
+                .header("authorization", format!("Bearer {competing_token}"))
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&competing_takeover)?))?,
+        )
+        .await?;
+    assert_eq!(pending.status(), StatusCode::ACCEPTED);
+    let approval = response_json::<BrowserActionResponse>(pending)
+        .await?
+        .approval
+        .ok_or("missing replacement takeover approval")?;
+    let decision = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            &format!("/api/v1/approvals/{}/decision", approval.id),
+            &ApprovalDecisionRequest {
+                request_id: Uuid::now_v7(),
+                idempotency_key: Uuid::now_v7(),
+                allow: true,
+            },
+        ))
+        .await?;
+    assert_eq!(decision.status(), StatusCode::OK);
+    competing_takeover.approval_id = Some(approval.id);
+    let replacement = app
+        .clone()
+        .oneshot(
+            Request::post(format!("/api/v1/browser-sessions/{session_id}/takeover"))
+                .header("authorization", format!("Bearer {competing_token}"))
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&competing_takeover)?))?,
+        )
+        .await?;
+    assert_eq!(replacement.status(), StatusCode::OK);
+    let replacement = response_json::<BrowserActionResponse>(replacement).await?;
+    assert_eq!(replacement.session.controller, BrowserController::User);
+    assert_eq!(
+        storage
+            .browser_session(Uuid::nil(), session_id)
+            .await?
+            .controlling_device_id,
+        Some(competing_device_id)
+    );
+
+    let return_request = BrowserMutationRequest {
+        request_id: Uuid::now_v7(),
+        idempotency_key: Uuid::now_v7(),
+        approval_id: None,
+    };
+    let former_controller_return = app
+        .clone()
+        .oneshot(
+            Request::post(format!("/api/v1/browser-sessions/{session_id}/return"))
+                .header("authorization", format!("Bearer {controlling_token}"))
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&return_request)?))?,
+        )
+        .await?;
+    assert_eq!(former_controller_return.status(), StatusCode::FORBIDDEN);
+    let returned = app
+        .oneshot(
+            Request::post(format!("/api/v1/browser-sessions/{session_id}/return"))
+                .header("authorization", format!("Bearer {competing_token}"))
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&return_request)?))?,
+        )
         .await?;
     assert_eq!(returned.status(), StatusCode::OK);
     assert_eq!(
@@ -6305,6 +6433,35 @@ async fn browser_session_watch_takeover_approval_return_and_restart_are_server_o
         BrowserController::Bot
     );
 
+    let race_time = unix_time_ms();
+    let first = storage.claim_browser_takeover(
+        Uuid::nil(),
+        session_id,
+        controlling_device_id,
+        race_time + 60_000,
+        race_time,
+    );
+    let second = storage.claim_browser_takeover(
+        Uuid::nil(),
+        session_id,
+        competing_device_id,
+        race_time + 60_000,
+        race_time,
+    );
+    let (first, second) = tokio::join!(first, second);
+    assert!(first.is_ok() ^ second.is_ok());
+    assert!(matches!(
+        first.as_ref().err().or_else(|| second.as_ref().err()),
+        Some(homebot_storage::StorageError::BrowserTakeoverConflict)
+    ));
+    let winner = first
+        .as_ref()
+        .ok()
+        .map_or(competing_device_id, |_| controlling_device_id);
+    storage
+        .release_browser_takeover(Uuid::nil(), session_id, winner, race_time + 1)
+        .await?;
+
     let reopened = Storage::open(&database).await?;
     let durable = reopened.browser_session(Uuid::nil(), session_id).await?;
     assert_eq!(durable.profile_name, "Shared login");
@@ -6312,6 +6469,8 @@ async fn browser_session_watch_takeover_approval_return_and_restart_are_server_o
         durable.current_url.as_deref(),
         Some("https://example.test/private")
     );
+    assert_eq!(durable.controlling_device_id, None);
+    assert_eq!(durable.takeover_expires_at_ms, None);
     let persisted: Vec<String> =
         sqlx::query_scalar("SELECT display_name || directory_ref FROM browser_profiles")
             .fetch_all(reopened.pool())

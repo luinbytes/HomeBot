@@ -626,6 +626,9 @@ impl From<StorageError> for ApiError {
             | StorageError::PairingOriginMismatch
             | StorageError::PairingRateLimited
             | StorageError::DeviceSessionNotFound) => pairing_storage_error(&error),
+            StorageError::BrowserTakeoverConflict => {
+                Self::conflict("Browser control changed; refresh and try again")
+            }
             StorageError::RoutineNotFound => Self::new(
                 StatusCode::NOT_FOUND,
                 ErrorCode::NotFound,

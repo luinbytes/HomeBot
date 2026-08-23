@@ -1,6 +1,6 @@
 use axum::{
     Extension, Json,
-    extract::{Path, State},
+    extract::{ConnectInfo, Path, State},
     http::{HeaderMap, header},
 };
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
@@ -10,6 +10,7 @@ use homebot_protocol::{
 };
 use homebot_storage::DeviceSessionRecord;
 use sha2::{Digest, Sha256};
+use std::net::SocketAddr;
 use url::{Host, Url};
 use uuid::Uuid;
 
@@ -30,7 +31,9 @@ pub(super) async fn create(
     require_owner(&identity)?;
     let endpoint = validate_endpoint(&request.endpoint, request.allow_insecure_private_network)?;
     let token = random_token("hbpair")?;
+    let native_proof = random_token("hbproof")?;
     let digest: [u8; 32] = Sha256::digest(token.as_bytes()).into();
+    let native_proof_digest: [u8; 32] = Sha256::digest(native_proof.as_bytes()).into();
     let now = unix_time_ms();
     let expires = now.saturating_add(PAIRING_TTL_MS);
     let id = Uuid::now_v7();
@@ -40,6 +43,7 @@ pub(super) async fn create(
             state.owner_id,
             id,
             &digest,
+            &native_proof_digest,
             &endpoint.endpoint,
             &endpoint.origin,
             endpoint_kind_name(endpoint.kind),
@@ -51,7 +55,8 @@ pub(super) async fn create(
     deep_link
         .query_pairs_mut()
         .append_pair("endpoint", &endpoint.endpoint)
-        .append_pair("token", &token);
+        .append_pair("token", &token)
+        .append_pair("proof", &native_proof);
     let offer = PairingOffer {
         id,
         endpoint: endpoint.endpoint,
@@ -66,22 +71,39 @@ pub(super) async fn create(
 
 pub(super) async fn exchange(
     State(state): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
     Json(request): Json<ExchangePairingRequest>,
 ) -> Result<(HeaderMap, Json<PairingExchangeResponse>), ApiError> {
     if !request.pairing_token.starts_with("hbpair_") || request.pairing_token.len() > 128 {
         return Err(homebot_storage::StorageError::PairingNotFound.into());
     }
+    if request
+        .native_proof
+        .as_ref()
+        .is_some_and(|proof| !proof.starts_with("hbproof_") || proof.len() > 128)
+    {
+        return Err(homebot_storage::StorageError::PairingOriginMismatch.into());
+    }
     let origin = normalized_origin(&headers)?;
     let session = random_token("hbds")?;
     let pairing_digest: [u8; 32] = Sha256::digest(request.pairing_token.as_bytes()).into();
+    let native_proof_digest = request
+        .native_proof
+        .as_deref()
+        .map(|proof| <[u8; 32]>::from(Sha256::digest(proof.as_bytes())));
+    let source = peer.ip().to_string();
+    let source_digest: [u8; 32] =
+        Sha256::digest(format!("homebot-pairing-source:{source}").as_bytes()).into();
     let session_digest: [u8; 32] = Sha256::digest(session.as_bytes()).into();
     let device = state
         .storage
         .exchange_pairing_credential(
             state.owner_id,
             &pairing_digest,
+            native_proof_digest.as_ref(),
             origin.as_deref(),
+            &source_digest,
             Uuid::now_v7(),
             &request.device_name,
             &session_digest,

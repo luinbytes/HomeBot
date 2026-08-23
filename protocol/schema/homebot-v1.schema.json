@@ -2555,6 +2555,13 @@
         "device_name": {
           "type": "string"
         },
+        "native_proof": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
         "pairing_token": {
           "type": "string"
         },

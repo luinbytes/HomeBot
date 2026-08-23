@@ -26,9 +26,9 @@ curl --fail-with-body \
   http://127.0.0.1:7123/api/v1/pairing
 ```
 
-The response contains a five-minute `homebot://pair` deep link. Its `hbpair_` credential is single-use and is not a permanent session. The Android client exchanges it at the advertised endpoint, names the device, and receives an `hbds_` session once. HomeBot stores only SHA-256 token digests. Secret-bearing responses use `Cache-Control: no-store`.
+The response contains a five-minute `homebot://pair` deep link. Its `hbpair_` credential and separate `hbproof_` native proof are single-use pairing material, not a permanent session. The Android client exchanges both values at the advertised endpoint, names the device, and receives an `hbds_` session once. HomeBot stores only SHA-256 digests of the pairing material. Secret-bearing responses use `Cache-Control: no-store`.
 
-Plain HTTP advertisements are accepted automatically only for loopback. A private LAN or Tailscale HTTP endpoint requires `allow_insecure_private_network: true` and returns a visible warning. Custom/public advertisements require HTTPS. Endpoint credentials, paths, queries, and fragments are rejected. When a browser supplies an `Origin`, exchange requires an exact match; native clients may omit it.
+Plain HTTP advertisements are accepted automatically only for loopback. A private LAN or Tailscale HTTP endpoint requires `allow_insecure_private_network: true` and returns a visible warning. Custom/public advertisements require HTTPS. Endpoint credentials, paths, queries, and fragments are rejected. Browser exchange requires an exact `Origin` match and rejects a missing origin. Native exchange has no browser origin, so it must supply the separate proof from the deep link; mixed or incomplete provenance is rejected.
 
 List and revoke sessions with the owner bearer:
 
@@ -44,6 +44,6 @@ curl --fail-with-body \
   http://127.0.0.1:7123/api/v1/devices/DEVICE_UUID/revoke
 ```
 
-Revocation takes effect for subsequent HTTP calls and terminates a live event stream at its next heartbeat. Device sessions cannot create pairing offers, list devices, or revoke peers. Pairing exchange is rate-limited and failed origin attempts are durable across restart.
+Revocation takes effect for subsequent HTTP calls and terminates a live event stream at its next heartbeat. Device sessions cannot create pairing offers, list devices, or revoke peers. Failed provenance attempts are bounded per offer. Unknown-token attempts are throttled by the direct peer address and retained in a bounded digest-only emergency ledger, so random tokens from one client or reverse proxy cannot exhaust a valid offer's exchange capacity.
 
 The desktop Devices settings screen uses these same APIs. It generates/copies the deep link, displays endpoint warnings and authoritative device state, and sends revocation through the server; it never treats its local projection as authority.

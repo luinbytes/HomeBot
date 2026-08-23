@@ -411,6 +411,8 @@ pub struct PairingOffer {
 pub struct ExchangePairingRequest {
     pub request_id: Uuid,
     pub pairing_token: String,
+    #[serde(default)]
+    pub native_proof: Option<String>,
     pub device_name: String,
 }
 

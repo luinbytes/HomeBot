@@ -601,12 +601,15 @@ pub async fn serve(
     shutdown: oneshot::Receiver<()>,
 ) -> std::io::Result<()> {
     let shutdown_signal = state.server_shutdown.clone();
-    axum::serve(listener, router(state))
-        .with_graceful_shutdown(async move {
-            let _ = shutdown.await;
-            let _ = shutdown_signal.send(true);
-        })
-        .await
+    axum::serve(
+        listener,
+        router(state).into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .with_graceful_shutdown(async move {
+        let _ = shutdown.await;
+        let _ = shutdown_signal.send(true);
+    })
+    .await
 }
 
 async fn events_socket(

@@ -91,6 +91,10 @@ while IFS= read -r line; do
       printf '%s\n' '{"id":1,"result":{"userAgent":"fixture","platformFamily":"unix","platformOs":"test"}}'
       ;;
     *'"method":"thread/start"'*)
+      case "$line" in
+        *'"approvalPolicy":"untrusted"'*'"sandbox":"read-only"'*) ;;
+        *) exit 2 ;;
+      esac
       printf '%s\n' '{"id":2,"result":{"thread":{"id":"thr_fixture"}}}'
       ;;
     *'"method":"turn/start"'*)
@@ -166,6 +170,10 @@ while IFS= read -r line; do
       printf '%s\n' '{"id":1,"result":{}}'
       ;;
     *'"method":"thread/resume"'*)
+      case "$line" in
+        *'"approvalPolicy":"untrusted"'*'"sandbox":"read-only"'*) ;;
+        *) exit 2 ;;
+      esac
       printf '%s\n' '{"id":2,"result":{"thread":{"id":"thr_existing"}}}'
       ;;
     *'"method":"turn/start"'*)

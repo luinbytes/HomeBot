@@ -2403,7 +2403,10 @@ async fn provider_turn_streams_persists_approves_resumes_and_cancels()
         .await?;
     assert_eq!(response.status(), StatusCode::OK);
     let _ = wait_for_timeline(&app, chat_id, |timeline| {
-        timeline.chat.running && timeline.messages.len() == 4
+        timeline.chat.running
+            && timeline.messages.len() == 4
+            && timeline.approvals.len() == 2
+            && timeline.activities.len() == 2
     })
     .await?;
     let response = app
@@ -2426,6 +2429,27 @@ async fn provider_turn_streams_persists_approves_resumes_and_cancels()
     })
     .await?;
     assert!(!timeline.chat.running);
+    assert_eq!(
+        timeline.approvals[1].status,
+        homebot_protocol::ApprovalStatus::Expired
+    );
+    assert_eq!(
+        timeline.activities[1].status,
+        homebot_protocol::ActivityStatus::Cancelled
+    );
+    assert!(timeline.activities[1].finished_at_ms.is_some());
+    let late_allow = app
+        .oneshot(json_request(
+            "POST",
+            &format!("/api/v1/approvals/{}/decision", timeline.approvals[1].id),
+            &ApprovalDecisionRequest {
+                request_id: Uuid::now_v7(),
+                idempotency_key: Uuid::now_v7(),
+                allow: true,
+            },
+        ))
+        .await?;
+    assert_eq!(late_allow.status(), StatusCode::CONFLICT);
     Ok(())
 }
 

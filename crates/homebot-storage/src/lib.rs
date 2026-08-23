@@ -5038,6 +5038,58 @@ impl Storage {
         rows.iter().map(activity_from_row).collect()
     }
 
+    /// Terminalizes unfinished provider interactions for one message operation.
+    ///
+    /// # Errors
+    ///
+    /// Returns ownership, database, or integrity errors.
+    pub async fn finish_provider_interactions(
+        &self,
+        owner_id: Uuid,
+        chat_id: Uuid,
+        message_id: Uuid,
+        operation_id: Uuid,
+        now_ms: i64,
+    ) -> Result<(Vec<ExecutionActivity>, Vec<ChatApproval>), StorageError> {
+        self.require_owned_chat(owner_id, chat_id).await?;
+        let mut transaction = self.pool.begin().await?;
+        let activity_rows = sqlx::query(
+            "UPDATE execution_activities
+             SET status = 'cancelled', finished_at_ms = ?
+             WHERE chat_id = ? AND message_id = ? AND status IN ('pending', 'running')
+             RETURNING *",
+        )
+        .bind(now_ms)
+        .bind(chat_id.to_string())
+        .bind(message_id.to_string())
+        .fetch_all(&mut *transaction)
+        .await?;
+        let approval_rows = sqlx::query(
+            "UPDATE approvals
+             SET status = 'expired', decided_at_ms = ?
+             WHERE owner_id = ? AND chat_id = ? AND message_id = ?
+               AND operation_id = ? AND status = 'pending'
+             RETURNING *",
+        )
+        .bind(now_ms)
+        .bind(owner_id.to_string())
+        .bind(chat_id.to_string())
+        .bind(message_id.to_string())
+        .bind(operation_id.to_string())
+        .fetch_all(&mut *transaction)
+        .await?;
+        let activities = activity_rows
+            .iter()
+            .map(activity_from_row)
+            .collect::<Result<_, _>>()?;
+        let approvals = approval_rows
+            .iter()
+            .map(approval_from_row)
+            .collect::<Result<_, _>>()?;
+        transaction.commit().await?;
+        Ok((activities, approvals))
+    }
+
     /// Creates a pending approval for a chat operation.
     ///
     /// # Errors

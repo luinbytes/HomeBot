@@ -412,6 +412,8 @@ async fn finish(
         .map(serde_json::to_value)
         .transpose()
         .map_err(|_| ApiError::internal())?;
+    let now = unix_time_ms();
+    finish_interactions(state, chat_id, &operation, now).await?;
     let message = state
         .storage
         .finish_bot_message(
@@ -419,18 +421,18 @@ async fn finish(
             operation.message,
             status,
             error_json.as_ref(),
-            unix_time_ms(),
+            now,
         )
         .await?;
     if matches!(status, MessageStatus::Completed | MessageStatus::Failed) {
         let _ = state
             .storage
-            .increment_chat_unread(state.owner_id, chat_id, unix_time_ms())
+            .increment_chat_unread(state.owner_id, chat_id, now)
             .await?;
     }
     let chat = state
         .storage
-        .set_chat_running(state.owner_id, chat_id, false, unix_time_ms())
+        .set_chat_running(state.owner_id, chat_id, false, now)
         .await?;
     publish(
         state,
@@ -463,6 +465,45 @@ async fn finish(
     state.chat_operations.lock().await.remove(&chat_id);
     if status == MessageStatus::Completed {
         start_next_queued(state, chat_id).await?;
+    }
+    Ok(())
+}
+
+async fn finish_interactions(
+    state: &AppState,
+    chat_id: Uuid,
+    operation: &ChatOperation,
+    now: i64,
+) -> Result<(), ApiError> {
+    let (activities, approvals) = state
+        .storage
+        .finish_provider_interactions(
+            state.owner_id,
+            chat_id,
+            operation.message,
+            operation.operation,
+            now,
+        )
+        .await?;
+    for activity in activities {
+        publish(
+            state,
+            "activity_changed",
+            ServerEventBody::ActivityChanged {
+                activity: activity_summary(activity),
+            },
+        )
+        .await?;
+    }
+    for approval in approvals {
+        publish(
+            state,
+            "approval_changed",
+            ServerEventBody::ApprovalChanged {
+                approval: approval_summary(approval),
+            },
+        )
+        .await?;
     }
     Ok(())
 }

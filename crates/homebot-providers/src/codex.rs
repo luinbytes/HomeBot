@@ -266,7 +266,11 @@ impl ProviderAdapter for CodexAdapter {
     async fn start(&self, request: StartRequest) -> Result<ProviderRun, ProviderError> {
         reject_attachments(&request.attachments)?;
         let client = self.client().await?;
-        let mut params = json!({"serviceName": "homebot"});
+        let mut params = json!({
+            "serviceName": "homebot",
+            "approvalPolicy": "untrusted",
+            "sandbox": "read-only",
+        });
         if let Some(model) = &request.model {
             params["model"] = Value::String(model.clone());
         }
@@ -292,7 +296,11 @@ impl ProviderAdapter for CodexAdapter {
             .await?
             .request(
                 "thread/resume",
-                json!({"threadId": request.conversation_id}),
+                json!({
+                    "threadId": request.conversation_id,
+                    "approvalPolicy": "untrusted",
+                    "sandbox": "read-only",
+                }),
             )
             .await?;
         self.begin_turn(

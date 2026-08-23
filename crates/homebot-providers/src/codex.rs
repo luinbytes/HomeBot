@@ -112,6 +112,9 @@ impl CodexAdapter {
         model: Option<String>,
         mode: ExecutionMode,
     ) -> Result<ProviderRun, ProviderError> {
+        let effective_model = model
+            .as_deref()
+            .ok_or_else(|| protocol_error("Codex turn omitted the effective model"))?;
         let client = self.client().await?;
         let (events_tx, events_rx) = mpsc::channel(EVENT_BUFFER);
         client
@@ -121,17 +124,18 @@ impl CodexAdapter {
             "threadId": conversation_id,
             "input": [{"type": "text", "text": prompt}],
         });
+        params["collaborationMode"] = json!({
+            "mode": if mode == ExecutionMode::Plan { "plan" } else { "default" },
+            "settings": {
+                "developer_instructions": null,
+                "model": effective_model,
+            }
+        });
         if let Some(model) = model {
             params["model"] = Value::String(model);
         }
         if let Some(cwd) = &self.profile.working_directory {
             params["cwd"] = Value::String(cwd.to_string_lossy().into_owned());
-        }
-        if mode == ExecutionMode::Plan {
-            params["collaborationMode"] = json!({
-                "mode": "plan",
-                "settings": {"developer_instructions": null}
-            });
         }
         let result = match client.request("turn/start", params).await {
             Ok(result) => result,
@@ -280,11 +284,12 @@ impl ProviderAdapter for CodexAdapter {
         let result = client.request("thread/start", params).await?;
         let conversation_id = string_at(&result, &["thread", "id"])
             .ok_or_else(|| protocol_error("thread/start omitted thread.id"))?;
+        let model = request.model.or_else(|| string_at(&result, &["model"]));
         self.begin_turn(
             request.operation_id,
             conversation_id,
             request.prompt,
-            request.model,
+            model,
             request.mode,
         )
         .await
@@ -292,7 +297,8 @@ impl ProviderAdapter for CodexAdapter {
 
     async fn resume(&self, request: ResumeRequest) -> Result<ProviderRun, ProviderError> {
         reject_attachments(&request.attachments)?;
-        self.client()
+        let result = self
+            .client()
             .await?
             .request(
                 "thread/resume",
@@ -303,11 +309,12 @@ impl ProviderAdapter for CodexAdapter {
                 }),
             )
             .await?;
+        let model = request.model.or_else(|| string_at(&result, &["model"]));
         self.begin_turn(
             request.operation_id,
             request.conversation_id,
             request.prompt,
-            request.model,
+            model,
             request.mode,
         )
         .await
@@ -438,7 +445,8 @@ impl CodexClient {
                         "name": "homebot",
                         "title": "HomeBot",
                         "version": env!("CARGO_PKG_VERSION")
-                    }
+                    },
+                    "capabilities": {"experimentalApi": true}
                 }),
             )
             .await?;

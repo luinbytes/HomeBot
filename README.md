@@ -48,7 +48,7 @@ The hosted cloud VM is the one intentional Grok Bot parity exclusion. Your HomeB
 
 ## Status and installation
 
-HomeBot is currently in **M6: Packaging, Hardening & v1 Parity Gate**. M0 through M5 are verified complete. Automated Android, Arch, updater, recovery, security, performance, production-desktop, and unsigned macOS packaging gates are implemented. Live-provider acceptance, Apple signing/notarisation, and physical-platform validation remain open.
+HomeBot is currently in **M6: Packaging, Hardening & v1 Parity Gate**. M0 through M5 and the repository-internal security gate are verified complete. Automated Android, Arch, updater, recovery, security, performance, production-desktop, and unsigned macOS packaging gates are green on `main`. Final packaged live-provider acceptance, Apple signing/notarisation, and physical-platform validation remain open.
 
 There are still **no supported release packages**. Follow [INSTALL.md](INSTALL.md) for human installation status or [AGENT_INSTALL.md](AGENT_INSTALL.md) for deterministic automation instructions. Release readiness is tracked against [the parity matrix](docs/parity-matrix.md).
 

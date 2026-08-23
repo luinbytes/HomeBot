@@ -52,4 +52,4 @@ Sources: [overview](https://docs.x.ai/grok-bot/overview), [Bots](https://docs.x.
 
 ## HomeBot differentiators tracked outside strict parity
 
-Repository workspaces, isolated worktrees, per-turn checkpoints, exact/full-chat diffs, safe revert, source-control and PR flows, multi-provider profiles, context compaction, Android controls for all server-supported features, Linux, and headless operation are HomeBot requirements sourced from the Linear roadmap and T3 Code inspiration.
+Repository workspaces, isolated worktrees, per-turn checkpoints, exact/full-chat diffs, safe revert, source-control and PR flows, multi-provider profiles, context compaction, Android controls for all server-supported features, Linux, and headless operation are HomeBot requirements tracked operationally in GitHub Issues #42-#49; their 6C7 identifiers preserve the historical Linear roadmap provenance.

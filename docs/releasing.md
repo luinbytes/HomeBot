@@ -1,6 +1,6 @@
 # Releasing
 
-No v1 tag is permitted until every required Linear issue is complete and each parity row is Pass on macOS Intel, macOS Apple Silicon, Arch/Omarchy, and Android, except the documented hosted-VM exclusion.
+No v1 tag is permitted until every GitHub release-blocker issue is complete and each parity row is Pass on macOS Intel, macOS Apple Silicon, Arch/Omarchy, and Android, except the documented hosted-VM exclusion.
 
 Release CI must build signed/notarised macOS artifacts, Arch/Omarchy packages and headless service assets, and the Android artifact; test clean installation and supported upgrades; produce SHA-256 checksums and checksummed release manifests bound to platform-signed artifacts; run security, migration/recovery, protocol, performance, accessibility, provider round-trip, and parity suites; then publish immutable GitHub release artifacts and known limitations.
 
@@ -26,4 +26,4 @@ HOMEBOT_UPDATE_PUBLIC_KEY_HEX="$(openssl pkey -in "$HOME/.config/homebot/update-
 
 Never print, commit, upload as an artifact, or pass the private key through a command-line value. The public hex value is non-secret and must be identical for every v1 desktop build. A build without `HOMEBOT_UPDATE_PUBLIC_KEY_HEX` fails update-manifest verification rather than accepting a development key. Update checks are user initiated; downloads require a second explicit approval and are staged only after signature plus exact size/SHA-256 verification. See [recovery.md](recovery.md) for the migration backup and rollback contract.
 
-The exact credentialed, physical-platform, live-provider, evidence, and post-download commands are in [release-acceptance.md](release-acceptance.md). That runbook is the operator handoff for 6C7-66, 6C7-75, and 6C7-71; fixture results must never be entered as physical or live-provider evidence.
+The exact credentialed, physical-platform, live-provider, evidence, and post-download commands are in [release-acceptance.md](release-acceptance.md). That runbook is the operator handoff for GitHub Issues #47, #48, and #49; fixture results must never be entered as physical or live-provider evidence.

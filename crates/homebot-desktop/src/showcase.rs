@@ -199,12 +199,14 @@ fn plugin_settings_state(ui: &mut egui::Ui, theme: HomeBotTheme) {
             section: SettingsSection::Plugins,
             plugins: vec![
                 PluginSettingsItem {
+                    id: None,
                     name: "Repository tools".to_owned(),
                     detail: String::new(),
                     state: PluginViewState::Connected,
                     enabled: true,
                 },
                 PluginSettingsItem {
+                    id: None,
                     name: "Local notes".to_owned(),
                     detail: "Connection error".to_owned(),
                     state: PluginViewState::Error,

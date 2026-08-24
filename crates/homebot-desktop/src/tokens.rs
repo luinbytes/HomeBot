@@ -253,12 +253,15 @@ impl HomeBotTheme {
         style.visuals.error_fg_color = self.palette.danger;
         style.visuals.widgets.noninteractive.fg_stroke.color = self.palette.text_primary;
         style.visuals.widgets.inactive.bg_fill = self.palette.surface;
+        style.visuals.widgets.inactive.weak_bg_fill = self.palette.surface_hover;
         style.visuals.widgets.inactive.fg_stroke.color = self.palette.text_secondary;
         style.visuals.widgets.inactive.corner_radius = CornerRadius::same(self.radii.sm);
         style.visuals.widgets.hovered.bg_fill = self.palette.surface_hover;
+        style.visuals.widgets.hovered.weak_bg_fill = self.palette.surface_selected;
         style.visuals.widgets.hovered.fg_stroke.color = self.palette.text_primary;
         style.visuals.widgets.hovered.corner_radius = CornerRadius::same(self.radii.sm);
         style.visuals.widgets.active.bg_fill = self.palette.surface_selected;
+        style.visuals.widgets.active.weak_bg_fill = self.palette.surface_selected;
         style.visuals.widgets.active.fg_stroke.color = self.palette.text_primary;
         style.visuals.widgets.active.corner_radius = CornerRadius::same(self.radii.sm);
         context.set_style(style);

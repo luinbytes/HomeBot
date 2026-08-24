@@ -237,7 +237,12 @@ pub fn section_label(ui: &mut Ui, theme: HomeBotTheme, text: &str) {
     );
 }
 
-pub fn message(ui: &mut Ui, theme: HomeBotTheme, bot: Option<BotIdentity<'_>>, text: &str) {
+pub fn message(
+    ui: &mut Ui,
+    theme: HomeBotTheme,
+    bot: Option<BotIdentity<'_>>,
+    text: &str,
+) -> egui::Response {
     let assistant = bot.is_some();
     ui.with_layout(
         if assistant {
@@ -282,10 +287,17 @@ pub fn message(ui: &mut Ui, theme: HomeBotTheme, bot: Option<BotIdentity<'_>>, t
                     );
                 });
         },
-    );
+    )
+    .response
 }
 
-pub fn activity_card(ui: &mut Ui, theme: HomeBotTheme, title: &str, detail: &str, risky: bool) {
+pub fn activity_card(
+    ui: &mut Ui,
+    theme: HomeBotTheme,
+    title: &str,
+    detail: &str,
+    risky: bool,
+) -> egui::Response {
     let indicator = if risky {
         theme.palette.warning
     } else {
@@ -294,34 +306,33 @@ pub fn activity_card(ui: &mut Ui, theme: HomeBotTheme, title: &str, detail: &str
     Frame::NONE
         .fill(theme.palette.surface)
         .stroke(Stroke::new(theme.layout.hairline, theme.palette.border))
-        .corner_radius(CornerRadius::same(theme.radii.md))
-        .inner_margin(egui::Margin::same(theme.insets.md))
+        .corner_radius(CornerRadius::same(theme.radii.sm))
+        .inner_margin(egui::Margin::symmetric(theme.insets.sm, theme.insets.sm))
         .show(ui, |ui| {
             ui.horizontal(|ui| {
-                let (rect, _) = ui.allocate_exact_size(
-                    Vec2::splat(theme.layout.activity_icon_size),
-                    Sense::hover(),
+                let icon_size = theme.layout.activity_icon_size * 0.45;
+                let (rect, _) = ui.allocate_exact_size(Vec2::splat(icon_size), Sense::hover());
+                ui.painter()
+                    .circle_filled(rect.center(), icon_size / 2.0, indicator);
+                ui.label(
+                    RichText::new(title)
+                        .font(theme.typography.font(theme.typography.caption))
+                        .color(theme.palette.text_primary)
+                        .strong(),
                 );
-                ui.painter().circle_filled(
-                    rect.center(),
-                    theme.layout.activity_icon_size / 2.0,
-                    indicator,
-                );
-                ui.vertical(|ui| {
-                    ui.label(
-                        RichText::new(title)
-                            .font(theme.typography.font(theme.typography.body_compact))
-                            .color(theme.palette.text_primary)
-                            .strong(),
+                if !detail.is_empty() && detail != title {
+                    ui.add(
+                        egui::Label::new(
+                            RichText::new(detail)
+                                .font(theme.typography.font(theme.typography.caption))
+                                .color(theme.palette.text_secondary),
+                        )
+                        .truncate(),
                     );
-                    ui.label(
-                        RichText::new(detail)
-                            .font(theme.typography.font(theme.typography.caption))
-                            .color(theme.palette.text_secondary),
-                    );
-                });
+                }
             });
-        });
+        })
+        .response
 }
 
 pub fn approval_card(ui: &mut Ui, theme: HomeBotTheme) {

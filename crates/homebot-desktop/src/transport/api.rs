@@ -93,6 +93,31 @@ pub(super) async fn execute_command(
             execute_workspace(client, config, command, events).await
         }
         DesktopCommand::LoadDevices => load_devices(client, config, events).await,
+        DesktopCommand::LoadPlugins => {
+            let plugins = response_json(
+                authenticated(client, config, Method::GET, "/api/v1/plugins")
+                    .send()
+                    .await
+                    .map_err(request_error)?,
+            )
+            .await?;
+            let _ = events.send(DesktopEvent::Plugins(plugins));
+            Ok(())
+        }
+        DesktopCommand::MutatePlugin { plugin_id, action } => {
+            let plugin = post_json(
+                client,
+                config,
+                &format!("/api/v1/plugins/{plugin_id}/{action}"),
+                &homebot_protocol::PluginMutationRequest {
+                    request_id: Uuid::now_v7(),
+                    idempotency_key: Uuid::now_v7(),
+                },
+            )
+            .await?;
+            let _ = events.send(DesktopEvent::PluginMutation(plugin));
+            Ok(())
+        }
         DesktopCommand::CreatePairing {
             endpoint,
             allow_insecure_private_network,

@@ -3,6 +3,7 @@
 use egui::{Align, Frame, Layout, RichText, Sense, Stroke, Ui};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
+use uuid::Uuid;
 
 use crate::tokens::{HomeBotTheme, ThemeMode};
 
@@ -60,6 +61,17 @@ pub enum UpdateState {
 pub enum SettingsAction {
     CheckForUpdate,
     StageUpdate,
+    Reconnect,
+    RefreshPlugins,
+    SetLaunchAtLogin(bool),
+    Plugin { id: Uuid, action: PluginAction },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PluginAction {
+    Connect,
+    Enable,
+    Disable,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -73,6 +85,8 @@ pub enum PluginViewState {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct PluginSettingsItem {
+    #[serde(default)]
+    pub id: Option<Uuid>,
     pub name: String,
     pub detail: String,
     pub state: PluginViewState,
@@ -136,6 +150,7 @@ pub struct DesktopSettings {
     pub update_state: UpdateState,
     pub update_version: Option<String>,
     pub update_message: Option<String>,
+    #[serde(skip)]
     pub plugins: Vec<PluginSettingsItem>,
 }
 
@@ -174,9 +189,18 @@ pub fn settings_view(
     theme: HomeBotTheme,
     settings: &mut DesktopSettings,
 ) -> Option<SettingsAction> {
+    settings_view_with(ui, theme, settings, |_, _| {})
+}
+
+pub(crate) fn settings_view_with(
+    ui: &mut Ui,
+    theme: HomeBotTheme,
+    settings: &mut DesktopSettings,
+    extra: impl FnOnce(&mut Ui, SettingsSection),
+) -> Option<SettingsAction> {
     let mut action = None;
     ui.horizontal_top(|ui| {
-        ui.set_min_width(150.0);
+        ui.set_min_width(112.0);
         ui.vertical(|ui| {
             for section in SettingsSection::ALL {
                 if ui
@@ -187,10 +211,10 @@ pub fn settings_view(
                 }
             }
         });
-        ui.separator();
+        ui.add(egui::Separator::default().vertical().grow(0.0));
         ui.add_space(theme.spacing.lg);
         ui.vertical(|ui| {
-            ui.set_min_width(480.0);
+            ui.set_min_width(320.0);
             ui.label(
                 RichText::new(settings.section.label())
                     .font(theme.typography.font(theme.typography.title))
@@ -199,20 +223,25 @@ pub fn settings_view(
             );
             ui.add_space(theme.spacing.lg);
             match settings.section {
-                SettingsSection::General => general(ui, settings),
-                SettingsSection::Plugins => plugins(ui, theme, &settings.plugins),
+                SettingsSection::General => action = general(ui, settings),
+                SettingsSection::Plugins => {
+                    action = plugins(ui, theme, &settings.plugins);
+                }
                 SettingsSection::Appearance => appearance(ui, settings),
                 SettingsSection::Updates => action = updates(ui, theme, settings),
-                SettingsSection::Connection => connection(ui, theme, settings),
+                SettingsSection::Connection => action = connection(ui, theme, settings),
                 SettingsSection::Devices => devices(ui, theme, settings.paired_devices),
             }
+            extra(ui, settings.section);
         });
     });
     action
 }
 
-fn general(ui: &mut Ui, settings: &mut DesktopSettings) {
-    let _ = ui.checkbox(&mut settings.launch_at_login, "Launch HomeBot at login");
+fn general(ui: &mut Ui, settings: &mut DesktopSettings) -> Option<SettingsAction> {
+    let launch_changed = ui
+        .checkbox(&mut settings.launch_at_login, "Launch HomeBot at login")
+        .changed();
     ui.separator();
     ui.strong("Notifications");
     notification_checkbox(
@@ -237,6 +266,7 @@ fn general(ui: &mut Ui, settings: &mut DesktopSettings) {
         &mut settings.notifications.when_focused,
         "Notify while HomeBot is focused",
     );
+    launch_changed.then_some(SettingsAction::SetLaunchAtLogin(settings.launch_at_login))
 }
 
 fn notification_checkbox(
@@ -251,29 +281,64 @@ fn notification_checkbox(
     }
 }
 
-fn plugins(ui: &mut Ui, theme: HomeBotTheme, plugins: &[PluginSettingsItem]) {
+fn plugins(
+    ui: &mut Ui,
+    theme: HomeBotTheme,
+    plugins: &[PluginSettingsItem],
+) -> Option<SettingsAction> {
     ui.label("Connect local MCP tools and choose which Bots can use them.");
     ui.add_space(theme.spacing.md);
     if plugins.is_empty() {
-        settings_row(ui, theme, "Local MCP", "No plugins connected", "Connect");
-        return;
+        return settings_row(
+            ui,
+            theme,
+            "Local MCP",
+            "No plugins configured on this server",
+            Some("Refresh"),
+        )
+        .then_some(SettingsAction::RefreshPlugins);
     }
     for plugin in plugins {
-        let (state, action) = match plugin.state {
-            PluginViewState::Connect => ("Ready to connect", "Connect"),
-            PluginViewState::Waiting => ("Waiting for connection…", "Waiting"),
-            PluginViewState::Reopen => ("Connection closed", "Reopen"),
-            PluginViewState::Connected if plugin.enabled => ("Connected · Enabled", "Disable"),
-            PluginViewState::Connected => ("Connected · Disabled", "Enable"),
-            PluginViewState::Error => ("Connection error", "Reopen"),
+        let (state, label, plugin_action) = match plugin.state {
+            PluginViewState::Connect => (
+                "Ready to connect",
+                Some("Connect"),
+                Some(PluginAction::Connect),
+            ),
+            PluginViewState::Waiting => ("Waiting for connection…", None, None),
+            PluginViewState::Reopen => (
+                "Connection closed",
+                Some("Reopen"),
+                Some(PluginAction::Connect),
+            ),
+            PluginViewState::Connected if plugin.enabled => (
+                "Connected · Enabled",
+                Some("Disable"),
+                Some(PluginAction::Disable),
+            ),
+            PluginViewState::Connected => (
+                "Connected · Disabled",
+                Some("Enable"),
+                Some(PluginAction::Enable),
+            ),
+            PluginViewState::Error => (
+                "Connection error",
+                Some("Retry"),
+                Some(PluginAction::Connect),
+            ),
         };
         let detail = if plugin.detail.is_empty() {
             state
         } else {
             &plugin.detail
         };
-        settings_row(ui, theme, &plugin.name, detail, action);
+        if settings_row(ui, theme, &plugin.name, detail, label)
+            && let (Some(id), Some(action)) = (plugin.id, plugin_action)
+        {
+            return Some(SettingsAction::Plugin { id, action });
+        }
     }
+    None
 }
 
 fn appearance(ui: &mut Ui, settings: &mut DesktopSettings) {
@@ -322,15 +387,23 @@ fn updates(ui: &mut Ui, theme: HomeBotTheme, settings: &DesktopSettings) -> Opti
     }
 }
 
-fn connection(ui: &mut Ui, theme: HomeBotTheme, settings: &DesktopSettings) {
-    settings_row(
-        ui,
-        theme,
-        "HomeBot server",
-        &settings.server_endpoint,
-        "Change",
-    );
-    settings_row(ui, theme, "Provider", &settings.provider_status, "Manage");
+fn connection(
+    ui: &mut Ui,
+    theme: HomeBotTheme,
+    settings: &mut DesktopSettings,
+) -> Option<SettingsAction> {
+    ui.label("HomeBot server");
+    ui.horizontal(|ui| {
+        ui.text_edit_singleline(&mut settings.server_endpoint);
+        ui.button("Reconnect")
+            .clicked()
+            .then_some(SettingsAction::Reconnect)
+    })
+    .inner
+    .or_else(|| {
+        settings_row(ui, theme, "Provider", &settings.provider_status, None);
+        None
+    })
 }
 
 fn devices(ui: &mut Ui, theme: HomeBotTheme, count: u32) {
@@ -339,12 +412,18 @@ fn devices(ui: &mut Ui, theme: HomeBotTheme, count: u32) {
         theme,
         "Paired devices",
         &format!("{count} active"),
-        "Manage",
+        None,
     );
-    let _ = ui.button("Pair Android device");
 }
 
-fn settings_row(ui: &mut Ui, theme: HomeBotTheme, title: &str, detail: &str, action: &str) {
+fn settings_row(
+    ui: &mut Ui,
+    theme: HomeBotTheme,
+    title: &str,
+    detail: &str,
+    action: Option<&str>,
+) -> bool {
+    let mut clicked = false;
     Frame::NONE
         .fill(theme.palette.surface)
         .stroke(Stroke::new(theme.layout.hairline, theme.palette.border))
@@ -357,11 +436,16 @@ fn settings_row(ui: &mut Ui, theme: HomeBotTheme, title: &str, detail: &str, act
                     ui.label(RichText::new(detail).color(theme.palette.text_secondary));
                 });
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    let _ = ui.add(egui::Button::new(action).sense(Sense::click()));
+                    if let Some(action) = action {
+                        clicked = ui
+                            .add(egui::Button::new(action).sense(Sense::click()))
+                            .clicked();
+                    }
                 });
             });
         });
     ui.add_space(theme.spacing.sm);
+    clicked
 }
 
 #[cfg(test)]

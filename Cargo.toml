@@ -60,7 +60,7 @@ tokio-tungstenite = "0.29"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 tower = { version = "0.5", features = ["util"] }
-uuid = { version = "1.18", features = ["serde", "v7"] }
+uuid = { version = "1.18", features = ["serde", "v5", "v7"] }
 url = "2.5"
 zeroize = "1.8"
 portable-pty = "0.9"

@@ -1,6 +1,7 @@
 package dev.homebot.android
 
 import dev.homebot.protocol.ChatTimelineResponse
+import dev.homebot.protocol.AssistantPackSummary
 import dev.homebot.protocol.GroupTimelineResponse
 import dev.homebot.protocol.VcsStatus
 import dev.homebot.protocol.WorkingTreeDiffResponse
@@ -32,6 +33,7 @@ data class AndroidProductState(
     val directTimeline: ChatTimelineResponse? = null,
     val groupTimeline: GroupTimelineResponse? = null,
     val coding: CodingWorkspaceProjection = CodingWorkspaceProjection(),
+    val assistantPacks: List<AssistantPackSummary> = emptyList(),
     val skills: List<SkillSummary> = emptyList(),
     val plugins: List<PluginSummary> = emptyList(),
     val routines: List<RoutineSummary> = emptyList(),
@@ -46,6 +48,7 @@ data class AndroidProductState(
     val searchQuery: String = "",
     val searchResults: List<SearchResultSummary> = emptyList(),
     val skillTestPreview: String? = null,
+    val assistantPackNotice: String? = null,
     val loading: Boolean = false,
     val error: String? = null,
 )

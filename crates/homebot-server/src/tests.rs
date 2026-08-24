@@ -8,28 +8,29 @@ use axum::{
 use futures_util::{SinkExt, StreamExt};
 use homebot_protocol::{
     AddGroupParticipantRequest, AppendRoutineRecordingRequest, ApprovalDecisionRequest,
-    ArtifactSummary, AttachChatWorkspaceRequest, Attachment, BotColor, BotMutationRequest,
-    BotPermissionProfile, BotProviderStatus, BotResponse, BotShape, BrowserActionRequest,
-    BrowserActionResponse, BrowserCommand, BrowserController, BrowserMutationRequest,
-    BrowserSessionStatus, CapabilityClass, CapabilityRuleAuditSummary, CapabilityRuleEffect,
-    CapabilityRuleSummary, ChatTimelineResponse, ChatWorkspaceSummary, CheckpointDiffResponse,
-    CheckpointPhase, CheckpointRestoreSummary, CompactWorkingContextRequest,
-    ContextCompactionStatus, ContextCompactionStrategy, ConversationReconciliation,
-    CreateAttachmentRequest, CreateAttachmentResponse, CreateBotRequest,
-    CreateBrowserSessionRequest, CreateDirectChatRequest, CreateDirectChatResponse,
-    CreateGroupChatRequest, CreateGroupChatResponse, CreateLocalMcpPluginRequest,
-    CreatePairingRequest, CreatePullRequestRequest, CreateRepositoryWorkspaceRequest,
-    CreateRoutineRequest, CreateRoutineTriggerRequest, CreateSkillRequest, DeleteBotRequest,
+    ArtifactSummary, AssistantPackCadence, AssistantPackInstallationSummary, AssistantPackSummary,
+    AttachChatWorkspaceRequest, Attachment, BotColor, BotMutationRequest, BotPermissionProfile,
+    BotProviderStatus, BotResponse, BotShape, BrowserActionRequest, BrowserActionResponse,
+    BrowserCommand, BrowserController, BrowserMutationRequest, BrowserSessionStatus,
+    CapabilityClass, CapabilityRuleAuditSummary, CapabilityRuleEffect, CapabilityRuleSummary,
+    ChatTimelineResponse, ChatWorkspaceSummary, CheckpointDiffResponse, CheckpointPhase,
+    CheckpointRestoreSummary, CompactWorkingContextRequest, ContextCompactionStatus,
+    ContextCompactionStrategy, ConversationReconciliation, CreateAttachmentRequest,
+    CreateAttachmentResponse, CreateBotRequest, CreateBrowserSessionRequest,
+    CreateDirectChatRequest, CreateDirectChatResponse, CreateGroupChatRequest,
+    CreateGroupChatResponse, CreateLocalMcpPluginRequest, CreatePairingRequest,
+    CreatePullRequestRequest, CreateRepositoryWorkspaceRequest, CreateRoutineRequest,
+    CreateRoutineTriggerRequest, CreateSkillRequest, DeleteBotRequest,
     DeliverRoutineTriggerRequest, DetachChatWorkspaceRequest, DeviceSessionSummary,
     DuplicateRoutineRequest, DuplicateSkillRequest, ExchangePairingRequest,
     FinalizeAttachmentRequest, GlobalSearchResponse, GroupBotStatus, GroupTimelineResponse,
-    HandoffGroupRequest, ImportSkillRequest, InteractionMode, MessageReferenceInput,
-    MessageReferenceKind, MissedRunPolicy, OverlapPolicy, PairingEndpointKind,
-    PairingExchangeResponse, PairingOffer, PluginAssignmentRequest, PluginConnectionState,
-    PluginMutationRequest, PluginSummary, PullRequestMetadata, PullRequestMutationResponse,
-    QueuedPromptKind, ReactionMutationRequest, RecordedAction, RecordedActor,
-    RenameGroupChatRequest, RepositoryWorkspaceSummary, RestoreCheckpointRequest, RetryPolicy,
-    RevokeDeviceSessionRequest, RoutineDefinition, RoutineInput, RoutineInputKind,
+    HandoffGroupRequest, ImportSkillRequest, InstallAssistantPackRequest, InteractionMode,
+    MessageReferenceInput, MessageReferenceKind, MissedRunPolicy, OverlapPolicy,
+    PairingEndpointKind, PairingExchangeResponse, PairingOffer, PluginAssignmentRequest,
+    PluginConnectionState, PluginMutationRequest, PluginSummary, PullRequestMetadata,
+    PullRequestMutationResponse, QueuedPromptKind, ReactionMutationRequest, RecordedAction,
+    RecordedActor, RenameGroupChatRequest, RepositoryWorkspaceSummary, RestoreCheckpointRequest,
+    RetryPolicy, RevokeDeviceSessionRequest, RoutineDefinition, RoutineInput, RoutineInputKind,
     RoutineJobSummary, RoutineRecordingSummary, RoutineRunSummary, RoutineSchedule, RoutineStep,
     RoutineStepStatus, RoutineSummary, RoutineTriggerDefinition, RoutineTriggerSource,
     RunRoutineRequest, SecretSummary, SendGroupMessageRequest, SendMessageRequest,
@@ -68,6 +69,129 @@ async fn provider_queue_test_guard() -> tokio::sync::MutexGuard<'static, ()> {
         .get_or_init(|| Mutex::new(()))
         .lock()
         .await
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)] // One end-to-end contract covers catalog, install, replay, and execution.
+async fn assistant_pack_catalog_installs_a_scheduled_skill_for_one_bot_idempotently()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let storage = Storage::open(&directory.path().join("homebot.db")).await?;
+    let bot = storage
+        .create_bot(
+            Uuid::nil(),
+            homebot_domain::Bot::create("Nova", "Personal assistant")?,
+            1,
+        )
+        .await?;
+    let app = router(AppState::new(storage.clone(), "correct-token"));
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::get("/api/v1/assistant-packs")
+                .header("authorization", "Bearer correct-token")
+                .body(Body::empty())?,
+        )
+        .await?;
+    assert_eq!(response.status(), StatusCode::OK);
+    let catalog: Vec<AssistantPackSummary> = response_json(response).await?;
+    assert_eq!(
+        catalog
+            .iter()
+            .map(|pack| pack.id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["morning-brief", "weekly-rundown", "end-of-day-review"]
+    );
+    assert_eq!(catalog[1].schedule.cadence, AssistantPackCadence::Weekly);
+    assert_eq!(catalog[1].schedule.weekday, Some(5));
+
+    let idempotency_key = Uuid::now_v7();
+    let mut request = InstallAssistantPackRequest {
+        request_id: Uuid::now_v7(),
+        idempotency_key,
+        bot_id: bot.id.0,
+        timezone: "not-a-timezone".to_owned(),
+        hour: 8,
+        minute: 30,
+    };
+    for _ in 0..2 {
+        let invalid = app
+            .clone()
+            .oneshot(json_request(
+                "POST",
+                "/api/v1/assistant-packs/morning-brief/install",
+                &request,
+            ))
+            .await?;
+        assert_eq!(invalid.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    }
+    request.timezone = "Europe/London".to_owned();
+    let response = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/assistant-packs/morning-brief/install",
+            &request,
+        ))
+        .await?;
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let installed: AssistantPackInstallationSummary = response_json(response).await?;
+    assert_eq!(installed.pack_id, "morning-brief");
+    assert_eq!(installed.skill.bot_ids, vec![bot.id.0]);
+    assert_eq!(installed.routine.bot_id, bot.id.0);
+    assert!(installed.routine.enabled);
+    assert!(!installed.routine.draft);
+    assert!(matches!(
+        installed.trigger.definition.source,
+        RoutineTriggerSource::Schedule {
+            schedule: RoutineSchedule::DailyLocal {
+                ref timezone,
+                hour: 8,
+                minute: 30,
+            }
+        } if timezone == "Europe/London"
+    ));
+
+    let replay = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/assistant-packs/morning-brief/install",
+            &request,
+        ))
+        .await?;
+    assert_eq!(replay.status(), StatusCode::OK);
+    let replayed: AssistantPackInstallationSummary = response_json(replay).await?;
+    assert_eq!(replayed.skill.id, installed.skill.id);
+    assert_eq!(replayed.routine.id, installed.routine.id);
+    assert_eq!(replayed.trigger.id, installed.trigger.id);
+    assert_eq!(replayed.trigger.definition, installed.trigger.definition);
+    assert_eq!(storage.list_skills(Uuid::nil()).await?.len(), 1);
+    assert_eq!(storage.list_routines(Uuid::nil()).await?.len(), 1);
+    assert_eq!(
+        storage
+            .routine_triggers(Uuid::nil(), Some(installed.routine.id))
+            .await?
+            .len(),
+        1
+    );
+    let dry_run = app
+        .oneshot(json_request(
+            "POST",
+            &format!("/api/v1/routines/{}/dry-run", installed.routine.id),
+            &RunRoutineRequest {
+                request_id: Uuid::now_v7(),
+                idempotency_key: Uuid::now_v7(),
+                inputs: serde_json::json!({}),
+            },
+        ))
+        .await?;
+    assert_eq!(dry_run.status(), StatusCode::OK);
+    let dry_run: RoutineRunSummary = response_json(dry_run).await?;
+    assert_eq!(dry_run.status, "dry_run_succeeded");
+    assert_eq!(dry_run.results[0].status, RoutineStepStatus::Planned);
+    Ok(())
 }
 
 #[derive(Debug)]

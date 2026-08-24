@@ -519,6 +519,11 @@ private fun ConnectedSettings(viewModel: MainViewModel, live: ConnectionState.Li
     var recordingBotId by rememberSaveable { mutableStateOf("") }
     var recordingRequiresApproval by rememberSaveable { mutableStateOf(true) }
     var deleteRoutineId by rememberSaveable { mutableStateOf<String?>(null) }
+    var configuringPackId by rememberSaveable { mutableStateOf<String?>(null) }
+    var packBotId by rememberSaveable { mutableStateOf("") }
+    var packTimezone by rememberSaveable { mutableStateOf("UTC") }
+    var packHour by rememberSaveable { mutableStateOf("8") }
+    var packMinute by rememberSaveable { mutableStateOf("0") }
     val selectedRoutine = state.routines.firstOrNull { it.id == state.selectedRoutineId }
     LazyColumn(Modifier.fillMaxSize().padding(horizontal = 20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         item {
@@ -564,6 +569,76 @@ private fun ConnectedSettings(viewModel: MainViewModel, live: ConnectionState.Li
                         } else {
                             TextButton(onClick = { viewModel.returnBrowserToBot(session.id) }) { Text("Return to Bot") }
                         }
+                    }
+                }
+            }
+        }
+        item {
+            SectionTitle("Assistant Packs")
+            Text("Install a useful Skill and scheduled routine onto one Bot.", color = Muted)
+            state.assistantPackNotice?.let { Text(it, color = Violet) }
+        }
+        items(state.assistantPacks, key = { "assistant-pack-${it.id}" }) { pack ->
+            Card(shape = CardShape) {
+                Column(Modifier.fillMaxWidth().padding(14.dp)) {
+                    Text(pack.name, fontWeight = FontWeight.Bold)
+                    Text(pack.description, color = Muted)
+                    Text(
+                        "${pack.schedule.cadence.name.lowercase().replaceFirstChar { it.uppercase() }} • default ${pack.schedule.default_hour.toString().padStart(2, '0')}:${pack.schedule.default_minute.toString().padStart(2, '0')}",
+                        color = Muted,
+                        fontSize = 12.sp,
+                    )
+                    TextButton(
+                        onClick = {
+                            configuringPackId = if (configuringPackId == pack.id) null else pack.id
+                            packBotId = live.snapshot.bots.firstOrNull { !it.archived }?.id.orEmpty()
+                            packHour = pack.schedule.default_hour.toString()
+                            packMinute = pack.schedule.default_minute.toString()
+                        },
+                    ) { Text(if (configuringPackId == pack.id) "Cancel" else "Configure") }
+                    if (configuringPackId == pack.id) {
+                        Text("Run with", fontWeight = FontWeight.SemiBold)
+                        live.snapshot.bots.filterNot { it.archived }.forEach { bot ->
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                RadioButton(selected = packBotId == bot.id, onClick = { packBotId = bot.id })
+                                Text(bot.name)
+                            }
+                        }
+                        OutlinedTextField(
+                            packTimezone,
+                            { packTimezone = it },
+                            label = { Text("Timezone, for example Europe/London") },
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            OutlinedTextField(
+                                packHour,
+                                { packHour = it.filter(Char::isDigit).take(2) },
+                                label = { Text("Hour") },
+                                modifier = Modifier.weight(1f),
+                            )
+                            OutlinedTextField(
+                                packMinute,
+                                { packMinute = it.filter(Char::isDigit).take(2) },
+                                label = { Text("Minute") },
+                                modifier = Modifier.weight(1f),
+                            )
+                        }
+                        val hour = packHour.toIntOrNull()
+                        val minute = packMinute.toIntOrNull()
+                        Button(
+                            onClick = {
+                                viewModel.installAssistantPack(
+                                    pack.id,
+                                    packBotId,
+                                    packTimezone,
+                                    hour ?: 0,
+                                    minute ?: 0,
+                                )
+                                configuringPackId = null
+                            },
+                            enabled = packBotId.isNotBlank() && packTimezone.isNotBlank() && hour != null && hour in 0..23 && minute != null && minute in 0..59,
+                        ) { Text("Install and enable") }
                     }
                 }
             }

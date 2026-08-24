@@ -132,12 +132,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private suspend fun loadServicesNow() {
+        val assistantPacks = homeBot.client.assistantPacks().getOrThrow()
         val skills = homeBot.client.skills().getOrThrow()
         val plugins = homeBot.client.plugins().getOrThrow()
         val routines = homeBot.client.routines().getOrThrow()
         val secrets = homeBot.client.secrets().getOrThrow()
         val device = homeBot.client.currentDevice().getOrThrow()
         mutableProduct.value = mutableProduct.value.copy(
+            assistantPacks = assistantPacks,
             skills = skills,
             plugins = plugins,
             routines = routines,
@@ -276,6 +278,26 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun mutatePlugin(pluginId: String, action: String) = perform {
         homeBot.client.mutatePlugin(pluginId, action).getOrThrow()
         loadServicesNow()
+    }
+
+    fun installAssistantPack(
+        packId: String,
+        botId: String,
+        timezone: String,
+        hour: Int,
+        minute: Int,
+    ) = perform {
+        val installed = homeBot.client.installAssistantPack(
+            packId,
+            botId,
+            timezone.trim(),
+            hour,
+            minute,
+        ).getOrThrow()
+        loadServicesNow()
+        mutableProduct.value = mutableProduct.value.copy(
+            assistantPackNotice = "${installed.routine.name} installed and scheduled",
+        )
     }
 
     fun toggleSkill(skillId: String, botId: String, enabled: Boolean) = perform {

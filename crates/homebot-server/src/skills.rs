@@ -511,7 +511,7 @@ pub(super) fn summary(record: &SkillRecord) -> SkillSummary {
     }
 }
 
-async fn publish(state: &AppState, skill: SkillSummary) -> Result<(), ApiError> {
+pub(super) async fn publish(state: &AppState, skill: SkillSummary) -> Result<(), ApiError> {
     persist_event(
         state,
         "skill_changed",

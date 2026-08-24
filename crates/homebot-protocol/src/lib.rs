@@ -1382,6 +1382,53 @@ pub struct SkillTestSummary {
     pub capability_policy_enforced: bool,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AssistantPackCadence {
+    Daily,
+    Weekly,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AssistantPackSchedule {
+    pub cadence: AssistantPackCadence,
+    pub weekday: Option<u8>,
+    pub default_hour: u8,
+    pub default_minute: u8,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AssistantPackSummary {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    pub skill_name: String,
+    pub routine_name: String,
+    pub schedule: AssistantPackSchedule,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct InstallAssistantPackRequest {
+    pub request_id: Uuid,
+    pub idempotency_key: Uuid,
+    pub bot_id: Uuid,
+    pub timezone: String,
+    pub hour: u8,
+    pub minute: u8,
+}
+
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AssistantPackInstallationSummary {
+    pub pack_id: String,
+    pub skill: SkillSummary,
+    pub routine: RoutineSummary,
+    pub trigger: RoutineTriggerSummary,
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct SkillBundle {
@@ -1813,6 +1860,9 @@ pub struct ProtocolV1Schema {
     pub skill: SkillSummary,
     pub skill_test: SkillTestSummary,
     pub applied_skill: AppliedSkillSummary,
+    pub assistant_pack: AssistantPackSummary,
+    pub install_assistant_pack_request: InstallAssistantPackRequest,
+    pub assistant_pack_installation: AssistantPackInstallationSummary,
     pub create_repository_workspace_request: CreateRepositoryWorkspaceRequest,
     pub attach_chat_workspace_request: AttachChatWorkspaceRequest,
     pub detach_chat_workspace_request: DetachChatWorkspaceRequest,

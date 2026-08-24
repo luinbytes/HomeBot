@@ -27,6 +27,7 @@ import dev.homebot.protocol.GroupChatSummary
 import dev.homebot.protocol.GroupTimelineResponse
 import dev.homebot.protocol.GlobalSearchResponse
 import dev.homebot.protocol.HandoffGroupRequest
+import dev.homebot.protocol.InstallAssistantPackRequest
 import dev.homebot.protocol.MessageMutationRequest
 import dev.homebot.protocol.MessageSummary
 import dev.homebot.protocol.MessageReferenceInput
@@ -45,6 +46,8 @@ import dev.homebot.protocol.UpdateBotRequest
 import dev.homebot.protocol.VcsStatus
 import dev.homebot.protocol.WorkingTreeDiffResponse
 import dev.homebot.protocol.ApprovalDecisionRequest
+import dev.homebot.protocol.AssistantPackInstallationSummary
+import dev.homebot.protocol.AssistantPackSummary
 import dev.homebot.protocol.Attachment
 import dev.homebot.protocol.CreateAttachmentRequest
 import dev.homebot.protocol.CreateAttachmentResponse
@@ -406,6 +409,26 @@ class HomeBotClient(
 
     suspend fun skills(): Result<List<SkillSummary>> = authenticated {
         get("api/v1/skills", ListSerializer(SkillSummary.serializer()))
+    }
+
+    suspend fun assistantPacks(): Result<List<AssistantPackSummary>> = authenticated {
+        get("api/v1/assistant-packs", ListSerializer(AssistantPackSummary.serializer()))
+    }
+
+    suspend fun installAssistantPack(
+        packId: String,
+        botId: String,
+        timezone: String,
+        hour: Int,
+        minute: Int,
+    ): Result<AssistantPackInstallationSummary> = authenticated {
+        val request = InstallAssistantPackRequest(ids(), ids(), botId, timezone, hour, minute)
+        post(
+            "api/v1/assistant-packs/$packId/install",
+            request,
+            InstallAssistantPackRequest.serializer(),
+            AssistantPackInstallationSummary.serializer(),
+        )
     }
 
     suspend fun setSkillAssigned(skillId: String, botId: String, enabled: Boolean): Result<SkillSummary> = authenticated {

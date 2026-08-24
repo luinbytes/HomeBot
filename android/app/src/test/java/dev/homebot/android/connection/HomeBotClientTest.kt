@@ -310,6 +310,39 @@ class HomeBotClientTest {
     }
 
     @Test
+    fun assistantPackCatalogAndInstallUseTheAuthenticatedServerContract() = runBlocking {
+        server.enqueue(jsonResponse(ASSISTANT_PACKS_RESPONSE))
+        server.enqueue(jsonResponse(ASSISTANT_PACK_INSTALL_RESPONSE))
+        server.start()
+        sessions.save(credentials())
+        val client = client()
+
+        val packs = client.assistantPacks().getOrThrow()
+        val installed = client.installAssistantPack(
+            packId = "morning-brief",
+            botId = BOT_ID,
+            timezone = "Europe/London",
+            hour = 8,
+            minute = 15,
+        ).getOrThrow()
+
+        assertEquals("Morning Brief", packs.single().name)
+        assertEquals("morning-brief", installed.pack_id)
+        val list = server.takeRequest()
+        assertEquals("/api/v1/assistant-packs", list.path)
+        assertEquals("GET", list.method)
+        val install = server.takeRequest()
+        assertEquals("/api/v1/assistant-packs/morning-brief/install", install.path)
+        assertEquals("POST", install.method)
+        val body = install.body.readUtf8()
+        assertTrue(body.contains("Europe/London"))
+        assertTrue(body.contains("\"bot_id\":\"$BOT_ID\""))
+        assertTrue(body.contains("\"hour\":8"))
+        assertTrue(body.contains("\"minute\":15"))
+        assertEquals("Bearer hbds_fixture_session", install.getHeader("Authorization"))
+    }
+
+    @Test
     fun authoritativeRoutineLifecycleUsesEveryServerMutationPath() = runBlocking {
         repeat(3) { server.enqueue(jsonResponse(ROUTINE_RESPONSE)) }
         server.enqueue(jsonResponse(ROUTINE_RUN_RESPONSE))
@@ -435,6 +468,8 @@ class HomeBotClientTest {
         const val PLUGINS_RESPONSE = """[{"id":"00000000-0000-0000-0000-000000000060","name":"Repository MCP","description":"Repository tools","kind":"local_mcp","enabled":true,"connection_state":"connected","auth_state":"ready","tools":[],"bot_ids":[],"updated_at_unix_ms":1}]"""
         const val SECRETS_RESPONSE = """[{"id":"00000000-0000-0000-0000-000000000070","label":"OpenAI work","status":"ready","created_at_unix_ms":1,"updated_at_unix_ms":1}]"""
         const val CURRENT_DEVICE_RESPONSE = """{"id":"$DEVICE_ID","name":"Pixel 9","endpoint_kind":"loopback","created_at_unix_ms":1,"last_seen_at_unix_ms":2,"revoked_at_unix_ms":null}"""
+        const val ASSISTANT_PACKS_RESPONSE = """[{"id":"morning-brief","name":"Morning Brief","description":"Start the day","skill_name":"Morning brief","routine_name":"Morning brief","schedule":{"cadence":"daily","weekday":null,"default_hour":8,"default_minute":0}}]"""
+        const val ASSISTANT_PACK_INSTALL_RESPONSE = """{"pack_id":"morning-brief","skill":{"id":"00000000-0000-0000-0000-000000000090","name":"Morning brief · Nova","description":"Start the day","active_version_id":"00000000-0000-0000-0000-000000000091","version":1,"definition":{"instructions":"Prepare a brief","context":[],"tools":[]},"bot_ids":["$BOT_ID"],"created_at_unix_ms":1,"updated_at_unix_ms":1},"routine":{"id":"$ROUTINE_ID","bot_id":"$BOT_ID","name":"Review","description":"Repository review","enabled":true,"draft":false,"active_version_id":"$ROUTINE_VERSION_ID","version":1,"definition":{"inputs":[],"steps":[{"kind":"bot_prompt","bot_id":"$BOT_ID","prompt_template":"Check the repository","requires_approval":false}],"expected_outputs":[]},"created_at_unix_ms":1,"updated_at_unix_ms":1},"trigger":{"id":"00000000-0000-0000-0000-000000000092","routine_id":"$ROUTINE_ID","definition":{"source":{"kind":"schedule","schedule":{"kind":"daily_local","timezone":"Europe/London","hour":8,"minute":15}},"missed_run_policy":"run_once","overlap_policy":{"kind":"queue"},"retry_policy":{"maximum_attempts":1,"initial_backoff_seconds":5,"maximum_backoff_seconds":300},"catch_up_limit":1},"enabled":true,"last_evaluated_at_unix_ms":null,"next_fire_at_unix_ms":2,"created_at_unix_ms":1,"updated_at_unix_ms":1}}"""
         const val ROUTINE_RESPONSE = """{"id":"$ROUTINE_ID","bot_id":"$BOT_ID","name":"Review","description":"Repository review","enabled":true,"draft":false,"active_version_id":"$ROUTINE_VERSION_ID","version":1,"definition":{"inputs":[],"steps":[{"kind":"bot_prompt","bot_id":"$BOT_ID","prompt_template":"Check the repository","requires_approval":false}],"expected_outputs":[]},"created_at_unix_ms":1,"updated_at_unix_ms":1}"""
         const val ROUTINE_RUN_RESPONSE = """{"id":"00000000-0000-0000-0000-000000000083","routine_id":"$ROUTINE_ID","routine_version_id":"$ROUTINE_VERSION_ID","bot_id":"$BOT_ID","status":"succeeded","trigger":{},"input_metadata":{},"dry_run":true,"results":[],"attempt_count":1,"started_at_unix_ms":1,"finished_at_unix_ms":2}"""
         const val RECORDING_EMPTY_RESPONSE = """{"id":"$RECORDING_ID","bot_id":"$BOT_ID","name":"Recorded review","description":"","actions":[],"created_at_unix_ms":1,"updated_at_unix_ms":1}"""

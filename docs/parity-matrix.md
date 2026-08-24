@@ -41,6 +41,7 @@ replace the official sources above, grant code-reuse rights, or turn a row into 
 | Teach workflow recording | Skills | Record/review draft | Mobile can inspect result | Structured action capture | Recording becomes editable/testable skill | Specified |
 | Routine create/manual run/test | Skills | Bot routine editor | Mobile create/edit/duplicate/delete and dry-run/Run-now controls | Versioned routine runner | Safe test and run history exist | Specified |
 | Scheduled routine/time zone | Skills | Schedule/next-run UI | View/edit controls | Headless scheduler | DST and restart boundary pass | Specified |
+| Curated Assistant Packs and briefs | HomeBot Assistant Packs | Catalog, Bot/time configuration, install | Equivalent catalog and configuration | Atomically create assigned Skill, enabled Routine, and schedule | Retry-safe install; daily and weekly schedules retain local time across DST | Implemented; Android visual capture pending |
 | Event-triggered routine | Skills | Narrow event rule UI | Equivalent controls | Idempotent webhook/plugin trigger | Duplicate event produces one run | Specified |
 | Routine enable/pause/delete/history | Skills, mobile | Full management | Server-authoritative management and refreshed history | Durable run state/history | No client open required | Specified |
 | Structured approval once/deny | Security | Target/scope/value card | Equivalent approve/deny | Operation-digest approval | Prose cannot approve; expiry works | Specified |

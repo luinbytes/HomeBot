@@ -61,6 +61,13 @@ pub enum ReconcileOutcome {
 }
 
 #[derive(Clone, Debug)]
+pub enum TimelineEntry {
+    Message(MessageSummary),
+    Activity(ActivitySummary),
+    Approval(ApprovalSummary),
+}
+
+#[derive(Clone, Debug)]
 pub struct TimelineModel {
     pub chat: Option<ChatSummary>,
     pub messages: Vec<MessageSummary>,
@@ -103,6 +110,52 @@ impl Default for TimelineModel {
 }
 
 impl TimelineModel {
+    #[must_use]
+    pub fn ordered_entries(&self) -> Vec<TimelineEntry> {
+        let mut entries = self
+            .messages
+            .iter()
+            .cloned()
+            .map(TimelineEntry::Message)
+            .chain(self.activities.iter().cloned().map(TimelineEntry::Activity))
+            .chain(self.approvals.iter().cloned().map(TimelineEntry::Approval))
+            .collect::<Vec<_>>();
+        entries.sort_by_key(|entry| self.entry_sort_key(entry));
+        entries
+    }
+
+    fn entry_sort_key(&self, entry: &TimelineEntry) -> (i64, u8, Uuid) {
+        match entry {
+            TimelineEntry::Message(message)
+                if message.author == homebot_protocol::MessageAuthor::Bot =>
+            {
+                let related_at = self
+                    .activities
+                    .iter()
+                    .filter(|activity| activity.message_id == Some(message.id))
+                    .map(|activity| activity.started_at_ms)
+                    .chain(
+                        self.approvals
+                            .iter()
+                            .filter(|approval| approval.message_id == Some(message.id))
+                            .map(|approval| approval.created_at_ms),
+                    )
+                    .max()
+                    .unwrap_or(message.created_at_ms);
+                (
+                    message
+                        .completed_at_ms
+                        .unwrap_or(related_at.saturating_add(1)),
+                    3,
+                    message.id,
+                )
+            }
+            TimelineEntry::Message(message) => (message.created_at_ms, 0, message.id),
+            TimelineEntry::Activity(activity) => (activity.started_at_ms, 1, activity.id),
+            TimelineEntry::Approval(approval) => (approval.created_at_ms, 2, approval.id),
+        }
+    }
+
     pub fn begin_reply(&mut self, message_id: Uuid) {
         self.composer.reply_to_message_id = Some(message_id);
     }
@@ -389,7 +442,10 @@ mod tests {
     use crate::performance::{
         CHAT_OPEN_BUDGET, CONCURRENT_BOT_BUDGET, LARGE_TRANSCRIPT_MESSAGES, STREAM_FRAME_BUDGET,
     };
-    use homebot_protocol::{MessageAuthor, PROTOCOL_VERSION, QueuedPromptKind};
+    use homebot_protocol::{
+        ActivityDetail, ActivityKind, ActivityPresentation, ActivityStatus, ApprovalStatus,
+        MessageAuthor, PROTOCOL_VERSION, QueuedPromptKind, RiskLevel,
+    };
     use std::time::Instant;
 
     fn chat(id: Uuid, running: bool) -> ChatSummary {
@@ -476,6 +532,71 @@ mod tests {
             ReconcileOutcome::Gap
         );
         assert!(model.needs_snapshot);
+    }
+
+    #[test]
+    fn messages_activity_and_approvals_share_one_chronological_stream() {
+        let chat_id = Uuid::now_v7();
+        let user_id = Uuid::now_v7();
+        let bot_id = Uuid::now_v7();
+        let activity_id = Uuid::now_v7();
+        let approval_id = Uuid::now_v7();
+        let mut user = message(chat_id, user_id, MessageStatus::Completed);
+        user.author = MessageAuthor::User;
+        user.created_at_ms = 1;
+        user.completed_at_ms = Some(1);
+        let mut bot = message(chat_id, bot_id, MessageStatus::Completed);
+        bot.created_at_ms = 2;
+        bot.completed_at_ms = Some(5);
+        let mut model = TimelineModel::default();
+        model.hydrate(ChatTimelineResponse {
+            chat: chat(chat_id, false),
+            messages: vec![bot, user],
+            activities: vec![ActivitySummary {
+                id: activity_id,
+                chat_id,
+                message_id: Some(bot_id),
+                title: "Reasoning".to_owned(),
+                detail: "Checked the request".to_owned(),
+                kind: ActivityKind::Reasoning,
+                presentation: ActivityPresentation {
+                    risk: RiskLevel::Low,
+                    detail: ActivityDetail::Generic {
+                        summary: "Checked the request".to_owned(),
+                    },
+                    copy_text: None,
+                    open_artifact_id: None,
+                },
+                status: ActivityStatus::Succeeded,
+                requires_attention: false,
+                started_at_ms: 3,
+                finished_at_ms: Some(3),
+            }],
+            approvals: vec![ApprovalSummary {
+                id: approval_id,
+                chat_id,
+                message_id: Some(bot_id),
+                title: "Approval needed".to_owned(),
+                detail: "Run command".to_owned(),
+                status: ApprovalStatus::Pending,
+                created_at_ms: 4,
+                decided_at_ms: None,
+            }],
+            queued_prompts: Vec::new(),
+            working_context: None,
+            checkpoints: Vec::new(),
+            boundary_sequence: 0,
+        });
+
+        assert!(matches!(model.ordered_entries().as_slice(), [
+            TimelineEntry::Message(message),
+            TimelineEntry::Activity(activity),
+            TimelineEntry::Approval(approval),
+            TimelineEntry::Message(response),
+        ] if message.id == user_id
+            && activity.id == activity_id
+            && approval.id == approval_id
+            && response.id == bot_id));
     }
 
     #[test]

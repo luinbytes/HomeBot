@@ -82,6 +82,11 @@ fn production_desktop_visual_goldens() {
         ProductionFixtureState::Settings,
     );
     snapshot(
+        "production_devices_light",
+        HomeBotTheme::light(),
+        ProductionFixtureState::SettingsDevices,
+    );
+    snapshot(
         "production_routines_dark",
         HomeBotTheme::dark(),
         ProductionFixtureState::Routines,

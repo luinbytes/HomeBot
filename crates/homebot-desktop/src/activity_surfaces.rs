@@ -40,9 +40,10 @@ pub fn activity_surface(
     Frame::NONE
         .fill(theme.palette.surface)
         .stroke(Stroke::new(theme.layout.hairline, theme.palette.border))
-        .corner_radius(CornerRadius::same(theme.radii.md))
-        .inner_margin(egui::Margin::same(theme.insets.md))
+        .corner_radius(CornerRadius::same(theme.radii.sm))
+        .inner_margin(egui::Margin::symmetric(theme.insets.sm, theme.insets.sm))
         .show(ui, |ui| {
+            ui.set_min_width(ui.available_width());
             ui.horizontal(|ui| {
                 let (rect, _) = ui.allocate_exact_size(
                     Vec2::splat(theme.layout.activity_icon_size),
@@ -50,32 +51,46 @@ pub fn activity_surface(
                 );
                 ui.painter().circle_filled(
                     rect.center(),
-                    theme.layout.activity_icon_size / 2.0,
+                    theme.layout.activity_icon_size / 4.0,
                     risk_color,
                 );
-                ui.vertical(|ui| {
-                    ui.label(
-                        RichText::new(&model.activity.title)
-                            .font(theme.typography.font(theme.typography.body_compact))
-                            .color(theme.palette.text_primary)
-                            .strong(),
-                    );
-                    ui.label(
+                ui.label(
+                    RichText::new(&model.activity.title)
+                        .font(theme.typography.font(theme.typography.caption))
+                        .color(theme.palette.text_primary)
+                        .strong(),
+                );
+                ui.add(
+                    egui::Label::new(
                         RichText::new(&model.activity.detail)
-                            .font(theme.typography.font(theme.typography.caption))
+                            .font(theme.typography.font(theme.typography.micro))
                             .color(theme.palette.text_secondary),
-                    );
+                    )
+                    .truncate(),
+                );
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui
+                        .small_button(if model.expanded { "⌃" } else { "⌄" })
+                        .on_hover_text(if model.expanded {
+                            "Hide details"
+                        } else {
+                            "Show details"
+                        })
+                        .clicked()
+                    {
+                        model.expanded = !model.expanded;
+                    }
                 });
-                let label = if model.expanded { "Hide" } else { "Details" };
-                if ui.button(label).clicked() {
-                    model.expanded = !model.expanded;
-                }
             });
             if model.expanded {
                 ui.add_space(theme.spacing.sm);
                 ui.separator();
                 ui.add_space(theme.spacing.sm);
-                render_detail(ui, theme, &model.activity.presentation.detail);
+                egui::ScrollArea::vertical()
+                    .max_height(theme.layout.activity_detail_max_height)
+                    .show(ui, |ui| {
+                        render_detail(ui, theme, &model.activity.presentation.detail);
+                    });
                 ui.add_space(theme.spacing.sm);
                 ui.horizontal(|ui| {
                     if let Some(copy_text) = &model.activity.presentation.copy_text

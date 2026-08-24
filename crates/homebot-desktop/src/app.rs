@@ -2801,8 +2801,7 @@ fn set_launch_at_login(enabled: bool) -> std::io::Result<()> {
     #[cfg(not(target_os = "macos"))]
     let (path, contents) = {
         let path = std::env::var_os("XDG_CONFIG_HOME")
-            .map(std::path::PathBuf::from)
-            .unwrap_or_else(|| home.join(".config"))
+            .map_or_else(|| home.join(".config"), std::path::PathBuf::from)
             .join("autostart/dev.homebot.desktop.desktop");
         let executable = executable
             .to_string_lossy()

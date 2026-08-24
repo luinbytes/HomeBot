@@ -34,6 +34,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val homeBot = application as HomeBotApplication
     val connection: StateFlow<ConnectionState> = homeBot.client.state
     private val mutableProduct = MutableStateFlow(AndroidProductState())
+    private var pendingPush: PendingRemoteMutation? = null
+    private var pendingPullRequest: PendingPullRequest? = null
     val product: StateFlow<AndroidProductState> = mutableProduct.asStateFlow()
     val settings: StateFlow<EndpointSettings> = homeBot.endpointPreferences.settings.stateIn(
         viewModelScope,
@@ -316,19 +318,28 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun openDirectChat(chatId: String) {
-        mutableProduct.value = mutableProduct.value.copy(destination = ProductDestination.DirectChat(chatId))
+        mutableProduct.value = mutableProduct.value.copy(
+            destination = ProductDestination.DirectChat(chatId),
+            coding = CodingWorkspaceProjection(),
+        )
         refreshSelection()
     }
 
     fun openGroupChat(chatId: String) {
-        mutableProduct.value = mutableProduct.value.copy(destination = ProductDestination.GroupChat(chatId))
+        mutableProduct.value = mutableProduct.value.copy(
+            destination = ProductDestination.GroupChat(chatId),
+            coding = CodingWorkspaceProjection(),
+        )
         refreshSelection()
     }
 
     fun openBot(botId: String) = perform {
         val existing = liveSnapshot()?.chats?.firstOrNull { it.bot_id == botId }
         val chat = existing ?: homeBot.client.createDirectChat(botId).getOrThrow()
-        mutableProduct.value = mutableProduct.value.copy(destination = ProductDestination.DirectChat(chat.id))
+        mutableProduct.value = mutableProduct.value.copy(
+            destination = ProductDestination.DirectChat(chat.id),
+            coding = CodingWorkspaceProjection(),
+        )
         refreshSelection()
     }
 
@@ -479,9 +490,101 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun loadCodingWorkspace() = perform {
         val chat = (mutableProduct.value.destination as? ProductDestination.DirectChat)?.chatId
             ?: error("Coding workspace details are available in direct chats")
+        val workspace = liveSnapshot()?.chat_workspaces?.firstOrNull { it.chat_id == chat }
+            ?: error("Attach a repository before loading source control")
         val status = homeBot.client.vcsStatus(chat).getOrThrow()
         val diff = homeBot.client.workingTreeDiff(chat).getOrThrow()
-        mutableProduct.value = mutableProduct.value.copy(coding = CodingWorkspaceProjection(status, diff))
+        mutableProduct.value = mutableProduct.value.copy(coding = CodingWorkspaceProjection(workspace, status, diff))
+    }
+
+    fun registerAndAttachWorkspace(path: String, name: String) = perform {
+        val chat = directChatId()
+        val repository = homeBot.client.registerWorkspace(path, name).getOrThrow()
+        val workspace = homeBot.client.attachWorkspace(chat, repository.id).getOrThrow()
+        mutableProduct.value = mutableProduct.value.copy(coding = CodingWorkspaceProjection(workspace = workspace))
+        loadCodingWorkspaceNow(chat, workspace)
+    }
+
+    fun attachWorkspace(workspaceId: String) = perform {
+        val chat = directChatId()
+        val workspace = homeBot.client.attachWorkspace(chat, workspaceId).getOrThrow()
+        loadCodingWorkspaceNow(chat, workspace)
+    }
+
+    fun detachWorkspace() = perform {
+        val chat = directChatId()
+        homeBot.client.detachWorkspace(chat).getOrThrow()
+        mutableProduct.value = mutableProduct.value.copy(coding = CodingWorkspaceProjection())
+    }
+
+    fun loadStagedDiff() = perform {
+        val diff = homeBot.client.workingTreeDiff(directChatId(), staged = true).getOrThrow()
+        mutableProduct.value = mutableProduct.value.copy(coding = mutableProduct.value.coding.copy(stagedDiff = diff))
+    }
+
+    fun commitAll(message: String) = perform {
+        val chat = directChatId()
+        val result = homeBot.client.commit(chat, message).getOrThrow()
+        val workspace = mutableProduct.value.coding.workspace
+        loadCodingWorkspaceNow(chat, workspace)
+        mutableProduct.value = mutableProduct.value.copy(coding = mutableProduct.value.coding.copy(commit = result))
+    }
+
+    fun createBranch(branch: String) = perform {
+        val status = homeBot.client.createBranch(directChatId(), branch).getOrThrow()
+        mutableProduct.value = mutableProduct.value.copy(coding = mutableProduct.value.coding.copy(status = status))
+    }
+
+    fun pushCurrentBranch() = perform {
+        val chat = directChatId()
+        val status = mutableProduct.value.coding.status ?: error("Load source control first")
+        val branch = status.branch ?: error("Create or switch to a branch before pushing")
+        val remote = status.remotes.firstOrNull { it.push_configured }?.name ?: error("No push remote is configured")
+        val pending = pendingPush ?: PendingRemoteMutation(chat, id(), id(), remote, branch)
+        val response = homeBot.client.push(
+            pending.chatId,
+            pending.requestId,
+            pending.idempotencyKey,
+            pending.remote,
+            pending.branch,
+            pending.approvalId,
+        ).getOrThrow()
+        pendingPush = if (response.status == "approval_required") pending.copy(approvalId = response.approval?.id) else null
+        mutableProduct.value = mutableProduct.value.copy(
+            coding = mutableProduct.value.coding.copy(remoteNotice = response.result?.let { "Pushed ${it.branch} to ${it.remote}" } ?: "Approval required before push"),
+        )
+    }
+
+    fun loadPullRequest(base: String) = perform {
+        val status = mutableProduct.value.coding.status ?: error("Load source control first")
+        val remote = status.remotes.firstOrNull { it.push_configured }?.name ?: error("No push remote is configured")
+        val head = status.branch ?: error("Create or switch to a branch first")
+        val metadata = homeBot.client.pullRequest(directChatId(), remote, head, base.trim()).getOrThrow()
+        mutableProduct.value = mutableProduct.value.copy(coding = mutableProduct.value.coding.copy(pullRequest = metadata))
+    }
+
+    fun createPullRequest(base: String, title: String) = perform {
+        val chat = directChatId()
+        val status = mutableProduct.value.coding.status ?: error("Load source control first")
+        val remote = status.remotes.firstOrNull { it.push_configured }?.name ?: error("No push remote is configured")
+        val head = status.branch ?: error("Create or switch to a branch first")
+        val pending = pendingPullRequest ?: PendingPullRequest(chat, id(), id(), remote, head, base.trim(), title.trim())
+        val response = homeBot.client.createPullRequest(
+            pending.chatId,
+            pending.requestId,
+            pending.idempotencyKey,
+            pending.remote,
+            pending.head,
+            pending.base,
+            pending.title,
+            pending.approvalId,
+        ).getOrThrow()
+        pendingPullRequest = if (response.status == "approval_required") pending.copy(approvalId = response.approval?.id) else null
+        mutableProduct.value = mutableProduct.value.copy(
+            coding = mutableProduct.value.coding.copy(
+                remoteNotice = response.result?.let { "PR #${it.number} created" } ?: "Approval required before creating the pull request",
+            ),
+        )
     }
 
     fun clearError() {
@@ -516,6 +619,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun liveSnapshot() = (connection.value as? ConnectionState.Live)?.snapshot
+    private fun directChatId() = (mutableProduct.value.destination as? ProductDestination.DirectChat)?.chatId
+        ?: error("Open a direct chat first")
+
+    private suspend fun loadCodingWorkspaceNow(chatId: String, workspace: dev.homebot.protocol.ChatWorkspaceSummary?) {
+        val status = homeBot.client.vcsStatus(chatId).getOrThrow()
+        val diff = homeBot.client.workingTreeDiff(chatId).getOrThrow()
+        mutableProduct.value = mutableProduct.value.copy(coding = CodingWorkspaceProjection(workspace, status, diff))
+    }
     private fun id(): String = UUID.randomUUID().toString()
 
     private fun promptDefinition(botId: String, prompt: String, requiresApproval: Boolean) = RoutineDefinition(
@@ -536,3 +647,23 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         super.onCleared()
     }
 }
+
+private data class PendingRemoteMutation(
+    val chatId: String,
+    val requestId: String,
+    val idempotencyKey: String,
+    val remote: String,
+    val branch: String,
+    val approvalId: String? = null,
+)
+
+private data class PendingPullRequest(
+    val chatId: String,
+    val requestId: String,
+    val idempotencyKey: String,
+    val remote: String,
+    val head: String,
+    val base: String,
+    val title: String,
+    val approvalId: String? = null,
+)

@@ -419,6 +419,54 @@ class HomeBotClientTest {
         requests.forEach { assertEquals("Bearer hbds_fixture_session", it.getHeader("Authorization")) }
     }
 
+    @Test
+    fun completeSourceControlWorkflowUsesAuthenticatedServerRoutes() = runBlocking {
+        server.enqueue(jsonResponse(REPOSITORY_WORKSPACE_RESPONSE))
+        server.enqueue(jsonResponse(CHAT_WORKSPACE_RESPONSE))
+        server.enqueue(jsonResponse(VCS_STATUS_RESPONSE))
+        server.enqueue(jsonResponse(WORKING_DIFF_RESPONSE))
+        server.enqueue(jsonResponse(STAGED_DIFF_RESPONSE))
+        server.enqueue(jsonResponse(COMMIT_RESPONSE))
+        server.enqueue(jsonResponse(VCS_STATUS_RESPONSE))
+        server.enqueue(jsonResponse(PUSH_RESPONSE))
+        server.enqueue(jsonResponse(PULL_REQUEST_METADATA_RESPONSE))
+        server.enqueue(jsonResponse(PULL_REQUEST_MUTATION_RESPONSE))
+        server.enqueue(MockResponse().setResponseCode(204))
+        server.start()
+        sessions.save(credentials())
+        val client = client()
+
+        val repository = client.registerWorkspace("/srv/homebot", "HomeBot").getOrThrow()
+        client.attachWorkspace(CHAT_ID, repository.id).getOrThrow()
+        client.vcsStatus(CHAT_ID).getOrThrow()
+        client.workingTreeDiff(CHAT_ID).getOrThrow()
+        client.workingTreeDiff(CHAT_ID, staged = true).getOrThrow()
+        client.commit(CHAT_ID, "Match Android parity").getOrThrow()
+        client.createBranch(CHAT_ID, "feature/android").getOrThrow()
+        client.push(CHAT_ID, "request", "key", "origin", "feature/android", null).getOrThrow()
+        client.pullRequest(CHAT_ID, "origin", "feature/android", "main").getOrThrow()
+        client.createPullRequest(CHAT_ID, "pr-request", "pr-key", "origin", "feature/android", "main", "Android parity", null).getOrThrow()
+        client.detachWorkspace(CHAT_ID).getOrThrow()
+
+        val requests = List(11) { server.takeRequest() }
+        assertEquals(
+            listOf("POST", "PUT", "GET", "GET", "GET", "POST", "POST", "POST", "GET", "POST", "POST"),
+            requests.map { it.method },
+        )
+        assertEquals("/api/v1/workspaces", requests[0].path)
+        assertEquals("/api/v1/chats/$CHAT_ID/workspace", requests[1].path)
+        assertEquals("/api/v1/chats/$CHAT_ID/vcs/status", requests[2].path)
+        assertTrue(requests[3].path!!.endsWith("staged=false"))
+        assertTrue(requests[4].path!!.endsWith("staged=true"))
+        assertEquals("/api/v1/chats/$CHAT_ID/vcs/commit", requests[5].path)
+        assertEquals("/api/v1/chats/$CHAT_ID/vcs/branches", requests[6].path)
+        assertEquals("/api/v1/chats/$CHAT_ID/vcs/push", requests[7].path)
+        assertTrue(requests[8].path!!.startsWith("/api/v1/chats/$CHAT_ID/vcs/pull-request?"))
+        assertEquals("/api/v1/chats/$CHAT_ID/vcs/pull-request", requests[9].path)
+        assertEquals("/api/v1/chats/$CHAT_ID/workspace/detach", requests[10].path)
+        requests.forEach { assertEquals("Bearer hbds_fixture_session", it.getHeader("Authorization")) }
+    }
+
     private fun botPromptStep(prompt: String) = buildJsonObject {
         put("kind", "bot_prompt")
         put("bot_id", BOT_ID)
@@ -474,6 +522,16 @@ class HomeBotClientTest {
         const val ROUTINE_RUN_RESPONSE = """{"id":"00000000-0000-0000-0000-000000000083","routine_id":"$ROUTINE_ID","routine_version_id":"$ROUTINE_VERSION_ID","bot_id":"$BOT_ID","status":"succeeded","trigger":{},"input_metadata":{},"dry_run":true,"results":[],"attempt_count":1,"started_at_unix_ms":1,"finished_at_unix_ms":2}"""
         const val RECORDING_EMPTY_RESPONSE = """{"id":"$RECORDING_ID","bot_id":"$BOT_ID","name":"Recorded review","description":"","actions":[],"created_at_unix_ms":1,"updated_at_unix_ms":1}"""
         const val RECORDING_ACTION_RESPONSE = """{"id":"$RECORDING_ID","bot_id":"$BOT_ID","name":"Recorded review","description":"","actions":[{"actor":"user","step":{"kind":"bot_prompt","bot_id":"$BOT_ID","prompt_template":"Run tests","requires_approval":false}}],"created_at_unix_ms":1,"updated_at_unix_ms":2}"""
+        const val WORKSPACE_ID = "00000000-0000-0000-0000-000000000093"
+        const val REPOSITORY_WORKSPACE_RESPONSE = """{"id":"$WORKSPACE_ID","name":"HomeBot","root_path":"/srv/homebot","current_branch":"main","condition":"clean","created_at_unix_ms":1,"updated_at_unix_ms":1}"""
+        const val CHAT_WORKSPACE_RESPONSE = """{"chat_id":"$CHAT_ID","workspace_id":"$WORKSPACE_ID","mode":"isolated","effective_path":"/srv/worktrees/android","branch_name":"feature/android","base_ref":"main","condition":"clean","updated_at_unix_ms":1}"""
+        const val VCS_STATUS_RESPONSE = """{"head_oid":"abc123","branch":"feature/android","detached":false,"upstream":"origin/feature/android","ahead":1,"behind":0,"conflicted":false,"entries":[{"path":"MainActivity.kt","staged":"modified","unstaged":null,"conflicted":false}],"remotes":[{"name":"origin","fetch_configured":true,"push_configured":true}]}"""
+        const val WORKING_DIFF_RESPONSE = """{"staged":false,"patch":"diff --git a/MainActivity.kt b/MainActivity.kt","files":[{"status":"modified","path":"MainActivity.kt","previous_path":null,"binary":false}]}"""
+        const val STAGED_DIFF_RESPONSE = """{"staged":true,"patch":"diff --git a/MainActivity.kt b/MainActivity.kt","files":[{"status":"modified","path":"MainActivity.kt","previous_path":null,"binary":false}]}"""
+        const val COMMIT_RESPONSE = """{"commit_oid":"def456","branch":"feature/android"}"""
+        const val PUSH_RESPONSE = """{"status":"completed","approval":null,"result":{"remote":"origin","branch":"feature/android","updated":true}}"""
+        const val PULL_REQUEST_METADATA_RESPONSE = """{"remote":"origin","provider":"github","repository":"luinbytes/HomeBot","head_branch":"feature/android","base_branch":"main","compare_url":"https://example.test/compare","create_available":true,"current":null}"""
+        const val PULL_REQUEST_MUTATION_RESPONSE = """{"status":"completed","approval":null,"result":{"number":69,"url":"https://example.test/pull/69","title":"Android parity","state":"open","head_branch":"feature/android","base_branch":"main"}}"""
 
         fun hello(resume: String) = """{"protocol_version":1,"sequence":0,"event_id":"00000000-0000-0000-0000-000000000001","kind":"hello","server_version":"1.0.0","supported_protocols":{"minimum":1,"maximum":1},"resume":"$resume","heartbeat_interval_ms":30000,"heartbeat_timeout_ms":60000}"""
         fun snapshot(sequence: Int) = """{"protocol_version":1,"sequence":$sequence,"event_id":"00000000-0000-0000-0000-000000000002","kind":"snapshot","boundary_sequence":$sequence,"snapshot":{"bots":[],"chats":[]}}"""

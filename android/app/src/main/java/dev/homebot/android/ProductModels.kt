@@ -1,6 +1,8 @@
 package dev.homebot.android
 
 import dev.homebot.protocol.ChatTimelineResponse
+import dev.homebot.protocol.ChatSummary
+import dev.homebot.protocol.BotSummary
 import dev.homebot.protocol.AssistantPackSummary
 import dev.homebot.protocol.GroupTimelineResponse
 import dev.homebot.protocol.VcsStatus
@@ -14,6 +16,9 @@ import dev.homebot.protocol.RoutineTriggerSummary
 import dev.homebot.protocol.SecretSummary
 import dev.homebot.protocol.SkillSummary
 import dev.homebot.protocol.SearchResultSummary
+import dev.homebot.protocol.ChatWorkspaceSummary
+import dev.homebot.protocol.PullRequestMetadata
+import dev.homebot.protocol.VcsCommitResult
 
 sealed interface ProductDestination {
     data object Bots : ProductDestination
@@ -24,9 +29,35 @@ sealed interface ProductDestination {
 }
 
 data class CodingWorkspaceProjection(
+    val workspace: ChatWorkspaceSummary? = null,
     val status: VcsStatus? = null,
     val diff: WorkingTreeDiffResponse? = null,
+    val stagedDiff: WorkingTreeDiffResponse? = null,
+    val commit: VcsCommitResult? = null,
+    val pullRequest: PullRequestMetadata? = null,
+    val remoteNotice: String? = null,
 )
+
+data class BotConversation(val bot: BotSummary, val chat: ChatSummary?)
+
+internal fun botConversations(
+    bots: List<BotSummary>,
+    chats: List<ChatSummary>,
+    archived: Boolean = false,
+    showHidden: Boolean = false,
+): List<BotConversation> {
+    val chatsByBot = chats.associateBy(ChatSummary::bot_id)
+    return bots
+        .asSequence()
+        .filter { it.archived == archived && (showHidden || !it.hidden) }
+        .map { BotConversation(it, chatsByBot[it.id]) }
+        .sortedWith(
+            compareByDescending<BotConversation> { it.bot.pinned }
+                .thenByDescending { it.chat?.last_sequence ?: -1 }
+                .thenBy { it.bot.name.lowercase() },
+        )
+        .toList()
+}
 
 data class AndroidProductState(
     val destination: ProductDestination = ProductDestination.Bots,

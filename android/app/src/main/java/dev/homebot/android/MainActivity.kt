@@ -5,6 +5,7 @@ import android.os.Bundle
 import android.os.Build
 import android.Manifest
 import android.net.Uri
+import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -13,8 +14,10 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -24,6 +27,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
@@ -89,29 +93,25 @@ private fun HomeBotRoot(viewModel: MainViewModel, incomingPairing: String?, inco
 private fun ProductShell(viewModel: MainViewModel, live: ConnectionState.Live, state: AndroidProductState) {
     Scaffold(
         containerColor = Canvas,
-        topBar = {
-            Row(Modifier.fillMaxWidth().background(Color.White).padding(18.dp, 14.dp), verticalAlignment = Alignment.CenterVertically) {
-                HomeBotMark()
-                Text("HomeBot", fontWeight = FontWeight.Bold, fontSize = 20.sp, modifier = Modifier.padding(start = 10.dp))
-                Spacer(Modifier.weight(1f))
-                Text("Connected", color = Success, fontSize = 12.sp)
-            }
-        },
         bottomBar = {
-            Row(Modifier.fillMaxWidth().background(Color.White).padding(12.dp, 8.dp), horizontalArrangement = Arrangement.SpaceAround) {
-                NavButton("Bots", state.destination is ProductDestination.Bots, viewModel::showBots)
-                NavButton("Chats", state.destination is ProductDestination.DirectChat || state.destination is ProductDestination.GroupChat) {
-                    live.snapshot.chats.firstOrNull()?.let { viewModel.openDirectChat(it.id) } ?: viewModel.showBots()
-                }
+            Row(
+                Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surface).padding(12.dp, 8.dp),
+                horizontalArrangement = Arrangement.SpaceAround,
+            ) {
+                NavButton(
+                    "Messages",
+                    state.destination is ProductDestination.Bots || state.destination is ProductDestination.DirectChat || state.destination is ProductDestination.GroupChat,
+                    viewModel::showBots,
+                )
                 NavButton("Search", state.destination is ProductDestination.Search, viewModel::showSearch)
-                NavButton("Settings", state.destination is ProductDestination.Settings, viewModel::showSettings)
+                NavButton("Tools", state.destination is ProductDestination.Settings, viewModel::showSettings)
             }
         },
     ) { padding ->
         Box(Modifier.fillMaxSize().padding(padding)) {
             when (state.destination) {
                 ProductDestination.Bots -> RosterScreen(viewModel, live)
-                is ProductDestination.DirectChat -> DirectChatScreen(viewModel, state.directTimeline, state)
+                is ProductDestination.DirectChat -> DirectChatScreen(viewModel, state.directTimeline, state, live)
                 is ProductDestination.GroupChat -> GroupChatScreen(viewModel, state.groupTimeline, live.snapshot.bots)
                 ProductDestination.Search -> SearchScreen(viewModel, state)
                 ProductDestination.Settings -> ConnectedSettings(viewModel, live, state)
@@ -153,18 +153,31 @@ private fun RosterScreen(viewModel: MainViewModel, live: ConnectionState.Live) {
     var create by remember { mutableStateOf(false) }
     var archived by remember { mutableStateOf(false) }
     var showHidden by remember { mutableStateOf(false) }
+    var editingPins by rememberSaveable { mutableStateOf(false) }
     var name by remember { mutableStateOf("") }
     var title by remember { mutableStateOf("") }
-    LazyColumn(Modifier.fillMaxSize().padding(horizontal = 18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+    val conversations = botConversations(live.snapshot.bots, live.snapshot.chats, archived, showHidden)
+    val pinned = conversations.filter { it.bot.pinned }
+    val recent = conversations.filterNot { it.bot.pinned }
+    LazyColumn(Modifier.fillMaxSize().padding(horizontal = 18.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         item {
-            Row(Modifier.fillMaxWidth().padding(top = 18.dp), verticalAlignment = Alignment.CenterVertically) {
+            Row(Modifier.fillMaxWidth().padding(top = 14.dp), verticalAlignment = Alignment.CenterVertically) {
+                HomeBotMark()
                 Column(Modifier.weight(1f)) {
-                    Text("Your Bots", fontSize = 28.sp, fontWeight = FontWeight.Bold, modifier = Modifier.semantics { heading() })
-                    Text("Persistent teammates on your HomeBot server.", color = Muted)
+                    Text("Messages", fontSize = 28.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(start = 12.dp).semantics { heading() })
+                    Text("Connected to your HomeBot server", color = Success, fontSize = 12.sp, modifier = Modifier.padding(start = 12.dp))
                 }
-                Button(onClick = { create = !create }, colors = ButtonDefaults.buttonColors(containerColor = Violet)) {
-                    Text(if (create) "Cancel" else "New Bot")
-                }
+                TextButton(onClick = { create = !create }) { Text(if (create) "Cancel" else "New") }
+            }
+        }
+        item {
+            Surface(
+                onClick = viewModel::showSearch,
+                shape = RoundedCornerShape(14.dp),
+                color = MaterialTheme.colorScheme.surfaceVariant,
+                modifier = Modifier.fillMaxWidth().semantics { contentDescription = "Search HomeBot" },
+            ) {
+                Text("Search messages, files, links and routines", color = Muted, modifier = Modifier.padding(16.dp, 12.dp))
             }
         }
         if (create) item {
@@ -179,10 +192,34 @@ private fun RosterScreen(viewModel: MainViewModel, live: ConnectionState.Live) {
                 }
             }
         }
-        items(
-            live.snapshot.bots.filter { it.archived == archived && (showHidden || !it.hidden) },
-            key = { it.id },
-        ) { bot ->
+        if (pinned.isNotEmpty()) {
+            item {
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Text("Pinned", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = Muted, modifier = Modifier.weight(1f))
+                    TextButton(onClick = { editingPins = !editingPins }) { Text(if (editingPins) "Done" else "Edit") }
+                }
+                LazyRow(horizontalArrangement = Arrangement.spacedBy(18.dp), contentPadding = PaddingValues(vertical = 4.dp)) {
+                    items(pinned, key = { "pinned-${it.bot.id}" }) { conversation ->
+                        PinnedBot(
+                            conversation,
+                            editingPins,
+                            { viewModel.openBot(conversation.bot.id) },
+                            { viewModel.setBotPinned(conversation.bot.id, false) },
+                        )
+                    }
+                }
+            }
+        }
+        item {
+            Text(
+                if (archived) "Archived" else "Conversations",
+                fontSize = 20.sp,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.padding(top = 8.dp).semantics { heading() },
+            )
+        }
+        items(recent, key = { "conversation-${it.bot.id}" }) { conversation ->
+            val bot = conversation.bot
             BotRow(
                 bot,
                 { viewModel.openBot(bot.id) },
@@ -192,26 +229,87 @@ private fun RosterScreen(viewModel: MainViewModel, live: ConnectionState.Live) {
                 { viewModel.setBotHidden(bot.id, !bot.hidden) },
                 { viewModel.duplicateBot(bot.id) },
                 { confirmation -> viewModel.deleteBot(bot, confirmation) },
+                conversation.chat?.let(::chatStatus) ?: bot.title,
             )
         }
-        item {
-            TextButton(onClick = { archived = !archived }) { Text(if (archived) "Show active Bots" else "Show archived Bots") }
-            TextButton(onClick = { showHidden = !showHidden }) { Text(if (showHidden) "Hide hidden Bots" else "Review hidden Bots") }
-            HorizontalDivider()
-            Text("Group chats", fontSize = 20.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(vertical = 12.dp))
-        }
         items(live.snapshot.group_chats, key = { it.id }) { group ->
-            HomeBotCard(group.title, "${group.coordination_turns_used}/${group.coordination_max_turns} coordination turns") {
-                viewModel.openGroupChat(group.id)
-            }
+            ConversationRow(
+                title = group.title,
+                detail = if (group.stop_requested) "Stopped" else "Group chat • ${group.coordination_turns_used}/${group.coordination_max_turns} turns",
+                unread = 0,
+                color = BotMint,
+            ) { viewModel.openGroupChat(group.id) }
         }
         if (live.snapshot.group_chats.isEmpty() && live.snapshot.bots.count { !it.archived } >= 2) item {
             OutlinedButton(onClick = {
                 viewModel.createGroup("Bot team", live.snapshot.bots.filterNot { it.archived }.take(3).map { it.id })
             }) { Text("Start a group with your first Bots") }
         }
+        item {
+            HorizontalDivider(Modifier.padding(top = 6.dp))
+            TextButton(onClick = { archived = !archived }) { Text(if (archived) "Show active conversations" else "Show archived Bots") }
+            TextButton(onClick = { showHidden = !showHidden }) { Text(if (showHidden) "Hide hidden Bots" else "Review hidden Bots") }
+        }
         item { Spacer(Modifier.height(20.dp)) }
     }
+}
+
+@Composable
+private fun PinnedBot(
+    conversation: BotConversation,
+    editing: Boolean,
+    onOpen: () -> Unit,
+    onUnpin: () -> Unit,
+) {
+    val bot = conversation.bot
+    Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.width(86.dp)) {
+        Surface(
+            onClick = onOpen,
+            shape = CircleShape,
+            color = botColor(bot.color).copy(alpha = .22f),
+            modifier = Modifier.size(70.dp).semantics {
+                contentDescription = "Open ${bot.name}. ${conversation.chat?.let(::chatStatus) ?: bot.title}"
+            },
+        ) {
+            Box(contentAlignment = Alignment.Center) {
+                Text(bot.name.take(1).uppercase(), color = botColor(bot.color), fontSize = 26.sp, fontWeight = FontWeight.Black)
+            }
+        }
+        Text(bot.name, maxLines = 1, fontSize = 13.sp, fontWeight = FontWeight.Medium)
+        if (editing) {
+            TextButton(onClick = onUnpin, modifier = Modifier.heightIn(min = 48.dp)) { Text("Unpin") }
+        } else {
+            conversation.chat?.let(::chatStatus)?.let { Text(it, color = Muted, fontSize = 11.sp, maxLines = 1) }
+        }
+    }
+}
+
+@Composable
+private fun ConversationRow(title: String, detail: String, unread: Int, color: Color, onClick: () -> Unit) {
+    Row(
+        Modifier.fillMaxWidth().clickable(onClick = onClick).padding(vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(Modifier.size(52.dp).background(color.copy(alpha = .22f), CircleShape), contentAlignment = Alignment.Center) {
+            Text(title.take(1).uppercase(), color = color, fontWeight = FontWeight.Black, fontSize = 19.sp)
+        }
+        Column(Modifier.weight(1f).padding(start = 14.dp)) {
+            Text(title, fontWeight = if (unread > 0) FontWeight.Bold else FontWeight.SemiBold, fontSize = 17.sp)
+            Text(detail, color = Muted, maxLines = 1)
+        }
+        if (unread > 0) {
+            Surface(shape = CircleShape, color = Violet) {
+                Text(unread.toString(), color = MaterialTheme.colorScheme.onPrimary, fontSize = 11.sp, modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp))
+            }
+        }
+    }
+}
+
+private fun chatStatus(chat: ChatSummary) = when {
+    chat.running -> "Working…"
+    chat.queued_count > 0 -> "${chat.queued_count} queued"
+    chat.unread_count > 0 -> "${chat.unread_count} new"
+    else -> chat.title
 }
 
 @Composable
@@ -224,6 +322,7 @@ private fun BotRow(
     onHide: () -> Unit,
     onDuplicate: () -> Unit,
     onDelete: (String) -> Unit,
+    detail: String = bot.title,
 ) {
     var editing by remember(bot.id) { mutableStateOf(false) }
     var menuOpen by remember(bot.id) { mutableStateOf(false) }
@@ -239,8 +338,8 @@ private fun BotRow(
                 }
                 Column(Modifier.weight(1f).padding(start = 12.dp)) {
                     Text(bot.name + if (bot.unread_count > 0) "  ${bot.unread_count}" else "", fontWeight = FontWeight.Bold)
-                    Text(bot.title, color = Muted)
-                    Text(bot.provider, color = Muted, fontSize = 12.sp)
+                    Text(detail, color = Muted, maxLines = 1)
+                    Text(bot.provider, color = Muted, fontSize = 12.sp, maxLines = 1)
                 }
                 Box {
                     TextButton(onClick = { menuOpen = true }) { Text("More") }
@@ -301,34 +400,150 @@ private fun BotRow(
 }
 
 @Composable
-private fun DirectChatScreen(viewModel: MainViewModel, timeline: ChatTimelineResponse?, state: AndroidProductState) {
+private fun DirectChatScreen(
+    viewModel: MainViewModel,
+    timeline: ChatTimelineResponse?,
+    state: AndroidProductState,
+    live: ConnectionState.Live,
+) {
     if (timeline == null) return EmptyLoading("Loading chat…")
-    ChatLayout(
-        title = timeline.chat.title,
-        running = timeline.chat.running,
-        messages = timeline.messages,
-        activities = timeline.activities,
-        approvals = timeline.approvals,
-        queue = timeline.queued_prompts.map { "${it.kind.name.lowercase()}: ${it.content}" },
-        highlightedActivityId = state.highlightedActivityId,
-        onSend = { text, steer, reply -> viewModel.send(text, steer, replyToMessageId = reply) },
-        onStop = viewModel::stopWorking,
-        onRetry = viewModel::retry,
-        onDecision = viewModel::decide,
-        onAttachment = viewModel::sendAttachment,
-        onReaction = viewModel::setReaction,
-        extras = {
-            OutlinedButton(onClick = viewModel::loadCodingWorkspace) { Text("Workspace & diff") }
-            if (timeline.checkpoints.size >= 2) {
-                TextButton(onClick = viewModel::compareRecentCheckpoints) { Text("Compare latest checkpoints") }
+    key(timeline.chat.id) {
+        ChatLayout(
+            title = timeline.chat.title,
+            running = timeline.chat.running,
+            messages = timeline.messages,
+            activities = timeline.activities,
+            approvals = timeline.approvals,
+            queue = timeline.queued_prompts.map { "${it.kind.name.lowercase()}: ${it.content}" },
+            highlightedActivityId = state.highlightedActivityId,
+            onSend = { text, steer, reply -> viewModel.send(text, steer, replyToMessageId = reply) },
+            onStop = viewModel::stopWorking,
+            onRetry = viewModel::retry,
+            onDecision = viewModel::decide,
+            onAttachment = viewModel::sendAttachment,
+            onReaction = viewModel::setReaction,
+            extras = {
+                CodingControls(viewModel, state.coding, live.snapshot.repository_workspaces)
+                if (timeline.checkpoints.size >= 2) {
+                    TextButton(onClick = viewModel::compareRecentCheckpoints) { Text("Compare latest checkpoints") }
+                }
+                if (timeline.checkpoints.isNotEmpty()) {
+                    TextButton(onClick = viewModel::restoreLatestCheckpoint) { Text("Restore latest checkpoint safely") }
+                }
+            },
+        )
+    }
+}
+
+@Composable
+private fun CodingControls(
+    viewModel: MainViewModel,
+    coding: CodingWorkspaceProjection,
+    repositories: List<RepositoryWorkspaceSummary>,
+) {
+    var expanded by rememberSaveable { mutableStateOf(false) }
+    var repositoryPath by rememberSaveable { mutableStateOf("") }
+    var repositoryName by rememberSaveable { mutableStateOf("") }
+    var commitMessage by rememberSaveable { mutableStateOf("") }
+    var branchName by rememberSaveable { mutableStateOf("") }
+    var baseBranch by rememberSaveable { mutableStateOf("main") }
+    var pullRequestTitle by rememberSaveable { mutableStateOf("") }
+    var showDiff by rememberSaveable { mutableStateOf(false) }
+    TextButton(onClick = { expanded = !expanded }) { Text(if (expanded) "Close source control" else "Source control") }
+    if (!expanded) return
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        SectionTitle("Workspace")
+        val workspace = coding.workspace
+        if (workspace == null) {
+            Text("Attach a server-side repository to use the complete coding workflow.", color = Muted)
+            repositories.forEach { repository ->
+                OutlinedButton(onClick = { viewModel.attachWorkspace(repository.id) }, modifier = Modifier.fillMaxWidth()) {
+                    Text("Attach ${repository.name} · ${repository.current_branch ?: "detached"}")
+                }
             }
-            if (timeline.checkpoints.isNotEmpty()) {
-                TextButton(onClick = viewModel::restoreLatestCheckpoint) { Text("Restore latest checkpoint safely") }
-            }
-            state.coding.status?.let { Text("${it.branch ?: "detached"} • ${it.entries.size} changed files", color = Muted, fontSize = 12.sp) }
-            state.coding.diff?.let { Text(it.patch.take(1_200), fontSize = 11.sp) }
-        },
-    )
+            OutlinedTextField(
+                repositoryPath,
+                { repositoryPath = it },
+                label = { Text("Repository path on the HomeBot server") },
+                modifier = Modifier.fillMaxWidth(),
+            )
+            OutlinedTextField(
+                repositoryName,
+                { repositoryName = it },
+                label = { Text("Display name (optional)") },
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Button(
+                onClick = { viewModel.registerAndAttachWorkspace(repositoryPath, repositoryName) },
+                enabled = repositoryPath.isNotBlank(),
+            ) { Text("Register and attach isolated workspace") }
+            return@Column
+        }
+        Text("${workspace.branch_name ?: "detached"} • ${workspace.condition}", color = Muted)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(onClick = viewModel::loadCodingWorkspace) { Text("Refresh") }
+            TextButton(onClick = viewModel::detachWorkspace) { Text("Detach") }
+        }
+        val status = coding.status
+        if (status == null) {
+            Button(onClick = viewModel::loadCodingWorkspace) { Text("Load source control") }
+            return@Column
+        }
+        Text(
+            "${status.branch ?: "detached"} • ${status.entries.size} changed • ↑${status.ahead} ↓${status.behind}",
+            fontWeight = FontWeight.SemiBold,
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            TextButton(onClick = { showDiff = !showDiff }) { Text(if (showDiff) "Hide working diff" else "Working diff") }
+            TextButton(onClick = viewModel::loadStagedDiff) { Text("Staged diff") }
+        }
+        if (showDiff) coding.diff?.let { Text(it.patch.ifBlank { "No working-tree changes." }.take(4_000), fontSize = 11.sp) }
+        coding.stagedDiff?.let { Text("${it.files.size} staged files", color = Muted, fontSize = 12.sp) }
+        OutlinedTextField(
+            commitMessage,
+            { commitMessage = it },
+            label = { Text("Commit message") },
+            modifier = Modifier.fillMaxWidth(),
+        )
+        Button(
+            onClick = { viewModel.commitAll(commitMessage); commitMessage = "" },
+            enabled = commitMessage.isNotBlank() && status.entries.isNotEmpty(),
+        ) { Text("Commit all") }
+        coding.commit?.let { Text("Committed ${it.commit_oid.take(10)}", color = Success) }
+        OutlinedTextField(
+            branchName,
+            { branchName = it },
+            label = { Text("New branch") },
+            modifier = Modifier.fillMaxWidth(),
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(
+                onClick = { viewModel.createBranch(branchName); branchName = "" },
+                enabled = branchName.isNotBlank() && status.entries.isEmpty(),
+            ) { Text("Create branch") }
+            Button(
+                onClick = viewModel::pushCurrentBranch,
+                enabled = status.branch != null && status.remotes.any { it.push_configured },
+            ) { Text("Push") }
+        }
+        SectionTitle("Pull request")
+        OutlinedTextField(baseBranch, { baseBranch = it }, label = { Text("Base branch") }, modifier = Modifier.fillMaxWidth())
+        OutlinedButton(onClick = { viewModel.loadPullRequest(baseBranch) }, enabled = baseBranch.isNotBlank()) { Text("Check PR status") }
+        coding.pullRequest?.current?.let { Text("PR #${it.number} • ${it.state}", color = Success) }
+        if (coding.pullRequest?.current == null) {
+            OutlinedTextField(
+                pullRequestTitle,
+                { pullRequestTitle = it },
+                label = { Text("Pull request title") },
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Button(
+                onClick = { viewModel.createPullRequest(baseBranch, pullRequestTitle) },
+                enabled = coding.pullRequest?.create_available == true && pullRequestTitle.isNotBlank(),
+            ) { Text("Create pull request") }
+        }
+        coding.remoteNotice?.let { Text(it, color = if ("required" in it) Warning else Success) }
+    }
 }
 
 @Composable
@@ -418,7 +633,7 @@ private fun ChatLayout(
             items(queue) { HomeBotCard("Queued", it) }
             item { extras(); Spacer(Modifier.height(8.dp)) }
         }
-        Column(Modifier.background(Color.White).padding(12.dp)) {
+        Column(Modifier.background(MaterialTheme.colorScheme.surface).padding(12.dp)) {
             replyToMessageId?.let { reply ->
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text("Replying to ${reply.take(8)}", modifier = Modifier.weight(1f), color = Muted)
@@ -452,7 +667,13 @@ private fun MessageCard(
     onReply: (String) -> Unit,
 ) {
     Row(Modifier.fillMaxWidth(), horizontalArrangement = if (message.author == "user") Arrangement.End else Arrangement.Start) {
-        Card(shape = RoundedCornerShape(18.dp), modifier = Modifier.fillMaxWidth(if (message.author == "user") .84f else .96f)) {
+        Card(
+            shape = RoundedCornerShape(18.dp),
+            modifier = Modifier.fillMaxWidth(if (message.author == "user") .84f else .96f),
+            colors = CardDefaults.cardColors(
+                containerColor = if (message.author == "user") MaterialTheme.colorScheme.surfaceVariant else MaterialTheme.colorScheme.surface,
+            ),
+        ) {
             Column(Modifier.padding(14.dp)) {
                 Text(if (message.author == "user") "You" else "Bot", color = Violet, fontSize = 12.sp, fontWeight = FontWeight.Bold)
                 message.parts.forEach { part ->
@@ -504,6 +725,7 @@ private fun ApprovalCard(approval: ApprovalSummary, onDecision: (ApprovalSummary
 
 @Composable
 private fun ConnectedSettings(viewModel: MainViewModel, live: ConnectionState.Live, state: AndroidProductState) {
+    val context = LocalContext.current
     val endpointSettings by viewModel.settings.collectAsState()
     var endpoint by remember(endpointSettings.endpoint) { mutableStateOf(endpointSettings.endpoint.ifBlank { live.endpoint }) }
     var endpointError by remember { mutableStateOf<String?>(null) }
@@ -536,8 +758,15 @@ private fun ConnectedSettings(viewModel: MainViewModel, live: ConnectionState.Li
             Button(onClick = { viewModel.updateEndpoint(endpoint, endpointSettings.deviceName) { endpointError = it } }) {
                 Text("Save and reconnect")
             }
+            OutlinedButton(onClick = {
+                context.startActivity(
+                    Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS)
+                        .putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName),
+                )
+            }) { Text("Notification preferences") }
             endpointError?.let { Text(it, color = Danger) }
             Text("Sequence ${live.cursor} • authenticated device session", color = Muted, fontSize = 12.sp)
+            Text("Appearance follows Android light or dark mode.", color = Muted, fontSize = 12.sp)
         }
         item {
             SectionTitle("Computer access policy")
@@ -922,14 +1151,52 @@ private fun HomeBotCard(title: String, detail: String, color: Color = Color.Unsp
 
 @Composable private fun EmptyLoading(message: String) { Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Text(message, color = Muted) } }
 @Composable private fun ErrorBanner(message: String, dismiss: () -> Unit) { Card(Modifier.fillMaxWidth().padding(12.dp).semantics { liveRegion = LiveRegionMode.Assertive }, shape = CardShape) { Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) { Text(message, color = Danger, modifier = Modifier.weight(1f)); TextButton(onClick = dismiss) { Text("Dismiss") } } } }
-@Composable private fun HomeBotMark() { Box(Modifier.background(Violet, RoundedCornerShape(14.dp)).padding(13.dp, 9.dp).clearAndSetSemantics { contentDescription = "HomeBot" }) { Text("H", color = Color.White, fontWeight = FontWeight.Black, fontSize = 20.sp) } }
+@Composable private fun HomeBotMark() { Box(Modifier.background(Violet, RoundedCornerShape(14.dp)).padding(13.dp, 9.dp).clearAndSetSemantics { contentDescription = "HomeBot" }) { Text("H", color = MaterialTheme.colorScheme.onPrimary, fontWeight = FontWeight.Black, fontSize = 20.sp) } }
 @Composable private fun NavButton(label: String, selected: Boolean, onClick: () -> Unit) { TextButton(onClick = onClick, modifier = Modifier.semantics { role = Role.Tab; this.selected = selected }) { Text(label, color = if (selected) Violet else Muted, fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal) } }
-@Composable private fun HomeBotTheme(content: @Composable () -> Unit) { MaterialTheme(content = content) }
 
-private val Canvas = Color(0xFFF7F6F9)
-private val Violet = Color(0xFF7657FF)
-private val Muted = Color(0xFF6E6978)
-private val Success = Color(0xFF198754)
-private val Warning = Color(0xFFE07A00)
-private val Danger = Color(0xFFB3261E)
+private val HomeBotDarkColors = darkColorScheme(
+    primary = Color(0xFF9B86FF),
+    onPrimary = Color(0xFF0B0912),
+    background = Color(0xFF080808),
+    onBackground = Color(0xFFF4F2F6),
+    surface = Color(0xFF171717),
+    onSurface = Color(0xFFF4F2F6),
+    surfaceVariant = Color(0xFF242326),
+    onSurfaceVariant = Color(0xFFB8B3BE),
+    outline = Color(0xFF3B393E),
+    error = Color(0xFFFF8A80),
+)
+
+private val HomeBotLightColors = lightColorScheme(
+    primary = Color(0xFF6750D6),
+    onPrimary = Color.White,
+    background = Color(0xFFF8F7FA),
+    onBackground = Color(0xFF18161B),
+    surface = Color(0xFFFFFFFF),
+    onSurface = Color(0xFF18161B),
+    surfaceVariant = Color(0xFFECE9EF),
+    onSurfaceVariant = Color(0xFF5E5864),
+    outline = Color(0xFFD1CCD4),
+    error = Color(0xFFB3261E),
+)
+
+@Composable private fun HomeBotTheme(content: @Composable () -> Unit) {
+    MaterialTheme(colorScheme = if (isSystemInDarkTheme()) HomeBotDarkColors else HomeBotLightColors, content = content)
+}
+
+private val Canvas: Color @Composable get() = MaterialTheme.colorScheme.background
+private val Violet: Color @Composable get() = MaterialTheme.colorScheme.primary
+private val Muted: Color @Composable get() = MaterialTheme.colorScheme.onSurfaceVariant
+private val Danger: Color @Composable get() = MaterialTheme.colorScheme.error
+private val Success = Color(0xFF45D483)
+private val Warning = Color(0xFFFFB45C)
+private val BotMint = Color(0xFF41D39A)
+private val BotOrange = Color(0xFFFFA351)
+private val BotBlue = Color(0xFF65A7FF)
+private fun botColor(name: String) = when (name.lowercase()) {
+    "mint", "green" -> BotMint
+    "orange" -> BotOrange
+    "blue" -> BotBlue
+    else -> Color(0xFF9B86FF)
+}
 private val CardShape = RoundedCornerShape(18.dp)

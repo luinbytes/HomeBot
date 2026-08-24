@@ -45,6 +45,37 @@ fn production_devices_settings_exposes_pairing_action() {
 }
 
 #[test]
+fn production_shell_exposes_working_navigation_and_send_states() {
+    let theme = HomeBotTheme::dark();
+    let mut harness = Harness::builder()
+        .with_size(Vec2::new(
+            theme.layout.reference_width,
+            homebot_desktop::tokens::Layout::REFERENCE_HEIGHT,
+        ))
+        .build(|context| {
+            render_production_fixture(context, theme, ProductionFixtureState::PopulatedChat);
+        });
+    harness.run_steps(2);
+
+    for label in [
+        "Search",
+        "Routines",
+        "Plugins",
+        "Account & settings",
+        "Hide sidebar",
+    ] {
+        assert!(!harness.get_by_label(label).accesskit_node().is_disabled());
+    }
+    assert!(
+        harness
+            .get_by_label("Send message")
+            .accesskit_node()
+            .is_disabled(),
+        "an empty composer must expose a real disabled send state"
+    );
+}
+
+#[test]
 fn production_desktop_visual_goldens() {
     snapshot(
         "production_chat_dark",

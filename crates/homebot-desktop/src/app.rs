@@ -21,8 +21,8 @@ use crate::{
     activity_surfaces::{ActivityAction, ActivityCardModel, activity_surface},
     bot_roster::{BotEditorDraft, BotRosterModel, ConnectionState, EditorError},
     components::{
-        AttentionIndicator, AvatarShape, BotIdentity, activity_card, message,
-        recent_conversation_row, roster_row,
+        AttentionIndicator, AvatarShape, BotIdentity, activity_card, message, navigation_row,
+        recent_conversation_row, roster_row, send_button,
     },
     group_timeline::{GroupComposerError, GroupTimelineModel},
     notifications::{DeepLink, NotificationCenter, NotificationSink, SystemNotificationSink},
@@ -134,6 +134,7 @@ pub struct HomeBotApp {
     routine_recording_prompt: String,
     routine_recording_requires_approval: bool,
     details_open: bool,
+    sidebar_collapsed: bool,
     search: Option<SearchProjection>,
     editor_error: Option<EditorError>,
     composer_error: Option<ComposerError>,
@@ -188,6 +189,7 @@ impl Default for HomeBotApp {
             routine_recording_prompt: String::new(),
             routine_recording_requires_approval: true,
             details_open: false,
+            sidebar_collapsed: false,
             search: None,
             editor_error: None,
             composer_error: None,
@@ -296,8 +298,8 @@ impl HomeBotApp {
                     .shadow(self.theme.popup_shadow),
             )
             .show(context, |ui| {
-                ui.set_min_size(egui::vec2(820.0, 560.0));
-                ui.set_max_size(egui::vec2(820.0, 580.0));
+                ui.set_min_size(egui::vec2(860.0, 600.0));
+                ui.set_max_size(egui::vec2(860.0, 620.0));
                 ui.horizontal(|ui| {
                     ui.heading("Settings");
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -330,14 +332,17 @@ impl HomeBotApp {
     }
 
     fn handle_keyboard_shortcuts(&mut self, context: &egui::Context) {
-        let (settings, create_bot, composer, escape) = context.input_mut(|input| {
-            (
-                input.consume_key(egui::Modifiers::COMMAND, egui::Key::Comma),
-                input.consume_key(egui::Modifiers::COMMAND, egui::Key::N),
-                input.consume_key(egui::Modifiers::COMMAND, egui::Key::K),
-                input.consume_key(egui::Modifiers::NONE, egui::Key::Escape),
-            )
-        });
+        let (settings, create_bot, composer, search, sidebar, escape) =
+            context.input_mut(|input| {
+                (
+                    input.consume_key(egui::Modifiers::COMMAND, egui::Key::Comma),
+                    input.consume_key(egui::Modifiers::COMMAND, egui::Key::N),
+                    input.consume_key(egui::Modifiers::COMMAND, egui::Key::K),
+                    input.consume_key(egui::Modifiers::COMMAND, egui::Key::F),
+                    input.consume_key(egui::Modifiers::COMMAND, egui::Key::B),
+                    input.consume_key(egui::Modifiers::NONE, egui::Key::Escape),
+                )
+            });
         if settings {
             self.settings_open = !self.settings_open;
             self.routines_open = false;
@@ -351,6 +356,14 @@ impl HomeBotApp {
             self.settings_open = false;
             self.routines_open = false;
             self.focus_composer = true;
+        }
+        if search {
+            self.settings_open = false;
+            self.routines_open = false;
+            self.search.get_or_insert_with(SearchProjection::default);
+        }
+        if sidebar {
+            self.sidebar_collapsed = !self.sidebar_collapsed;
         }
         if escape {
             self.settings_open = false;
@@ -1020,18 +1033,37 @@ impl HomeBotApp {
     #[allow(clippy::too_many_lines)] // One ordered hierarchy; splitting it obscures bottom pinning.
     fn sidebar(&mut self, context: &egui::Context) {
         let available = context.screen_rect().width();
-        let width = (available * crate::tokens::Layout::SIDEBAR_RATIO).clamp(
+        let expanded_width = (available * crate::tokens::Layout::SIDEBAR_RATIO).clamp(
             crate::tokens::Layout::SIDEBAR_MIN_WIDTH,
             self.theme.layout.sidebar_width,
         );
+        let expanded = context.animate_bool_with_time_and_easing(
+            egui::Id::new("sidebar_expanded"),
+            !self.sidebar_collapsed,
+            f32::from(self.theme.motion.standard_ms) / 1_000.0,
+            egui::emath::easing::cubic_out,
+        );
+        let width = egui::lerp(
+            crate::tokens::Layout::SIDEBAR_COLLAPSED_WIDTH..=expanded_width,
+            expanded,
+        );
         SidePanel::left("bot_roster")
+            .resizable(false)
+            .min_width(crate::tokens::Layout::SIDEBAR_COLLAPSED_WIDTH)
             .exact_width(width)
             .frame(
                 Frame::NONE
                     .fill(self.theme.palette.sidebar)
-                    .inner_margin(egui::Margin::same(self.theme.insets.md)),
+                    .inner_margin(egui::Margin::same(if expanded > 0.8 {
+                        self.theme.insets.md
+                    } else {
+                        0
+                    })),
             )
             .show(context, |ui| {
+                if expanded <= 0.8 {
+                    return;
+                }
                 ui.horizontal(|ui| {
                     ui.label(
                         RichText::new("HomeBot")
@@ -1066,16 +1098,7 @@ impl HomeBotApp {
                     });
                 });
                 ui.add_space(self.theme.spacing.md);
-                if ui
-                    .add_sized(
-                        [
-                            ui.available_width(),
-                            self.theme.layout.sidebar_search_height,
-                        ],
-                        egui::Button::new("Search HomeBot"),
-                    )
-                    .clicked()
-                {
+                if navigation_row(ui, self.theme, "Search", self.search.is_some()).clicked() {
                     self.settings_open = false;
                     self.routines_open = false;
                     self.search.get_or_insert_with(SearchProjection::default);
@@ -1084,24 +1107,25 @@ impl HomeBotApp {
                 let visible: Vec<BotSummary> =
                     self.roster.visible_bots().into_iter().cloned().collect();
                 for bot in &visible {
+                    let chat = self.chats.iter().find(|chat| chat.bot_id == bot.id);
                     let mut bot_identity = identity(self.theme, bot);
-                    bot_identity.role = self
-                        .chats
-                        .iter()
-                        .find(|chat| chat.bot_id == bot.id)
-                        .map_or(bot.title.as_str(), |chat| {
-                            if chat.running {
-                                "Working…"
-                            } else if chat.queued_count > 0 {
-                                "Queued follow-up"
-                            } else {
-                                chat.title.as_str()
-                            }
-                        });
+                    bot_identity.role = chat.map_or(bot.title.as_str(), |chat| chat.title.as_str());
+                    let metadata = chat.map_or_else(String::new, |chat| {
+                        if chat.running {
+                            "Working".to_owned()
+                        } else if chat.queued_count > 0 {
+                            format!("{} queued", chat.queued_count)
+                        } else if chat.unread_count > 0 {
+                            format!("{} new", chat.unread_count)
+                        } else {
+                            String::new()
+                        }
+                    });
                     let response = roster_row(
                         ui,
                         self.theme,
                         bot_identity,
+                        &metadata,
                         self.roster.selected == Some(bot.id),
                     );
                     if response.clicked() {
@@ -1180,51 +1204,27 @@ impl HomeBotApp {
                     }
                 }
                 ui.with_layout(Layout::bottom_up(Align::LEFT), |ui| {
-                    if ui
-                        .add_sized(
-                            [
-                                ui.available_width(),
-                                self.theme.layout.sidebar_action_height,
-                            ],
-                            egui::Button::new("Account & settings")
-                                .fill(egui::Color32::TRANSPARENT)
-                                .stroke(Stroke::NONE),
-                        )
+                    if navigation_row(ui, self.theme, "Account & settings", self.settings_open)
                         .clicked()
                     {
                         self.settings_open = true;
                         self.routines_open = false;
                         self.search = None;
                     }
-                    if ui
-                        .add_sized(
-                            [
-                                ui.available_width(),
-                                self.theme.layout.sidebar_action_height,
-                            ],
-                            egui::Button::new("Plugins")
-                                .fill(egui::Color32::TRANSPARENT)
-                                .stroke(Stroke::NONE),
-                        )
-                        .clicked()
+                    if navigation_row(
+                        ui,
+                        self.theme,
+                        "Plugins",
+                        self.settings_open && self.settings.section == SettingsSection::Plugins,
+                    )
+                    .clicked()
                     {
                         self.settings_open = true;
                         self.routines_open = false;
                         self.settings.section = SettingsSection::Plugins;
                         self.search = None;
                     }
-                    if ui
-                        .add_sized(
-                            [
-                                ui.available_width(),
-                                self.theme.layout.sidebar_action_height,
-                            ],
-                            egui::Button::new("Routines")
-                                .fill(egui::Color32::TRANSPARENT)
-                                .stroke(Stroke::NONE),
-                        )
-                        .clicked()
-                    {
+                    if navigation_row(ui, self.theme, "Routines", self.routines_open).clicked() {
                         self.settings_open = false;
                         self.routines_open = true;
                         self.search = None;
@@ -1239,8 +1239,41 @@ impl HomeBotApp {
     fn titlebar(&mut self, context: &egui::Context) {
         TopBottomPanel::top("bot_titlebar")
             .exact_height(self.theme.layout.titlebar_height)
+            .frame(
+                Frame::NONE
+                    .fill(self.theme.palette.canvas)
+                    .stroke(Stroke::new(
+                        self.theme.layout.hairline,
+                        self.theme.palette.border,
+                    ))
+                    .inner_margin(egui::Margin::symmetric(
+                        self.theme.insets.md,
+                        self.theme.insets.sm,
+                    )),
+            )
             .show(context, |ui| {
                 ui.horizontal(|ui| {
+                    let toggle = ui
+                        .button(if self.sidebar_collapsed { "›" } else { "‹" })
+                        .on_hover_text(if self.sidebar_collapsed {
+                            "Show sidebar (⌘B)"
+                        } else {
+                            "Hide sidebar (⌘B)"
+                        });
+                    toggle.widget_info(|| {
+                        egui::WidgetInfo::labeled(
+                            egui::WidgetType::Button,
+                            true,
+                            if self.sidebar_collapsed {
+                                "Show sidebar"
+                            } else {
+                                "Hide sidebar"
+                            },
+                        )
+                    });
+                    if toggle.clicked() {
+                        self.sidebar_collapsed = !self.sidebar_collapsed;
+                    }
                     let selected = self
                         .roster
                         .selected
@@ -1248,15 +1281,18 @@ impl HomeBotApp {
                     let selected_group = self
                         .selected_group
                         .and_then(|id| self.groups.iter().find(|group| group.id == id));
-                    ui.label(if self.routines_open {
-                        "Routines"
-                    } else if self.search.is_some() {
-                        "Search"
-                    } else if let Some(group) = selected_group {
-                        group.title.as_str()
-                    } else {
-                        selected.map_or("Bots", |bot| bot.name.as_str())
-                    });
+                    ui.label(
+                        RichText::new(if self.routines_open {
+                            "Routines"
+                        } else if self.search.is_some() {
+                            "Search"
+                        } else if let Some(group) = selected_group {
+                            group.title.as_str()
+                        } else {
+                            selected.map_or("Bots", |bot| bot.name.as_str())
+                        })
+                        .strong(),
+                    );
                     if self.routines_open {
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                             if ui.button("Done").clicked() {
@@ -2143,7 +2179,10 @@ impl HomeBotApp {
                             .hint_text("Message the group")
                             .frame(false),
                     );
-                    if ui.button("Send").clicked()
+                    let can_send = !self.group_timeline.composer.content.trim().is_empty();
+                    if send_button(ui, self.theme, can_send)
+                        .on_hover_text("Send message")
+                        .clicked()
                         && let Err(error) = self.group_timeline.submit()
                     {
                         self.transport_error = Some(
@@ -2186,6 +2225,10 @@ impl HomeBotApp {
                 || "Message a Bot".to_owned(),
                 |bot| format!("Message {}", bot.name),
             );
+        if self.composer_error == Some(ComposerError::EmptyComposer) {
+            let message = "Write a message or attach a file first.";
+            ui.colored_label(self.theme.palette.danger, message);
+        }
         Frame::NONE
             .fill(self.theme.palette.surface)
             .stroke(Stroke::new(
@@ -2237,17 +2280,18 @@ impl HomeBotApp {
                                 ui.close();
                             }
                         });
-                    } else if ui.button("Send").on_hover_text("Send message").clicked() {
-                        self.composer_error = self.timeline.submit(false).err();
+                    } else {
+                        let can_send = !self.timeline.composer.content.trim().is_empty()
+                            || !self.timeline.composer.attachment_ids.is_empty();
+                        if send_button(ui, self.theme, can_send)
+                            .on_hover_text("Send message")
+                            .clicked()
+                        {
+                            self.composer_error = self.timeline.submit(false).err();
+                        }
                     }
                 });
             });
-        if self.composer_error == Some(ComposerError::EmptyComposer) {
-            ui.colored_label(
-                self.theme.palette.danger,
-                "Write a message or attach a file first.",
-            );
-        }
         if self.timeline.scroll.unseen_updates > 0 {
             ui.horizontal_centered(|ui| {
                 if ui.button("Jump to latest").clicked() {

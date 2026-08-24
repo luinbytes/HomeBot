@@ -4,6 +4,32 @@ Research snapshot: 24 August 2026. Official SpaceXAI/xAI material establishes
 the product behavior; the pinned release reconstruction below supplies the
 measurable desktop geometry and theme tokens that the official docs omit.
 
+## Current official 0.24.0 capture
+
+The current [official Grok Bot page](https://x.ai/bot) supplied the signed
+macOS arm64 0.24.0 release used for this comparison:
+
+- DMG: `https://downloads.cursor.com/grokbot/stable/darwin-arm64/0.24.0/Grok_Bot_0.24.0.dmg`
+- DMG SHA-256: `255873da42d2f19b27d7f34cdfb5b058002095ade883d8b321d6494f3cf6c615`
+- bundle: `com.anysphere.sand`, version `0.24.0`
+- signer: Developer ID Application: Anysphere Incorporated (`DCNK4UB866`)
+
+The current packaged renderer retains a 280px sidebar and 52px title bar. Its
+sidebar opens and closes over 200ms with a responsive cubic curve; ordinary
+control state transitions are predominantly 90–180ms. The light semantic
+colors remain `#fcfcfc` base/elevated, `#f7f7f7` subtle, `#14141426` border,
+`#77777717` hover, `#7777772b` selected, and `#1084fe` accent.
+
+The [official launch video](https://x.ai/news/introducing-grok-bot) provides
+useful views of the [composer at 30 seconds](evidence/grok-bot-official-launch-composer-30s.png),
+the [demonstration control at 34 seconds](evidence/grok-bot-official-launch-demonstration-34s.png),
+and a [populated desktop at 78 seconds](evidence/grok-bot-official-launch-desktop-78s.png).
+The desktop frame shows a quiet inline Search row, dense
+avatar/title/preview/trailing-state sidebar rows, restrained selected state,
+fixed conversation header, and a bottom-anchored rounded composer with a
+circular vector send control. These stills are excerpts from xAI's official
+launch video, retained as visual-review evidence rather than HomeBot assets.
+
 ## Pinned local 0.18.0 reference and measurable parity contract
 
 The concrete desktop reference for this work is the macOS arm64 Grok Bot
@@ -173,9 +199,9 @@ hide essential actions behind right-click only.
   dismissed or cleared; clearing the notice does not remove the underlying
   action or history. [Settings and notifications](https://docs.x.ai/grok-bot/settings-and-notifications#handle-in-app-errors)
 
-The docs do not expose exact sidebar width, header height, composer geometry,
-button order, colors, type scale, hover states, right-click behavior, or
-whether controls are icon-only versus labeled. Those remain capture-required.
+The current signed desktop artifact establishes the sidebar/header geometry,
+semantic colors, and common motion timing above. Exact font metrics, every
+responsive breakpoint, and unrecorded hover/menu states remain capture-required.
 
 ### Settings and device/account flows
 
@@ -201,10 +227,8 @@ whether controls are icon-only versus labeled. Those remain capture-required.
 No first-party source inspected here establishes: exact chronological tie
 breaking for simultaneous events; the visible rendering of reasoning; default
 collapse state or truncation for tool output; scroll anchoring/overscroll;
-macOS context-menu contents; precise desktop geometry or typography; settings
-modal layout; or a Link Device/pairing flow. The official launch page's [embedded
-video](https://media.x.ai/v1/website/260810_2245_bw_dr_cursor_bot_edit_v8-60724aba.mp4)
-and [open-graph image](https://x.ai/images/news/introducing-grok-bot-og-2.png)
-are legitimate first-party media, but do not provide a deterministic,
-inspectable reference for those states. Any HomeBot behavior chosen for these
-gaps should be documented as HomeBot design, not claimed as 1:1 Grok parity.
+macOS context-menu contents; complete typography; every settings state; or a
+Link Device/pairing flow. The launch video is a legitimate first-party visual
+reference for its recorded populated state, but not for surfaces it never
+shows. Any HomeBot behavior chosen for those gaps should be documented as
+HomeBot design, not claimed as 1:1 Grok parity.

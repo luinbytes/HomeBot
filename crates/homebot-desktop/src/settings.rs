@@ -1,11 +1,14 @@
 //! Desktop settings projection and navigation.
 
-use egui::{Align, Frame, Layout, RichText, Sense, Stroke, Ui};
+use egui::{Align, Frame, Layout, RichText, Sense, Ui};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use uuid::Uuid;
 
-use crate::tokens::{HomeBotTheme, ThemeMode};
+use crate::{
+    components::navigation_row,
+    tokens::{HomeBotTheme, ThemeMode},
+};
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum SettingsSection {
@@ -205,12 +208,11 @@ pub(crate) fn settings_view_with(
 ) -> Option<SettingsAction> {
     let mut action = None;
     ui.horizontal_top(|ui| {
-        ui.set_min_width(112.0);
+        ui.set_min_width(176.0);
+        ui.set_max_width(176.0);
         ui.vertical(|ui| {
             for section in SettingsSection::ALL {
-                if ui
-                    .selectable_label(settings.section == section, section.label())
-                    .clicked()
+                if navigation_row(ui, theme, section.label(), settings.section == section).clicked()
                 {
                     settings.section = section;
                 }
@@ -430,10 +432,7 @@ fn settings_row(
 ) -> bool {
     let mut clicked = false;
     Frame::NONE
-        .fill(theme.palette.surface)
-        .stroke(Stroke::new(theme.layout.hairline, theme.palette.border))
-        .corner_radius(egui::CornerRadius::same(theme.radii.md))
-        .inner_margin(egui::Margin::same(theme.insets.md))
+        .inner_margin(egui::Margin::symmetric(theme.insets.sm, theme.insets.md))
         .show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.vertical(|ui| {
@@ -449,7 +448,7 @@ fn settings_row(
                 });
             });
         });
-    ui.add_space(theme.spacing.sm);
+    ui.separator();
     clicked
 }
 

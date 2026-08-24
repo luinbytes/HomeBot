@@ -1,6 +1,9 @@
 use std::f32::consts::{FRAC_PI_2, TAU};
 
-use egui::{Align, Color32, CornerRadius, Frame, Layout, RichText, Sense, Shape, Stroke, Ui, Vec2};
+use egui::{
+    Align, Color32, CornerRadius, Frame, Layout, RichText, Sense, Shape, Stroke, Ui, Vec2,
+    WidgetInfo, WidgetType,
+};
 
 use crate::tokens::HomeBotTheme;
 
@@ -170,10 +173,97 @@ pub fn recent_conversation_row(
         .interact(Sense::click())
 }
 
+pub fn navigation_row(
+    ui: &mut Ui,
+    theme: HomeBotTheme,
+    label: &str,
+    selected: bool,
+) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(
+        Vec2::new(ui.available_width(), theme.layout.sidebar_action_height),
+        Sense::click(),
+    );
+    let hover = ui.ctx().animate_bool_with_time_and_easing(
+        response.id,
+        response.hovered(),
+        f32::from(theme.motion.quick_ms) / 1_000.0,
+        egui::emath::easing::cubic_out,
+    );
+    let fill = if selected {
+        theme.palette.surface_selected
+    } else {
+        theme.palette.surface_hover.gamma_multiply(hover)
+    };
+    ui.painter()
+        .rect_filled(rect, CornerRadius::same(theme.radii.sm), fill);
+    if response.has_focus() {
+        ui.painter().rect_stroke(
+            rect.shrink(theme.layout.hairline),
+            CornerRadius::same(theme.radii.sm),
+            Stroke::new(theme.layout.hairline, theme.palette.accent),
+            egui::StrokeKind::Inside,
+        );
+    }
+    ui.painter().text(
+        egui::pos2(rect.left() + theme.spacing.md, rect.center().y),
+        egui::Align2::LEFT_CENTER,
+        label,
+        theme.typography.font(theme.typography.body_compact),
+        theme.palette.text_primary,
+    );
+    response.widget_info(|| {
+        WidgetInfo::selected(
+            WidgetType::SelectableLabel,
+            ui.is_enabled(),
+            selected,
+            label,
+        )
+    });
+    response
+}
+
+pub fn send_button(ui: &mut Ui, theme: HomeBotTheme, enabled: bool) -> egui::Response {
+    let response = ui.add_enabled(
+        enabled,
+        egui::Button::new("")
+            .fill(theme.palette.text_primary)
+            .corner_radius(CornerRadius::same(theme.radii.pill))
+            .min_size(Vec2::splat(30.0)),
+    );
+    let color = if enabled {
+        theme.palette.canvas
+    } else {
+        theme.palette.text_tertiary
+    };
+    let center = response.rect.center();
+    let stroke = Stroke::new(1.5_f32, color);
+    ui.painter().line_segment(
+        [center + egui::vec2(0.0, 5.0), center - egui::vec2(0.0, 5.0)],
+        stroke,
+    );
+    ui.painter().line_segment(
+        [
+            center - egui::vec2(0.0, 5.0),
+            center + egui::vec2(-4.0, -1.0),
+        ],
+        stroke,
+    );
+    ui.painter().line_segment(
+        [
+            center - egui::vec2(0.0, 5.0),
+            center + egui::vec2(4.0, -1.0),
+        ],
+        stroke,
+    );
+    response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, enabled, "Send message"));
+    response
+}
+
 pub fn roster_row(
     ui: &mut Ui,
     theme: HomeBotTheme,
     bot: BotIdentity<'_>,
+    metadata: &str,
     selected: bool,
 ) -> egui::Response {
     let fill = if selected {
@@ -204,23 +294,32 @@ pub fn roster_row(
                             .color(theme.palette.text_tertiary),
                     );
                 });
-                if bot.unread || bot.attention.is_some() {
+                if !metadata.is_empty() || bot.unread || bot.attention.is_some() {
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        let (rect, _) = ui.allocate_exact_size(
-                            Vec2::splat(theme.layout.unread_dot),
-                            Sense::hover(),
-                        );
-                        let color = match bot.attention {
-                            Some(AttentionIndicator::Working) => theme.palette.success,
-                            Some(AttentionIndicator::NeedsApproval) => theme.palette.warning,
-                            Some(AttentionIndicator::Failed) => theme.palette.danger,
-                            None => theme.palette.accent,
-                        };
-                        ui.painter().circle_filled(
-                            rect.center(),
-                            theme.layout.unread_dot / 2.0,
-                            color,
-                        );
+                        if !metadata.is_empty() {
+                            ui.label(
+                                RichText::new(metadata)
+                                    .font(theme.typography.font(theme.typography.micro))
+                                    .color(theme.palette.text_tertiary),
+                            );
+                        }
+                        if bot.unread || bot.attention.is_some() {
+                            let (rect, _) = ui.allocate_exact_size(
+                                Vec2::splat(theme.layout.unread_dot),
+                                Sense::hover(),
+                            );
+                            let color = match bot.attention {
+                                Some(AttentionIndicator::Working) => theme.palette.success,
+                                Some(AttentionIndicator::NeedsApproval) => theme.palette.warning,
+                                Some(AttentionIndicator::Failed) => theme.palette.danger,
+                                None => theme.palette.accent,
+                            };
+                            ui.painter().circle_filled(
+                                rect.center(),
+                                theme.layout.unread_dot / 2.0,
+                                color,
+                            );
+                        }
                     });
                 }
             });

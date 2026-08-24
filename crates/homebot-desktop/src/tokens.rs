@@ -333,6 +333,7 @@ impl Radii {
 
 impl Layout {
     pub const REFERENCE_HEIGHT: f32 = 760.0;
+    pub const SIDEBAR_COLLAPSED_WIDTH: f32 = 0.0;
     pub const SIDEBAR_MIN_WIDTH: f32 = 240.0;
     pub const SIDEBAR_RATIO: f32 = 0.30;
     pub const BOT_TILE_MIN_WIDTH: f32 = 116.0;
@@ -343,12 +344,12 @@ impl Layout {
         reference_width: 1120.0,
         sidebar_width: 280.0,
         content_max_width: 690.0,
-        titlebar_height: 51.0,
+        titlebar_height: 52.0,
         roster_row_height: 58.0,
         avatar_size: 34.0,
         avatar_small: 28.0,
         bot_tile_height: 104.0,
-        sidebar_search_height: 38.0,
+        sidebar_search_height: 34.0,
         sidebar_action_height: 34.0,
         assistant_message_max_width: 640.0,
         user_message_max_width: 640.0,
@@ -367,7 +368,7 @@ impl Motion {
     const VALUES: Self = Self {
         instant_ms: 0,
         quick_ms: 120,
-        standard_ms: 180,
+        standard_ms: 200,
         deliberate_ms: 260,
     };
 }
@@ -397,7 +398,7 @@ mod tests {
             assert!((actual - expected).abs() < f32::EPSILON);
         };
         exact(layout.sidebar_width, 280.0);
-        exact(layout.titlebar_height, 51.0);
+        exact(layout.titlebar_height, 52.0);
         exact(layout.roster_row_height, 58.0);
         exact(layout.content_max_width, 690.0);
         exact(layout.assistant_message_max_width, 640.0);

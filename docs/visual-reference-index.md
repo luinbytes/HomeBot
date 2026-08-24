@@ -1,8 +1,14 @@
 # Grok Bot visual reference index
 
-Baseline: 20 August 2026. This index is the canonical input to HomeBot's future egui and Android golden tests. It records independently observed product behaviour from public, authoritative SpaceXAI material without copying proprietary source code or redistributing proprietary assets.
+Baseline: 24 August 2026. This index is the canonical input to HomeBot's future egui and Android golden tests. It records independently observed product behaviour from public, authoritative SpaceXAI material without copying proprietary source code or redistributing proprietary assets.
 
 Comparison update, 22 August 2026: a current user-supplied Grok Bot desktop screenshot establishes the populated default shell as a two-pane layout with a wide visual Bot/group sidebar, recent conversations, chat-led message cards, contextual computer control and anchored composer. Its red arrow annotation is excluded from the reference. The image is not redistributed in this repository. Rows remain `Capture required` wherever this single capture or the official public sources do not show the complete state.
+
+Comparison update, 24 August 2026: the official 0.24.0 macOS artifact and the
+official launch video's populated desktop frame establish the 280px sidebar,
+52px title bar, restrained inline Search and navigation rows, anchored rounded
+composer, circular send control, and 200ms sidebar motion. See
+[grok-bot-ui-reference.md](grok-bot-ui-reference.md) for provenance and hashes.
 
 ## Reference set
 

@@ -6,6 +6,10 @@ Visible surfaces and state-specific golden IDs are tracked in [visual-reference-
 
 Sources: [overview](https://docs.x.ai/grok-bot/overview), [Bots](https://docs.x.ai/grok-bot/bots), [chat and collaboration](https://docs.x.ai/grok-bot/chat-and-collaboration), [files and results](https://docs.x.ai/grok-bot/files-and-results), [computer and apps](https://docs.x.ai/grok-bot/computer-and-apps), [skills and routines](https://docs.x.ai/grok-bot/skills-routines-and-automations), [settings and notifications](https://docs.x.ai/grok-bot/settings-and-notifications), [security and approvals](https://docs.x.ai/grok-bot/approvals-security-and-privacy), [mobile](https://docs.x.ai/grok-bot/mobile), and [FAQ](https://docs.x.ai/grok-bot/faq).
 
+The clean-room-oriented [Grok Bot 0.18 runtime parity audit](grok-bot-0.18-runtime-parity.md)
+adds edge-case acceptance detail from a pinned reconstructed-runtime evidence set. It does not
+replace the official sources above, grant code-reuse rights, or turn a row into `Pass`.
+
 | Capability/state | Source | Desktop contract | Android contract | Server capability | Acceptance | Status |
 | --- | --- | --- | --- | --- | --- | --- |
 | Bot create and default identity | Bots | New flow and validation | Mobile create flow | Durable Bot create | Create, restart, reopen | Specified |

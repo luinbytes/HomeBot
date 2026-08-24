@@ -77,6 +77,37 @@ fn production_shell_exposes_working_navigation_and_send_states() {
 }
 
 #[test]
+fn compact_modal_actions_remain_inside_the_viewport() {
+    const COMPACT_SIZE: Vec2 = Vec2::new(800.0, 600.0);
+    for (state, action) in [
+        (ProductionFixtureState::Settings, "Close"),
+        (ProductionFixtureState::BotEditor, "Save changes"),
+        (ProductionFixtureState::DeleteBot, "Delete permanently"),
+        (ProductionFixtureState::GroupDetails, "Done"),
+        (ProductionFixtureState::RoutineEditor, "Save routine"),
+        (
+            ProductionFixtureState::AssistantPackConfigure,
+            "Install and enable",
+        ),
+    ] {
+        let theme = HomeBotTheme::dark();
+        let mut harness = Harness::builder()
+            .with_size(COMPACT_SIZE)
+            .build(|context| render_production_fixture(context, theme, state));
+        harness.run_steps(2);
+
+        let rect = harness.get_by_label(action).rect();
+        assert!(
+            rect.min.x >= 0.0
+                && rect.min.y >= 0.0
+                && rect.max.x <= COMPACT_SIZE.x
+                && rect.max.y <= COMPACT_SIZE.y,
+            "{action} is clipped at compact desktop size: {rect:?}"
+        );
+    }
+}
+
+#[test]
 fn production_desktop_visual_goldens() {
     snapshot(
         "production_chat_dark",
@@ -107,6 +138,21 @@ fn production_desktop_visual_goldens() {
         "production_computer_details_dark",
         HomeBotTheme::dark(),
         ProductionFixtureState::ComputerDetails,
+    );
+    snapshot(
+        "production_group_details_dark",
+        HomeBotTheme::dark(),
+        ProductionFixtureState::GroupDetails,
+    );
+    snapshot(
+        "production_bot_editor_light",
+        HomeBotTheme::light(),
+        ProductionFixtureState::BotEditor,
+    );
+    snapshot(
+        "production_delete_bot_dark",
+        HomeBotTheme::dark(),
+        ProductionFixtureState::DeleteBot,
     );
     snapshot(
         "production_settings_light",

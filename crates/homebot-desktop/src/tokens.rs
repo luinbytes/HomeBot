@@ -1,4 +1,4 @@
-use egui::{Color32, CornerRadius, FontFamily, FontId, Margin, Shadow, Stroke, Vec2};
+use egui::{Color32, CornerRadius, FontFamily, FontId, Margin, Shadow, Stroke, TextStyle, Vec2};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ThemeMode {
@@ -139,8 +139,8 @@ impl HomeBotTheme {
                 text_primary: Color32::from_rgb(20, 20, 20),
                 text_secondary: Color32::from_rgba_unmultiplied(20, 20, 20, 153),
                 text_tertiary: Color32::from_rgba_unmultiplied(20, 20, 20, 102),
-                accent: Color32::from_rgb(16, 132, 254),
-                accent_soft: Color32::from_rgba_unmultiplied(16, 132, 254, 44),
+                accent: Color32::from_rgb(0, 109, 204),
+                accent_soft: Color32::from_rgba_unmultiplied(0, 109, 204, 44),
                 success: Color32::from_rgb(0, 201, 114),
                 warning: Color32::from_rgb(255, 152, 0),
                 danger: Color32::from_rgb(255, 38, 60),
@@ -233,6 +233,14 @@ impl HomeBotTheme {
     }
 
     #[must_use]
+    pub const fn with_reduced_motion(mut self, reduced: bool) -> Self {
+        if reduced {
+            self.motion = Motion::REDUCED;
+        }
+        self
+    }
+
+    #[must_use]
     pub const fn message_assistant(self) -> Color32 {
         match self.mode {
             ThemeMode::Light => Color32::from_rgb(238, 238, 238),
@@ -248,16 +256,42 @@ impl HomeBotTheme {
         }
     }
 
+    #[must_use]
+    pub const fn input_fill(self) -> Color32 {
+        match self.mode {
+            ThemeMode::Light => Color32::from_rgb(246, 246, 246),
+            ThemeMode::Dark => Color32::from_rgb(12, 12, 12),
+        }
+    }
+
+    #[must_use]
+    pub const fn on_accent(self) -> Color32 {
+        match self.mode {
+            ThemeMode::Light => Color32::WHITE,
+            ThemeMode::Dark => Color32::from_rgb(5, 5, 5),
+        }
+    }
+
+    #[must_use]
+    pub const fn danger_fill(self) -> Color32 {
+        match self.mode {
+            ThemeMode::Light => Color32::from_rgb(198, 40, 40),
+            ThemeMode::Dark => Color32::from_rgb(185, 28, 28),
+        }
+    }
+
     pub fn install(self, context: &egui::Context) {
         let mut style = (*context.style()).clone();
         style.spacing.item_spacing = Vec2::splat(self.spacing.sm);
         style.spacing.button_padding = Vec2::new(self.spacing.md, self.spacing.sm);
+        style.spacing.interact_size =
+            Vec2::new(self.spacing.xxl, self.layout.sidebar_action_height);
         style.spacing.menu_margin = Margin::same(self.insets.sm);
         style.spacing.indent = self.spacing.lg;
         style.visuals.dark_mode = self.mode == ThemeMode::Dark;
         style.visuals.panel_fill = self.palette.canvas;
         style.visuals.window_fill = self.palette.surface;
-        style.visuals.extreme_bg_color = self.palette.surface;
+        style.visuals.extreme_bg_color = self.input_fill();
         style.visuals.faint_bg_color = self.palette.surface_hover;
         style.visuals.window_stroke = Stroke::new(self.layout.hairline, self.palette.border);
         style.visuals.window_corner_radius = CornerRadius::same(self.radii.lg);
@@ -272,16 +306,39 @@ impl HomeBotTheme {
         style.visuals.widgets.noninteractive.fg_stroke.color = self.palette.text_primary;
         style.visuals.widgets.inactive.bg_fill = self.palette.surface;
         style.visuals.widgets.inactive.weak_bg_fill = self.palette.surface_hover;
+        style.visuals.widgets.inactive.bg_stroke =
+            Stroke::new(self.layout.hairline, self.palette.border);
         style.visuals.widgets.inactive.fg_stroke.color = self.palette.text_secondary;
         style.visuals.widgets.inactive.corner_radius = CornerRadius::same(self.radii.sm);
         style.visuals.widgets.hovered.bg_fill = self.palette.surface_hover;
         style.visuals.widgets.hovered.weak_bg_fill = self.palette.surface_selected;
+        style.visuals.widgets.hovered.bg_stroke =
+            Stroke::new(self.layout.hairline, self.palette.accent);
         style.visuals.widgets.hovered.fg_stroke.color = self.palette.text_primary;
         style.visuals.widgets.hovered.corner_radius = CornerRadius::same(self.radii.sm);
         style.visuals.widgets.active.bg_fill = self.palette.surface_selected;
         style.visuals.widgets.active.weak_bg_fill = self.palette.surface_selected;
+        style.visuals.widgets.active.bg_stroke =
+            Stroke::new(self.layout.hairline, self.palette.accent);
         style.visuals.widgets.active.fg_stroke.color = self.palette.text_primary;
         style.visuals.widgets.active.corner_radius = CornerRadius::same(self.radii.sm);
+        style.animation_time = f32::from(self.motion.standard_ms) / 1_000.0;
+        style.text_styles = [
+            (
+                TextStyle::Heading,
+                self.typography.font(self.typography.display),
+            ),
+            (TextStyle::Body, self.typography.font(self.typography.body)),
+            (
+                TextStyle::Button,
+                self.typography.font(self.typography.body_compact),
+            ),
+            (
+                TextStyle::Small,
+                self.typography.font(self.typography.caption),
+            ),
+        ]
+        .into();
         context.set_style(style);
     }
 }
@@ -289,9 +346,9 @@ impl HomeBotTheme {
 impl Typography {
     const VALUES: Self = Self {
         display: 24.0,
-        title: 14.0,
-        heading: 14.0,
-        body: 13.0,
+        title: 20.0,
+        heading: 16.0,
+        body: 14.0,
         body_compact: 13.0,
         caption: 12.0,
         micro: 11.0,
@@ -339,6 +396,10 @@ impl Layout {
     pub const BOT_TILE_MIN_WIDTH: f32 = 116.0;
     pub const COMPOSER_ACTION_RESERVE: f32 = 76.0;
     pub const CONTEXTUAL_ACTION_HEIGHT: f32 = 24.0;
+    pub const SETTINGS_MODAL_WIDTH: f32 = 860.0;
+    pub const MODAL_WIDTH: f32 = 640.0;
+    pub const MODAL_COMPACT_WIDTH: f32 = 460.0;
+    pub const MODAL_MAX_HEIGHT: f32 = 620.0;
 
     const VALUES: Self = Self {
         reference_width: 1120.0,
@@ -365,6 +426,13 @@ impl Layout {
 }
 
 impl Motion {
+    const REDUCED: Self = Self {
+        instant_ms: 0,
+        quick_ms: 0,
+        standard_ms: 0,
+        deliberate_ms: 0,
+    };
+
     const VALUES: Self = Self {
         instant_ms: 0,
         quick_ms: 120,
@@ -389,6 +457,10 @@ mod tests {
                 < f32::EPSILON
         );
         assert!(light.motion.quick_ms < light.motion.deliberate_ms);
+        assert!(contrast(light.palette.accent, light.on_accent()) >= 4.5);
+        assert!(contrast(dark.palette.accent, dark.on_accent()) >= 4.5);
+        assert!(contrast(light.danger_fill(), Color32::WHITE) >= 4.5);
+        assert!(contrast(dark.danger_fill(), Color32::WHITE) >= 4.5);
     }
 
     #[test]
@@ -424,5 +496,22 @@ mod tests {
             assert!(!source.contains("Color32::WHITE"));
             assert!(!source.contains("Color32::BLACK"));
         }
+    }
+
+    fn contrast(first: Color32, second: Color32) -> f32 {
+        let luminance = |color: Color32| {
+            let channel = |value: u8| {
+                let value = f32::from(value) / 255.0;
+                if value <= 0.040_45 {
+                    value / 12.92
+                } else {
+                    ((value + 0.055) / 1.055).powf(2.4)
+                }
+            };
+            0.2126 * channel(color.r()) + 0.7152 * channel(color.g()) + 0.0722 * channel(color.b())
+        };
+        let first = luminance(first);
+        let second = luminance(second);
+        (first.max(second) + 0.05) / (first.min(second) + 0.05)
     }
 }

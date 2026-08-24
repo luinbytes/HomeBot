@@ -74,6 +74,7 @@ pub struct Radii {
     pub sm: u8,
     pub md: u8,
     pub lg: u8,
+    pub composer: u8,
     pub pill: u8,
 }
 
@@ -96,6 +97,7 @@ pub struct Layout {
     pub composer_max_width: f32,
     pub empty_state_top_padding: f32,
     pub activity_icon_size: f32,
+    pub activity_detail_max_height: f32,
     pub unread_dot: f32,
     pub hairline: f32,
 }
@@ -124,24 +126,24 @@ pub struct HomeBotTheme {
 
 impl HomeBotTheme {
     #[must_use]
-    pub const fn light() -> Self {
+    pub fn light() -> Self {
         Self {
             mode: ThemeMode::Light,
             palette: Palette {
-                canvas: Color32::from_rgb(248, 248, 247),
-                sidebar: Color32::from_rgb(241, 241, 239),
-                surface: Color32::from_rgb(255, 255, 255),
-                surface_hover: Color32::from_rgb(235, 235, 232),
-                surface_selected: Color32::from_rgb(226, 226, 222),
-                border: Color32::from_rgb(218, 218, 214),
-                text_primary: Color32::from_rgb(29, 29, 28),
-                text_secondary: Color32::from_rgb(92, 92, 88),
-                text_tertiary: Color32::from_rgb(136, 136, 130),
-                accent: Color32::from_rgb(74, 86, 255),
-                accent_soft: Color32::from_rgb(229, 231, 255),
-                success: Color32::from_rgb(31, 151, 93),
-                warning: Color32::from_rgb(190, 120, 29),
-                danger: Color32::from_rgb(202, 62, 62),
+                canvas: Color32::from_rgb(252, 252, 252),
+                sidebar: Color32::from_rgb(247, 247, 247),
+                surface: Color32::from_rgb(252, 252, 252),
+                surface_hover: Color32::from_rgba_unmultiplied(119, 119, 119, 23),
+                surface_selected: Color32::from_rgba_unmultiplied(119, 119, 119, 43),
+                border: Color32::from_rgba_unmultiplied(20, 20, 20, 38),
+                text_primary: Color32::from_rgb(20, 20, 20),
+                text_secondary: Color32::from_rgba_unmultiplied(20, 20, 20, 153),
+                text_tertiary: Color32::from_rgba_unmultiplied(20, 20, 20, 102),
+                accent: Color32::from_rgb(16, 132, 254),
+                accent_soft: Color32::from_rgba_unmultiplied(16, 132, 254, 44),
+                success: Color32::from_rgb(0, 201, 114),
+                warning: Color32::from_rgb(255, 152, 0),
+                danger: Color32::from_rgb(255, 38, 60),
                 overlay: Color32::from_black_alpha(92),
                 bot_nova: Color32::from_rgb(109, 93, 232),
                 bot_patch: Color32::from_rgb(40, 156, 112),
@@ -171,24 +173,24 @@ impl HomeBotTheme {
     }
 
     #[must_use]
-    pub const fn dark() -> Self {
+    pub fn dark() -> Self {
         Self {
             mode: ThemeMode::Dark,
             palette: Palette {
-                canvas: Color32::from_rgb(24, 24, 23),
-                sidebar: Color32::from_rgb(31, 31, 30),
-                surface: Color32::from_rgb(39, 39, 37),
-                surface_hover: Color32::from_rgb(48, 48, 45),
-                surface_selected: Color32::from_rgb(57, 57, 53),
-                border: Color32::from_rgb(66, 66, 62),
-                text_primary: Color32::from_rgb(241, 241, 238),
-                text_secondary: Color32::from_rgb(181, 181, 174),
-                text_tertiary: Color32::from_rgb(132, 132, 126),
-                accent: Color32::from_rgb(137, 145, 255),
-                accent_soft: Color32::from_rgb(54, 57, 91),
-                success: Color32::from_rgb(79, 194, 133),
-                warning: Color32::from_rgb(225, 164, 73),
-                danger: Color32::from_rgb(239, 111, 111),
+                canvas: Color32::from_rgb(7, 7, 7),
+                sidebar: Color32::from_rgb(17, 17, 17),
+                surface: Color32::from_rgb(24, 24, 24),
+                surface_hover: Color32::from_rgba_unmultiplied(119, 119, 119, 44),
+                surface_selected: Color32::from_rgba_unmultiplied(119, 119, 119, 82),
+                border: Color32::from_rgba_unmultiplied(252, 252, 252, 38),
+                text_primary: Color32::from_rgb(252, 252, 252),
+                text_secondary: Color32::from_rgba_unmultiplied(252, 252, 252, 153),
+                text_tertiary: Color32::from_rgba_unmultiplied(252, 252, 252, 102),
+                accent: Color32::from_rgb(16, 132, 254),
+                accent_soft: Color32::from_rgba_unmultiplied(16, 132, 254, 44),
+                success: Color32::from_rgb(0, 201, 114),
+                warning: Color32::from_rgb(255, 152, 0),
+                danger: Color32::from_rgb(255, 38, 60),
                 overlay: Color32::from_black_alpha(148),
                 bot_nova: Color32::from_rgb(137, 124, 255),
                 bot_patch: Color32::from_rgb(69, 189, 139),
@@ -228,6 +230,22 @@ impl HomeBotTheme {
         self.typography.caption *= scale;
         self.typography.micro *= scale;
         self
+    }
+
+    #[must_use]
+    pub const fn message_assistant(self) -> Color32 {
+        match self.mode {
+            ThemeMode::Light => Color32::from_rgb(238, 238, 238),
+            ThemeMode::Dark => Color32::from_rgb(38, 38, 38),
+        }
+    }
+
+    #[must_use]
+    pub const fn message_user(self) -> Color32 {
+        match self.mode {
+            ThemeMode::Light => Color32::from_rgb(7, 7, 7),
+            ThemeMode::Dark => Color32::from_rgb(90, 90, 90),
+        }
     }
 
     pub fn install(self, context: &egui::Context) {
@@ -270,13 +288,13 @@ impl HomeBotTheme {
 
 impl Typography {
     const VALUES: Self = Self {
-        display: 30.0,
-        title: 22.0,
-        heading: 17.0,
-        body: 15.0,
-        body_compact: 14.0,
+        display: 24.0,
+        title: 14.0,
+        heading: 14.0,
+        body: 13.0,
+        body_compact: 13.0,
         caption: 12.0,
-        micro: 10.0,
+        micro: 11.0,
         line_height: 1.42,
     };
 }
@@ -308,13 +326,14 @@ impl Radii {
         sm: 8,
         md: 12,
         lg: 18,
+        composer: 16,
         pill: 255,
     };
 }
 
 impl Layout {
     pub const REFERENCE_HEIGHT: f32 = 760.0;
-    pub const SIDEBAR_MIN_WIDTH: f32 = 276.0;
+    pub const SIDEBAR_MIN_WIDTH: f32 = 240.0;
     pub const SIDEBAR_RATIO: f32 = 0.30;
     pub const BOT_TILE_MIN_WIDTH: f32 = 116.0;
     pub const COMPOSER_ACTION_RESERVE: f32 = 76.0;
@@ -322,22 +341,23 @@ impl Layout {
 
     const VALUES: Self = Self {
         reference_width: 1120.0,
-        sidebar_width: 324.0,
-        content_max_width: 720.0,
-        titlebar_height: 54.0,
+        sidebar_width: 280.0,
+        content_max_width: 690.0,
+        titlebar_height: 51.0,
         roster_row_height: 58.0,
-        avatar_size: 52.0,
-        avatar_small: 24.0,
+        avatar_size: 34.0,
+        avatar_small: 28.0,
         bot_tile_height: 104.0,
         sidebar_search_height: 38.0,
         sidebar_action_height: 34.0,
-        assistant_message_max_width: 620.0,
-        user_message_max_width: 500.0,
+        assistant_message_max_width: 640.0,
+        user_message_max_width: 640.0,
         composer_editor_height: 42.0,
         composer_min_height: 74.0,
-        composer_max_width: 720.0,
+        composer_max_width: 700.0,
         empty_state_top_padding: 210.0,
-        activity_icon_size: 28.0,
+        activity_icon_size: 16.0,
+        activity_detail_max_height: 220.0,
         unread_dot: 7.0,
         hairline: 1.0,
     };
@@ -363,8 +383,27 @@ mod tests {
         assert!((light.layout.reference_width - dark.layout.reference_width).abs() < f32::EPSILON);
         assert!(light.palette.text_primary.r() < light.palette.canvas.r());
         assert!(dark.palette.text_primary.r() > dark.palette.canvas.r());
-        assert!(light.layout.composer_max_width <= light.layout.content_max_width);
+        assert!(
+            (light.layout.composer_max_width - (light.layout.content_max_width + 10.0)).abs()
+                < f32::EPSILON
+        );
         assert!(light.motion.quick_ms < light.motion.deliberate_ms);
+    }
+
+    #[test]
+    fn desktop_geometry_matches_the_pinned_grok_bot_reference() {
+        let layout = HomeBotTheme::dark().layout;
+        let exact = |actual: f32, expected: f32| {
+            assert!((actual - expected).abs() < f32::EPSILON);
+        };
+        exact(layout.sidebar_width, 280.0);
+        exact(layout.titlebar_height, 51.0);
+        exact(layout.roster_row_height, 58.0);
+        exact(layout.content_max_width, 690.0);
+        exact(layout.assistant_message_max_width, 640.0);
+        exact(layout.composer_max_width, 700.0);
+        exact(layout.activity_icon_size, 16.0);
+        exact(layout.activity_detail_max_height, 220.0);
     }
 
     #[test]

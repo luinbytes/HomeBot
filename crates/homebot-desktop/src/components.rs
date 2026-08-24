@@ -186,6 +186,7 @@ pub fn roster_row(
         .corner_radius(CornerRadius::same(theme.radii.md))
         .inner_margin(egui::Margin::symmetric(theme.insets.md, theme.insets.sm))
         .show(ui, |ui| {
+            ui.set_min_width(ui.available_width());
             ui.set_min_height(theme.layout.roster_row_height - theme.spacing.lg);
             ui.horizontal(|ui| {
                 avatar(ui, theme, bot, false);
@@ -251,37 +252,29 @@ pub fn message(
             Layout::right_to_left(Align::TOP)
         },
         |ui| {
-            if let Some(identity) = bot {
-                avatar(ui, theme, identity, true);
-                ui.add_space(theme.spacing.xs);
-            }
             Frame::NONE
                 .fill(if assistant {
-                    theme.palette.surface
+                    theme.message_assistant()
                 } else {
-                    theme.palette.surface_selected
+                    theme.message_user()
                 })
                 .corner_radius(CornerRadius::same(theme.radii.lg))
-                .inner_margin(egui::Margin::symmetric(theme.insets.lg, theme.insets.md))
+                .inner_margin(egui::Margin::symmetric(theme.insets.md, theme.insets.sm))
                 .show(ui, |ui| {
                     ui.set_max_width(if assistant {
                         theme.layout.assistant_message_max_width
                     } else {
                         theme.layout.user_message_max_width
                     });
-                    if let Some(identity) = bot {
-                        ui.label(
-                            RichText::new(identity.name)
-                                .font(theme.typography.font(theme.typography.caption))
-                                .color(theme.palette.text_secondary)
-                                .strong(),
-                        );
-                    }
                     ui.add(
                         egui::Label::new(
                             RichText::new(text)
                                 .font(theme.typography.font(theme.typography.body))
-                                .color(theme.palette.text_primary),
+                                .color(if assistant {
+                                    theme.palette.text_primary
+                                } else {
+                                    theme.palette.avatar_foreground
+                                }),
                         )
                         .wrap(),
                     );

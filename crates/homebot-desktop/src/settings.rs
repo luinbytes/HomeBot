@@ -188,8 +188,13 @@ pub fn settings_view(
     ui: &mut Ui,
     theme: HomeBotTheme,
     settings: &mut DesktopSettings,
+    devices_content: impl FnOnce(&mut Ui),
 ) -> Option<SettingsAction> {
-    settings_view_with(ui, theme, settings, |_, _| {})
+    settings_view_with(ui, theme, settings, |ui, section| {
+        if section == SettingsSection::Devices {
+            devices_content(ui);
+        }
+    })
 }
 
 pub(crate) fn settings_view_with(

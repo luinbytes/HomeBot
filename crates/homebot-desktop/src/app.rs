@@ -2875,7 +2875,7 @@ pub enum ProductionFixtureState {
     Disconnected,
     ProviderUnavailable,
     Settings,
-    Devices,
+    SettingsDevices,
     Routines,
     RoutineEditor,
     RoutineRecording,
@@ -3052,9 +3052,9 @@ fn production_fixture(theme: HomeBotTheme, state: ProductionFixtureState) -> Hom
     }
     app.settings_open = matches!(
         state,
-        ProductionFixtureState::Settings | ProductionFixtureState::Devices
+        ProductionFixtureState::Settings | ProductionFixtureState::SettingsDevices
     );
-    if state == ProductionFixtureState::Devices {
+    if state == ProductionFixtureState::SettingsDevices {
         app.settings.section = SettingsSection::Devices;
         app.settings.paired_devices = 1;
         "https://homebot.example.test".clone_into(&mut app.pairing_endpoint);

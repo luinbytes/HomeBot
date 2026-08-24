@@ -1,5 +1,8 @@
 use egui::Vec2;
-use egui_kittest::Harness;
+use egui_kittest::{
+    Harness,
+    kittest::{NodeT, Queryable},
+};
 use homebot_desktop::{HomeBotTheme, ProductionFixtureState, render_production_fixture};
 
 mod support;
@@ -18,6 +21,27 @@ fn snapshot(name: &str, theme: HomeBotTheme, state: ProductionFixtureState) {
         .render()
         .unwrap_or_else(|error| panic!("visual render failed: {error}"));
     egui_kittest::image_snapshot(&image, name);
+}
+
+#[test]
+fn production_devices_settings_exposes_pairing_action() {
+    let theme = HomeBotTheme::light();
+    let mut harness = Harness::builder()
+        .with_size(Vec2::new(
+            theme.layout.reference_width,
+            homebot_desktop::tokens::Layout::REFERENCE_HEIGHT,
+        ))
+        .build(|context| {
+            render_production_fixture(context, theme, ProductionFixtureState::SettingsDevices);
+        });
+    harness.run_steps(2);
+
+    let action = harness.get_by_label("Generate link");
+    assert!(!action.accesskit_node().is_disabled());
+    assert!(
+        action.rect().max.y <= homebot_desktop::tokens::Layout::REFERENCE_HEIGHT,
+        "pairing action is clipped below the production settings viewport"
+    );
 }
 
 #[test]
@@ -60,7 +84,7 @@ fn production_desktop_visual_goldens() {
     snapshot(
         "production_devices_light",
         HomeBotTheme::light(),
-        ProductionFixtureState::Devices,
+        ProductionFixtureState::SettingsDevices,
     );
     snapshot(
         "production_routines_dark",

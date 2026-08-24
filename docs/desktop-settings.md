@@ -6,7 +6,9 @@ HomeBot desktop presents local application preferences in six grouped sections: 
 
 The desktop persists a versioned settings document through eframe storage. It contains only non-secret UI preferences: notification topics, focus policy, launch-at-login preference, theme selection and safe connection/status display values. Provider credentials and device sessions are never persisted here.
 
-Theme selection supports system, light and dark. System mode follows egui's native host-theme signal. Both explicit modes use the shared semantic token system.
+Theme selection supports system, light and dark. System mode follows egui's native host-theme signal. Both explicit modes use the shared semantic token system. Text size can be adjusted from 80% to 200%, and Reduce interface motion removes sidebar and state-transition animation without changing application behavior.
+
+Settings open as a viewport-bounded modal over the current workspace. Each section uses grouped cards, persistent local navigation and scrolling at compact window sizes so preferences do not displace the active conversation.
 
 ## Notifications and attention
 

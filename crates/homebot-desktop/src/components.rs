@@ -7,6 +7,40 @@ use egui::{
 
 use crate::tokens::HomeBotTheme;
 
+pub fn modal_frame(theme: HomeBotTheme) -> Frame {
+    Frame::NONE
+        .fill(theme.palette.surface)
+        .stroke(Stroke::new(theme.layout.hairline, theme.palette.border))
+        .corner_radius(CornerRadius::same(theme.radii.md))
+        .inner_margin(egui::Margin::same(theme.insets.lg))
+        .shadow(theme.popup_shadow)
+}
+
+pub fn primary_button(
+    ui: &mut Ui,
+    theme: HomeBotTheme,
+    label: &str,
+    enabled: bool,
+) -> egui::Response {
+    ui.add_enabled(
+        enabled,
+        egui::Button::new(RichText::new(label).color(theme.on_accent())).fill(theme.palette.accent),
+    )
+}
+
+pub fn danger_button(
+    ui: &mut Ui,
+    theme: HomeBotTheme,
+    label: &str,
+    enabled: bool,
+) -> egui::Response {
+    ui.add_enabled(
+        enabled,
+        egui::Button::new(RichText::new(label).color(theme.palette.avatar_foreground))
+            .fill(theme.danger_fill()),
+    )
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AvatarShape {
     Circle,
@@ -204,8 +238,14 @@ pub fn navigation_row(
             egui::StrokeKind::Inside,
         );
     }
+    let icon = navigation_icon(ui, theme, rect, label);
     ui.painter().text(
-        egui::pos2(rect.left() + theme.spacing.md, rect.center().y),
+        egui::pos2(
+            rect.left()
+                + theme.spacing.md
+                + icon.map_or(0.0, |icon_width| icon_width + theme.spacing.sm),
+            rect.center().y,
+        ),
         egui::Align2::LEFT_CENTER,
         label,
         theme.typography.font(theme.typography.body_compact),
@@ -220,6 +260,65 @@ pub fn navigation_row(
         )
     });
     response
+}
+
+fn navigation_icon(ui: &Ui, theme: HomeBotTheme, rect: egui::Rect, label: &str) -> Option<f32> {
+    let center = egui::pos2(rect.left() + theme.spacing.lg, rect.center().y);
+    let stroke = Stroke::new(theme.layout.hairline + 0.5, theme.palette.text_secondary);
+    let painter = ui.painter();
+    match label {
+        "Search" => {
+            painter.circle_stroke(center - egui::vec2(1.5, 1.5), 4.5, stroke);
+            painter.line_segment(
+                [center + egui::vec2(2.0, 2.0), center + egui::vec2(6.0, 6.0)],
+                stroke,
+            );
+        }
+        "Routines" => {
+            painter.circle_stroke(center, 6.0, stroke);
+            painter.line_segment([center, center - egui::vec2(0.0, 3.5)], stroke);
+            painter.line_segment([center, center + egui::vec2(3.0, 1.5)], stroke);
+        }
+        "Assistant Packs" => {
+            for offset in [
+                egui::vec2(-3.5, -3.5),
+                egui::vec2(3.5, -3.5),
+                egui::vec2(-3.5, 3.5),
+                egui::vec2(3.5, 3.5),
+            ] {
+                painter.rect_filled(
+                    egui::Rect::from_center_size(center + offset, egui::Vec2::splat(4.0)),
+                    CornerRadius::same(theme.radii.xs),
+                    theme.palette.text_secondary,
+                );
+            }
+        }
+        "Plugins" => {
+            painter.rect_stroke(
+                egui::Rect::from_center_size(center + egui::vec2(0.0, 2.0), egui::vec2(8.0, 7.0)),
+                CornerRadius::same(theme.radii.xs),
+                stroke,
+                egui::StrokeKind::Inside,
+            );
+            painter.line_segment(
+                [center - egui::vec2(2.5, 6.0), center - egui::vec2(2.5, 2.0)],
+                stroke,
+            );
+            painter.line_segment(
+                [
+                    center + egui::vec2(2.5, -6.0),
+                    center + egui::vec2(2.5, -2.0),
+                ],
+                stroke,
+            );
+        }
+        "Account & settings" => {
+            painter.circle_stroke(center, 6.0, stroke);
+            painter.circle_stroke(center, 2.0, stroke);
+        }
+        _ => return None,
+    }
+    Some(theme.spacing.lg)
 }
 
 pub fn send_button(ui: &mut Ui, theme: HomeBotTheme, enabled: bool) -> egui::Response {

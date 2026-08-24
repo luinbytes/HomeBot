@@ -21,8 +21,9 @@ use crate::{
     activity_surfaces::{ActivityAction, ActivityCardModel, activity_surface},
     bot_roster::{BotEditorDraft, BotRosterModel, ConnectionState, EditorError},
     components::{
-        AttentionIndicator, AvatarShape, BotIdentity, activity_card, message, navigation_row,
-        recent_conversation_row, roster_row, send_button,
+        AttentionIndicator, AvatarShape, BotIdentity, activity_card, danger_button, message,
+        modal_frame, navigation_row, primary_button, recent_conversation_row, roster_row,
+        send_button,
     },
     group_timeline::{GroupComposerError, GroupTimelineModel},
     notifications::{DeepLink, NotificationCenter, NotificationSink, SystemNotificationSink},
@@ -30,7 +31,7 @@ use crate::{
     routines::RoutineProjection,
     settings::{
         DesktopSettings, PluginAction, PluginSettingsItem, PluginViewState, SettingsAction,
-        SettingsSection, ThemePreference, UpdateState, settings_view_with,
+        SettingsSection, ThemePreference, UpdateState, settings_card, settings_view_with,
     },
     skills::SkillProjection,
     timeline::{ComposerError, TimelineEntry, TimelineModel},
@@ -271,7 +272,8 @@ impl HomeBotApp {
             crate::tokens::ThemeMode::Light => HomeBotTheme::light(),
             crate::tokens::ThemeMode::Dark => HomeBotTheme::dark(),
         }
-        .with_text_scale(f32::from(self.settings.text_scale_percent) / 100.0);
+        .with_text_scale(f32::from(self.settings.text_scale_percent) / 100.0)
+        .with_reduced_motion(self.settings.reduce_motion);
         self.theme.install(context);
         self.sidebar(context);
         self.titlebar(context);
@@ -289,13 +291,29 @@ impl HomeBotApp {
                 self.content(ui);
             }
         });
-        self.settings_dialog(context);
-        self.editor(context);
-        self.delete_dialog(context);
+        self.overlay(context);
         self.flush_transport();
         self.performance
             .record("desktop_frame", frame_started.elapsed());
         context.request_repaint_after(std::time::Duration::from_millis(100));
+    }
+
+    fn overlay(&mut self, context: &egui::Context) {
+        if self.delete_confirmation.is_some() {
+            self.delete_dialog(context);
+        } else if self.roster.editor.is_some() {
+            self.editor(context);
+        } else if self.assistant_pack_install.is_some() {
+            self.assistant_pack_dialog(context);
+        } else if self.routine_recording.is_some() {
+            self.routine_recording_dialog(context);
+        } else if self.routine_editor.is_some() {
+            self.routine_editor_dialog(context);
+        } else if self.details_open {
+            self.details_dialog(context);
+        } else if self.settings_open {
+            self.settings_dialog(context);
+        }
     }
 
     fn settings_dialog(&mut self, context: &egui::Context) {
@@ -303,24 +321,25 @@ impl HomeBotApp {
             return;
         }
         let mut settings = std::mem::take(&mut self.settings);
+        let size = modal_size(
+            context,
+            self.theme,
+            crate::tokens::Layout::SETTINGS_MODAL_WIDTH,
+        );
         let response = egui::Modal::new(egui::Id::new("settings_modal"))
             .backdrop_color(self.theme.palette.overlay)
-            .frame(
-                Frame::NONE
-                    .fill(self.theme.palette.surface)
-                    .stroke(Stroke::new(
-                        self.theme.layout.hairline,
-                        self.theme.palette.border,
-                    ))
-                    .corner_radius(CornerRadius::same(self.theme.radii.md))
-                    .inner_margin(egui::Margin::same(self.theme.insets.lg))
-                    .shadow(self.theme.popup_shadow),
-            )
+            .frame(modal_frame(self.theme))
             .show(context, |ui| {
-                ui.set_min_size(egui::vec2(860.0, 600.0));
-                ui.set_max_size(egui::vec2(860.0, 620.0));
+                ui.set_min_size(size);
+                ui.set_max_size(size);
                 ui.horizontal(|ui| {
-                    ui.heading("Settings");
+                    ui.vertical(|ui| {
+                        ui.heading("Settings");
+                        ui.label(
+                            RichText::new("HomeBot preferences and connected services")
+                                .color(self.theme.palette.text_secondary),
+                        );
+                    });
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         if ui.button("Close").clicked() {
                             ui.close();
@@ -362,12 +381,17 @@ impl HomeBotApp {
                     input.consume_key(egui::Modifiers::NONE, egui::Key::Escape),
                 )
             });
-        if settings {
+        let editing_overlay = self.delete_confirmation.is_some()
+            || self.roster.editor.is_some()
+            || self.assistant_pack_install.is_some()
+            || self.routine_editor.is_some()
+            || self.routine_recording.is_some();
+        if settings && !editing_overlay {
             self.settings_open = !self.settings_open;
             self.assistant_packs_open = false;
             self.routines_open = false;
         }
-        if create_bot {
+        if create_bot && !editing_overlay {
             self.settings_open = false;
             self.assistant_packs_open = false;
             self.routines_open = false;
@@ -389,12 +413,28 @@ impl HomeBotApp {
             self.sidebar_collapsed = !self.sidebar_collapsed;
         }
         if escape {
-            self.settings_open = false;
-            self.assistant_packs_open = false;
-            self.routines_open = false;
-            self.roster.editor = None;
-            self.editor_error = None;
-            self.delete_confirmation = None;
+            if self.delete_confirmation.is_some() {
+                self.delete_confirmation = None;
+            } else if self.roster.editor.is_some() {
+                self.roster.editor = None;
+                self.editor_error = None;
+            } else if self.assistant_pack_install.is_some() {
+                self.assistant_pack_install = None;
+            } else if let Some(recording) = self.routine_recording.take() {
+                self.send_transport(DesktopCommand::CancelRoutineRecording(recording.id));
+            } else if self.routine_editor.is_some() {
+                self.routine_editor = None;
+            } else if self.details_open {
+                self.details_open = false;
+            } else if self.settings_open {
+                self.settings_open = false;
+            } else if self.assistant_packs_open {
+                self.assistant_packs_open = false;
+            } else if self.routines_open {
+                self.routines_open = false;
+            } else {
+                self.search = None;
+            }
         }
     }
 
@@ -917,103 +957,135 @@ impl HomeBotApp {
     }
 
     fn device_pairing_controls(&mut self, ui: &mut egui::Ui) {
-        ui.separator();
-        ui.strong("Secure Android pairing");
-        ui.label("Generate a five-minute, single-use link. Persistent device credentials are returned only after exchange and never appear in the link.");
-        ui.horizontal(|ui| {
+        ui.add_space(self.theme.spacing.md);
+        settings_card(ui, self.theme, |ui| {
+            ui.strong("Secure Android pairing");
+            ui.label(
+                RichText::new("Generate a five-minute, single-use link. Credentials are returned only after exchange and never appear in the link.")
+                    .color(self.theme.palette.text_secondary),
+            );
+            ui.add_space(self.theme.spacing.sm);
             ui.label("Endpoint");
-            ui.text_edit_singleline(&mut self.pairing_endpoint);
-            if ui.button("Generate link").clicked() {
-                self.pairing_offer = None;
-                self.send_transport(DesktopCommand::CreatePairing {
-                    endpoint: self.pairing_endpoint.trim().to_owned(),
-                    allow_insecure_private_network: self.pairing_insecure_private_acknowledged,
+            ui.horizontal(|ui| {
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.pairing_endpoint)
+                        .desired_width((ui.available_width() - 112.0).max(120.0)),
+                );
+                if ui.button("Generate link").clicked() {
+                    self.pairing_offer = None;
+                    self.send_transport(DesktopCommand::CreatePairing {
+                        endpoint: self.pairing_endpoint.trim().to_owned(),
+                        allow_insecure_private_network: self.pairing_insecure_private_acknowledged,
+                    });
+                }
+            });
+            let _ = ui.checkbox(
+                &mut self.pairing_insecure_private_acknowledged,
+                "Allow plain HTTP only on this private LAN/Tailscale endpoint",
+            );
+            if let Some(offer) = &self.pairing_offer {
+                ui.label(format!("Expires at {} ms", offer.expires_at_unix_ms));
+                if let Some(warning) = &offer.warning {
+                    ui.colored_label(self.theme.palette.warning, warning);
+                }
+                ui.horizontal_wrapped(|ui| {
+                    ui.monospace(&offer.deep_link);
+                    if ui.button("Copy pairing link").clicked() {
+                        ui.ctx().copy_text(offer.deep_link.clone());
+                    }
                 });
             }
         });
-        let _ = ui.checkbox(
-            &mut self.pairing_insecure_private_acknowledged,
-            "Allow plain HTTP only on this private LAN/Tailscale endpoint",
-        );
-        if let Some(offer) = &self.pairing_offer {
-            ui.label(format!("Expires at {} ms", offer.expires_at_unix_ms));
-            if let Some(warning) = &offer.warning {
-                ui.colored_label(self.theme.palette.warning, warning);
+        ui.add_space(self.theme.spacing.md);
+        settings_card(ui, self.theme, |ui| {
+            ui.strong("Device sessions");
+            ui.label(
+                RichText::new("Review and revoke computers and phones signed in to HomeBot.")
+                    .color(self.theme.palette.text_secondary),
+            );
+            let mut revoke = None;
+            for device in &self.devices {
+                ui.horizontal(|ui| {
+                    ui.vertical(|ui| {
+                        ui.strong(&device.name);
+                        ui.label(
+                            RichText::new(format!("{:?}", device.endpoint_kind))
+                                .color(self.theme.palette.text_secondary),
+                        );
+                    });
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if device.revoked_at_unix_ms.is_some() {
+                            ui.label("Revoked");
+                        } else if ui.button("Revoke").clicked() {
+                            revoke = Some(device.id);
+                        }
+                    });
+                });
             }
-            ui.horizontal_wrapped(|ui| {
-                ui.monospace(&offer.deep_link);
-                if ui.button("Copy pairing link").clicked() {
-                    ui.ctx().copy_text(offer.deep_link.clone());
-                }
-            });
-        }
-        ui.separator();
-        ui.strong("Device sessions");
-        let mut revoke = None;
-        for device in &self.devices {
-            ui.horizontal(|ui| {
-                ui.label(&device.name);
-                ui.label(format!("{:?}", device.endpoint_kind));
-                if device.revoked_at_unix_ms.is_some() {
-                    ui.label("Revoked");
-                } else if ui.button("Revoke").clicked() {
-                    revoke = Some(device.id);
-                }
-            });
-        }
-        if let Some(device_id) = revoke {
-            self.send_transport(DesktopCommand::RevokeDevice(device_id));
-        }
+            if let Some(device_id) = revoke {
+                self.send_transport(DesktopCommand::RevokeDevice(device_id));
+            }
+        });
     }
 
     fn capability_policy_controls(&self, ui: &mut egui::Ui) {
-        ui.separator();
-        ui.strong("Computer access policy");
-        ui.label("These durable rules are evaluated by the HomeBot server. Deny rules always win; audit history never contains secret values.");
-        if self.capability_rules.is_empty() {
-            ui.label("No custom rules. Server defaults remain in effect.");
-        }
-        for rule in &self.capability_rules {
-            ui.horizontal_wrapped(|ui| {
-                ui.monospace(format!("{:?}", rule.capability));
-                ui.strong(format!("{:?}", rule.effect));
-                if let Some(prefix) = &rule.action_prefix {
-                    ui.label(prefix);
-                }
-            });
-        }
+        ui.add_space(self.theme.spacing.md);
+        settings_card(ui, self.theme, |ui| {
+            ui.strong("Computer access policy");
+            ui.label(
+                RichText::new("Durable server rules control what Bots may do. Deny rules always win; audit history never contains secret values.")
+                    .color(self.theme.palette.text_secondary),
+            );
+            if self.capability_rules.is_empty() {
+                ui.label("No custom rules. Server defaults remain in effect.");
+            }
+            for rule in &self.capability_rules {
+                ui.horizontal_wrapped(|ui| {
+                    ui.monospace(format!("{:?}", rule.capability));
+                    ui.strong(format!("{:?}", rule.effect));
+                    if let Some(prefix) = &rule.action_prefix {
+                        ui.label(prefix);
+                    }
+                });
+            }
+        });
     }
 
     fn shared_browser_controls(&mut self, ui: &mut egui::Ui) {
-        ui.separator();
-        ui.strong("Shared browser");
-        ui.label("Browser login state stays in an owner-scoped server profile. Watch or take over without copying cookies or credentials into chat.");
-        let mut command = None;
-        for session in &self.browser_sessions {
-            ui.horizontal_wrapped(|ui| {
-                ui.strong(&session.profile_name);
-                ui.label(format!("{:?} • {:?}", session.status, session.controller));
-                if ui.button("Watch").clicked() {
-                    command = Some(DesktopCommand::BrowserWatch(session.id));
-                }
-                if session.controller == homebot_protocol::BrowserController::Bot {
-                    if ui.button("Take over").clicked() {
-                        command = Some(DesktopCommand::BrowserTakeover {
-                            session_id: session.id,
-                            approval_id: session.pending_approval_id,
-                        });
+        ui.add_space(self.theme.spacing.md);
+        settings_card(ui, self.theme, |ui| {
+            ui.strong("Shared browser");
+            ui.label(
+                RichText::new("Login state stays in an owner-scoped server profile. Watch or take over without copying cookies or credentials into chat.")
+                    .color(self.theme.palette.text_secondary),
+            );
+            let mut command = None;
+            for session in &self.browser_sessions {
+                ui.horizontal_wrapped(|ui| {
+                    ui.strong(&session.profile_name);
+                    ui.label(format!("{:?} • {:?}", session.status, session.controller));
+                    if ui.button("Watch").clicked() {
+                        command = Some(DesktopCommand::BrowserWatch(session.id));
                     }
-                } else if ui.button("Return to Bot").clicked() {
-                    command = Some(DesktopCommand::BrowserReturn(session.id));
+                    if session.controller == homebot_protocol::BrowserController::Bot {
+                        if ui.button("Take over").clicked() {
+                            command = Some(DesktopCommand::BrowserTakeover {
+                                session_id: session.id,
+                                approval_id: session.pending_approval_id,
+                            });
+                        }
+                    } else if ui.button("Return to Bot").clicked() {
+                        command = Some(DesktopCommand::BrowserReturn(session.id));
+                    }
+                });
+                if let Some(url) = &session.current_url {
+                    ui.monospace(url);
                 }
-            });
-            if let Some(url) = &session.current_url {
-                ui.monospace(url);
             }
-        }
-        if let Some(command) = command {
-            self.send_transport(command);
-        }
+            if let Some(command) = command {
+                self.send_transport(command);
+            }
+        });
     }
 
     /// Emits a native notification for a newly observed server event when policy permits.
@@ -1104,7 +1176,7 @@ impl HomeBotApp {
                             .strong(),
                     );
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        ui.menu_button("+", |ui| {
+                        ui.menu_button("New", |ui| {
                             if ui.button("Create Bot").clicked() {
                                 self.roster.begin_create();
                                 ui.close();
@@ -1137,6 +1209,13 @@ impl HomeBotApp {
                     self.search.get_or_insert_with(SearchProjection::default);
                 }
                 ui.add_space(self.theme.spacing.lg);
+                ui.label(
+                    RichText::new("BOTS")
+                        .font(self.theme.typography.font(self.theme.typography.micro))
+                        .color(self.theme.palette.text_tertiary)
+                        .strong(),
+                );
+                ui.add_space(self.theme.spacing.sm);
                 let visible: Vec<BotSummary> =
                     self.roster.visible_bots().into_iter().cloned().collect();
                 for bot in &visible {
@@ -1373,7 +1452,7 @@ impl HomeBotApp {
                             {
                                 self.details_open = !self.details_open;
                             }
-                            ui.menu_button("•••", |ui| {
+                            ui.menu_button("More", |ui| {
                                 if ui.button("Edit Bot").clicked() {
                                     self.roster.begin_edit(bot.id);
                                     ui.close();
@@ -1410,13 +1489,13 @@ impl HomeBotApp {
                     } else if let Some(group) = selected_group.cloned() {
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                             if ui
-                                .button("Computer")
+                                .button("Group details")
                                 .on_hover_text("Computer and details")
                                 .clicked()
                             {
                                 self.details_open = !self.details_open;
                             }
-                            ui.menu_button("•••", |ui| {
+                            ui.menu_button("More", |ui| {
                                 if !group.stop_requested && ui.button("Stop group").clicked() {
                                     self.group_timeline.stop();
                                     ui.close();
@@ -1463,7 +1542,9 @@ impl HomeBotApp {
                         .bots
                         .iter()
                         .find(|bot| bot.id == participant.bot_id)
-                        .map(|bot| format!("{} · {:?}", bot.name, participant.status))
+                        .map(|bot| {
+                            format!("{} · {}", bot.name, group_status_label(participant.status))
+                        })
                 })
                 .collect::<Vec<_>>();
             ui.label(
@@ -1471,65 +1552,6 @@ impl HomeBotApp {
                     .font(self.theme.typography.font(self.theme.typography.caption))
                     .color(self.theme.palette.text_secondary),
             );
-            if self.details_open {
-                let group = self.group_timeline.group.clone();
-                let participants = self.group_timeline.participants.clone();
-                Frame::NONE
-                    .fill(self.theme.palette.surface)
-                    .corner_radius(CornerRadius::same(self.theme.radii.md))
-                    .inner_margin(egui::Margin::same(self.theme.insets.md))
-                    .show(ui, |ui| {
-                        ui.strong("Group coordination");
-                        if let Some(group) = &group {
-                            ui.label(format!(
-                                "{} of {} coordination turns · up to {} Bots in parallel",
-                                group.coordination_turns_used,
-                                group.coordination_max_turns,
-                                group.max_parallel_bots
-                            ));
-                            ui.horizontal(|ui| {
-                                ui.text_edit_singleline(&mut self.group_title_draft);
-                                if ui.button("Rename").clicked() {
-                                    self.group_timeline.rename(&self.group_title_draft);
-                                }
-                            });
-                            for participant in &participants {
-                                let name = self
-                                    .roster
-                                    .bots
-                                    .iter()
-                                    .find(|bot| bot.id == participant.bot_id)
-                                    .map_or("Bot", |bot| bot.name.as_str());
-                                ui.horizontal(|ui| {
-                                    ui.label(format!("{name} · {:?}", participant.status));
-                                    if participant.bot_id != group.ownership_bot_id
-                                        && ui.small_button("Hand off").clicked()
-                                    {
-                                        self.group_timeline.handoff(
-                                            participant.bot_id,
-                                            self.group_timeline.messages.last().map(|item| item.id),
-                                            "User requested ownership handoff",
-                                        );
-                                    }
-                                    if participant.bot_id != group.ownership_bot_id
-                                        && participants.len() > 2
-                                        && ui.small_button("Remove").clicked()
-                                    {
-                                        self.group_timeline.remove_participant(participant.bot_id);
-                                    }
-                                });
-                            }
-                            if let Some(bot) = self.roster.bots.iter().find(|bot| {
-                                !participants
-                                    .iter()
-                                    .any(|participant| participant.bot_id == bot.id)
-                            }) && ui.button(format!("Add {}", bot.name)).clicked()
-                            {
-                                self.group_timeline.add_participant(bot.id);
-                            }
-                        }
-                    });
-            }
             egui::ScrollArea::vertical().show(ui, |ui| {
                 for item in self.group_timeline.messages.clone() {
                     let text =
@@ -1594,6 +1616,11 @@ impl HomeBotApp {
                     if let Some(error) = &self.transport_error {
                         ui.colored_label(self.theme.palette.danger, error);
                     }
+                    ui.add_space(self.theme.spacing.lg);
+                    if primary_button(ui, self.theme, "Connection settings", true).clicked() {
+                        self.settings.section = SettingsSection::Connection;
+                        self.settings_open = true;
+                    }
                 }
                 ConnectionState::Connecting => {
                     ui.spinner();
@@ -1629,10 +1656,12 @@ impl HomeBotApp {
             let response = ui.add(
                 egui::TextEdit::singleline(&mut search.query)
                     .hint_text("Search HomeBot")
-                    .desired_width(f32::INFINITY),
+                    .desired_width((ui.available_width() - 72.0).max(120.0)),
             );
-            submit = response.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
-            submit |= ui.button("Search").clicked();
+            submit |=
+                response.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
+            submit |=
+                primary_button(ui, self.theme, "Search", !search.query.trim().is_empty()).clicked();
         });
         let submitted_query = submit.then(|| search.query.trim().to_owned());
         let query_is_empty = search.query.is_empty();
@@ -1647,9 +1676,15 @@ impl HomeBotApp {
         egui::ScrollArea::vertical().show(ui, |ui| {
             for result in results {
                 let kind = format!("{:?}", result.kind);
-                if ui
-                    .button(format!("{}  ·  {kind}\n{}", result.title, result.snippet))
-                    .clicked()
+                if recent_conversation_row(
+                    ui,
+                    self.theme,
+                    &result.title,
+                    &result.snippet,
+                    &kind,
+                    false,
+                )
+                .clicked()
                 {
                     if let Some(chat_id) = result.chat_id {
                         let bot_id = self
@@ -1713,7 +1748,8 @@ impl HomeBotApp {
                                 ui.label(&pack.description);
                             });
                             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                configure = ui.button("Configure").clicked();
+                                configure =
+                                    primary_button(ui, self.theme, "Configure", true).clicked();
                             });
                         });
                     });
@@ -1750,67 +1786,94 @@ impl HomeBotApp {
                     }
                 }
             }
+        });
+    }
 
-            let Some(mut draft) = self.assistant_pack_install.take() else {
-                return;
-            };
-            ui.separator();
-            let pack_name = self
-                .assistant_packs
-                .iter()
-                .find(|pack| pack.id == draft.pack_id)
-                .map_or(draft.pack_id.as_str(), |pack| pack.name.as_str());
-            ui.heading(format!("Configure {pack_name}"));
-            egui::ComboBox::from_id_salt("assistant_pack_bot")
-                .selected_text(
-                    self.roster
-                        .bots
-                        .iter()
-                        .find(|bot| bot.id == draft.bot_id)
-                        .map_or("Choose Bot", |bot| bot.name.as_str()),
-                )
-                .show_ui(ui, |ui| {
-                    for bot in self.roster.bots.iter().filter(|bot| !bot.archived) {
-                        ui.selectable_value(&mut draft.bot_id, bot.id, &bot.name);
-                    }
-                });
-            ui.horizontal(|ui| {
+    fn assistant_pack_dialog(&mut self, context: &egui::Context) {
+        let Some(mut draft) = self.assistant_pack_install.take() else {
+            return;
+        };
+        let pack_name = self
+            .assistant_packs
+            .iter()
+            .find(|pack| pack.id == draft.pack_id)
+            .map_or(draft.pack_id.as_str(), |pack| pack.name.as_str())
+            .to_owned();
+        let size = modal_size(
+            context,
+            self.theme,
+            crate::tokens::Layout::MODAL_COMPACT_WIDTH,
+        );
+        let response = egui::Modal::new(egui::Id::new("assistant_pack_modal"))
+            .backdrop_color(self.theme.palette.overlay)
+            .frame(modal_frame(self.theme))
+            .show(context, |ui| {
+                ui.set_width(size.x);
+                ui.heading(format!("Configure {pack_name}"));
+                ui.label(
+                    RichText::new("Choose who owns the routine and when it should run.")
+                        .color(self.theme.palette.text_secondary),
+                );
+                ui.add_space(self.theme.spacing.lg);
+                ui.label("Bot");
+                egui::ComboBox::from_id_salt("assistant_pack_bot")
+                    .width(ui.available_width())
+                    .selected_text(
+                        self.roster
+                            .bots
+                            .iter()
+                            .find(|bot| bot.id == draft.bot_id)
+                            .map_or("Choose Bot", |bot| bot.name.as_str()),
+                    )
+                    .show_ui(ui, |ui| {
+                        for bot in self.roster.bots.iter().filter(|bot| !bot.archived) {
+                            ui.selectable_value(&mut draft.bot_id, bot.id, &bot.name);
+                        }
+                    });
+                ui.add_space(self.theme.spacing.md);
                 ui.label("Timezone");
-                ui.text_edit_singleline(&mut draft.timezone);
-            });
-            ui.horizontal(|ui| {
+                ui.add(
+                    egui::TextEdit::singleline(&mut draft.timezone)
+                        .hint_text("Europe/London")
+                        .desired_width(f32::INFINITY),
+                );
+                ui.add_space(self.theme.spacing.md);
                 ui.label("Run at");
-                ui.add(egui::DragValue::new(&mut draft.hour).range(0..=23));
-                ui.label(":");
-                ui.add(egui::DragValue::new(&mut draft.minute).range(0..=59));
-            });
-            let mut keep_draft = true;
-            ui.horizontal(|ui| {
-                if ui
-                    .add_enabled(
+                ui.horizontal(|ui| {
+                    ui.add(egui::DragValue::new(&mut draft.hour).range(0..=23));
+                    ui.label(":");
+                    ui.add(egui::DragValue::new(&mut draft.minute).range(0..=59));
+                });
+                ui.add_space(self.theme.spacing.xl);
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if primary_button(
+                        ui,
+                        self.theme,
+                        "Install and enable",
                         !draft.timezone.trim().is_empty(),
-                        egui::Button::new("Install and enable"),
                     )
                     .clicked()
-                {
-                    self.send_transport(DesktopCommand::InstallAssistantPack {
-                        pack_id: draft.pack_id.clone(),
-                        bot_id: draft.bot_id,
-                        timezone: draft.timezone.trim().to_owned(),
-                        hour: draft.hour,
-                        minute: draft.minute,
-                    });
-                    self.assistant_pack_notice = Some("Installing Assistant Pack…".to_owned());
-                    keep_draft = false;
-                }
-                if ui.button("Cancel").clicked() {
-                    keep_draft = false;
-                }
+                    {
+                        self.send_transport(DesktopCommand::InstallAssistantPack {
+                            pack_id: draft.pack_id.clone(),
+                            bot_id: draft.bot_id,
+                            timezone: draft.timezone.trim().to_owned(),
+                            hour: draft.hour,
+                            minute: draft.minute,
+                        });
+                        self.assistant_pack_notice = Some("Installing Assistant Pack…".to_owned());
+                        ui.close();
+                    }
+                    if ui.button("Cancel").clicked() {
+                        ui.close();
+                    }
+                });
             });
-            if keep_draft {
-                self.assistant_pack_install = Some(draft);
-            }
-        });
+        if response.should_close() {
+            self.assistant_pack_install = None;
+        } else {
+            self.assistant_pack_install = Some(draft);
+        }
     }
 
     #[allow(clippy::too_many_lines)] // List, contextual creation and server actions share one surface.
@@ -1825,19 +1888,7 @@ impl HomeBotApp {
                 });
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     let selected_bot = self.roster.selected;
-                    if ui
-                        .add_enabled(selected_bot.is_some(), egui::Button::new("Teach routine"))
-                        .clicked()
-                        && let Some(bot_id) = selected_bot
-                    {
-                        self.send_transport(DesktopCommand::StartRoutineRecording {
-                            bot_id,
-                            name: "New demonstrated routine".to_owned(),
-                            description: String::new(),
-                        });
-                    }
-                    if ui
-                        .add_enabled(selected_bot.is_some(), egui::Button::new("New routine"))
+                    if primary_button(ui, self.theme, "New routine", selected_bot.is_some())
                         .clicked()
                         && let Some(bot_id) = selected_bot
                     {
@@ -1858,18 +1909,20 @@ impl HomeBotApp {
                             draft: true,
                         });
                     }
+                    if ui
+                        .add_enabled(selected_bot.is_some(), egui::Button::new("Teach routine"))
+                        .clicked()
+                        && let Some(bot_id) = selected_bot
+                    {
+                        self.send_transport(DesktopCommand::StartRoutineRecording {
+                            bot_id,
+                            name: "New demonstrated routine".to_owned(),
+                            description: String::new(),
+                        });
+                    }
                 });
             });
             ui.add_space(self.theme.spacing.lg);
-
-            if self.routine_recording.is_some() {
-                self.routine_recording_content(ui);
-                return;
-            }
-            if self.routine_editor.is_some() {
-                self.routine_editor_content(ui);
-                return;
-            }
 
             let routines = self.routines.routines().cloned().collect::<Vec<_>>();
             if routines.is_empty() {
@@ -1903,37 +1956,49 @@ impl HomeBotApp {
                                 ));
                             });
                             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                if ui.button("Run now").clicked() {
+                                if primary_button(ui, self.theme, "Run now", routine.enabled)
+                                    .clicked()
+                                {
                                     self.send_transport(DesktopCommand::RunRoutine {
                                         routine_id: routine.id,
                                         dry_run: false,
                                     });
                                 }
-                                if ui.button("Dry run").clicked() {
-                                    self.send_transport(DesktopCommand::RunRoutine {
-                                        routine_id: routine.id,
-                                        dry_run: true,
-                                    });
-                                }
-                                if ui
-                                    .button(if routine.enabled { "Pause" } else { "Enable" })
-                                    .clicked()
-                                {
-                                    self.send_transport(DesktopCommand::SetRoutineEnabled {
-                                        routine_id: routine.id,
-                                        enabled: !routine.enabled,
-                                    });
-                                }
-                                if ui.button("Duplicate").clicked() {
-                                    self.send_transport(DesktopCommand::DuplicateRoutine {
-                                        routine_id: routine.id,
-                                        name: format!("{} copy", routine.name),
-                                    });
-                                }
-                                if ui.button("Edit").clicked() {
-                                    self.routine_editor =
-                                        Some(RoutineEditorDraft::from_summary(&routine));
-                                }
+                                ui.menu_button("More", |ui| {
+                                    if ui.button("Edit routine").clicked() {
+                                        self.routine_editor =
+                                            Some(RoutineEditorDraft::from_summary(&routine));
+                                        ui.close();
+                                    }
+                                    if ui.button("Dry run").clicked() {
+                                        self.send_transport(DesktopCommand::RunRoutine {
+                                            routine_id: routine.id,
+                                            dry_run: true,
+                                        });
+                                        ui.close();
+                                    }
+                                    if ui
+                                        .button(if routine.enabled {
+                                            "Pause routine"
+                                        } else {
+                                            "Enable routine"
+                                        })
+                                        .clicked()
+                                    {
+                                        self.send_transport(DesktopCommand::SetRoutineEnabled {
+                                            routine_id: routine.id,
+                                            enabled: !routine.enabled,
+                                        });
+                                        ui.close();
+                                    }
+                                    if ui.button("Duplicate routine").clicked() {
+                                        self.send_transport(DesktopCommand::DuplicateRoutine {
+                                            routine_id: routine.id,
+                                            name: format!("{} copy", routine.name),
+                                        });
+                                        ui.close();
+                                    }
+                                });
                             });
                         });
                         for run in self.routines.runs(routine.id).iter().take(3) {
@@ -1953,82 +2018,121 @@ impl HomeBotApp {
         });
     }
 
-    fn routine_editor_content(&mut self, ui: &mut egui::Ui) {
+    #[allow(clippy::too_many_lines)] // The modal keeps step edits and its save boundary together.
+    fn routine_editor_dialog(&mut self, context: &egui::Context) {
         let mut save = false;
-        let mut cancel = false;
         let mut remove_step = None;
-        let Some(editor) = self.routine_editor.as_mut() else {
+        let Some(mut editor) = self.routine_editor.take() else {
             return;
         };
-        Frame::NONE
-            .fill(self.theme.palette.surface)
-            .stroke(Stroke::new(
-                self.theme.layout.hairline,
-                self.theme.palette.border,
-            ))
-            .corner_radius(CornerRadius::same(self.theme.radii.lg))
-            .inner_margin(egui::Margin::same(self.theme.insets.xl))
-            .show(ui, |ui| {
-                ui.strong(if editor.routine_id.is_some() {
+        let size = modal_size(context, self.theme, crate::tokens::Layout::MODAL_WIDTH);
+        let response = egui::Modal::new(egui::Id::new("routine_editor_modal"))
+            .backdrop_color(self.theme.palette.overlay)
+            .frame(modal_frame(self.theme))
+            .show(context, |ui| {
+                ui.set_width(size.x);
+                ui.set_max_height(size.y);
+                ui.heading(if editor.routine_id.is_some() {
                     "Edit routine"
                 } else {
                     "Create routine"
                 });
-                ui.text_edit_singleline(&mut editor.name);
-                ui.text_edit_multiline(&mut editor.description);
-                ui.checkbox(&mut editor.draft, "Keep as draft");
-                ui.separator();
-                ui.label("Structured steps");
-                for (index, step) in editor.definition.steps.iter_mut().enumerate() {
-                    Frame::NONE
-                        .fill(self.theme.palette.surface_hover)
-                        .corner_radius(CornerRadius::same(self.theme.radii.sm))
-                        .inner_margin(egui::Margin::same(self.theme.insets.md))
-                        .show(ui, |ui| match step {
-                            RoutineStep::BotPrompt {
-                                prompt_template,
-                                requires_approval,
-                                ..
-                            } => {
-                                ui.label(format!("Bot prompt {}", index + 1));
-                                ui.text_edit_multiline(prompt_template);
-                                ui.checkbox(requires_approval, "Require approval");
-                                if ui.small_button("Remove step").clicked() {
-                                    remove_step = Some(index);
-                                }
-                            }
-                            RoutineStep::PluginTool { tool_name, .. } => {
-                                ui.label(format!("Plugin tool: {tool_name}"));
-                            }
-                            RoutineStep::RecordOutput { output_key, .. } => {
-                                ui.label(format!("Record output: {output_key}"));
-                            }
-                        });
-                    ui.add_space(self.theme.spacing.sm);
-                }
-                if ui.button("Add Bot prompt").clicked() {
-                    editor.definition.steps.push(RoutineStep::BotPrompt {
-                        bot_id: editor.bot_id,
-                        prompt_template: String::new(),
-                        requires_approval: true,
+                ui.label(
+                    RichText::new(
+                        "Define the repeatable work and keep approval boundaries explicit.",
+                    )
+                    .color(self.theme.palette.text_secondary),
+                );
+                ui.add_space(self.theme.spacing.lg);
+                egui::ScrollArea::vertical()
+                    .id_salt("routine_editor_content")
+                    .max_height(size.y - self.theme.spacing.xxl * 4.0)
+                    .show(ui, |ui| {
+                        ui.label("Name");
+                        ui.add(
+                            egui::TextEdit::singleline(&mut editor.name)
+                                .desired_width(f32::INFINITY),
+                        );
+                        ui.add_space(self.theme.spacing.md);
+                        ui.label("Description");
+                        ui.add(
+                            egui::TextEdit::multiline(&mut editor.description)
+                                .desired_rows(2)
+                                .desired_width(f32::INFINITY),
+                        );
+                        ui.checkbox(&mut editor.draft, "Keep as draft");
+                        ui.add_space(self.theme.spacing.lg);
+                        ui.strong("Steps");
+                        ui.label(
+                            RichText::new("HomeBot runs these in order.")
+                                .color(self.theme.palette.text_secondary),
+                        );
+                        ui.add_space(self.theme.spacing.sm);
+                        for (index, step) in editor.definition.steps.iter_mut().enumerate() {
+                            Frame::NONE
+                                .fill(self.theme.palette.surface_hover)
+                                .corner_radius(CornerRadius::same(self.theme.radii.sm))
+                                .inner_margin(egui::Margin::same(self.theme.insets.md))
+                                .show(ui, |ui| match step {
+                                    RoutineStep::BotPrompt {
+                                        prompt_template,
+                                        requires_approval,
+                                        ..
+                                    } => {
+                                        ui.strong(format!("Bot prompt {}", index + 1));
+                                        ui.add(
+                                            egui::TextEdit::multiline(prompt_template)
+                                                .hint_text("Describe the work for this step")
+                                                .desired_rows(3)
+                                                .desired_width(f32::INFINITY),
+                                        );
+                                        ui.horizontal(|ui| {
+                                            ui.checkbox(requires_approval, "Require approval");
+                                            ui.with_layout(
+                                                Layout::right_to_left(Align::Center),
+                                                |ui| {
+                                                    if ui.small_button("Remove").clicked() {
+                                                        remove_step = Some(index);
+                                                    }
+                                                },
+                                            );
+                                        });
+                                    }
+                                    RoutineStep::PluginTool { tool_name, .. } => {
+                                        ui.label(format!("Plugin tool: {tool_name}"));
+                                    }
+                                    RoutineStep::RecordOutput { output_key, .. } => {
+                                        ui.label(format!("Record output: {output_key}"));
+                                    }
+                                });
+                            ui.add_space(self.theme.spacing.sm);
+                        }
+                        if ui.button("Add Bot prompt").clicked() {
+                            editor.definition.steps.push(RoutineStep::BotPrompt {
+                                bot_id: editor.bot_id,
+                                prompt_template: String::new(),
+                                requires_approval: true,
+                            });
+                        }
                     });
-                }
-                ui.horizontal(|ui| {
-                    save = ui
-                        .add_enabled(
-                            !editor.name.trim().is_empty() && !editor.definition.steps.is_empty(),
-                            egui::Button::new("Save"),
-                        )
-                        .clicked();
-                    cancel = ui.button("Cancel").clicked();
+                ui.separator();
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    save = primary_button(
+                        ui,
+                        self.theme,
+                        "Save routine",
+                        !editor.name.trim().is_empty() && !editor.definition.steps.is_empty(),
+                    )
+                    .clicked();
+                    if ui.button("Cancel").clicked() {
+                        ui.close();
+                    }
                 });
             });
         if let Some(index) = remove_step {
             editor.definition.steps.remove(index);
         }
-        if cancel {
-            self.routine_editor = None;
-        } else if save && let Some(editor) = self.routine_editor.clone() {
+        if save {
             let command = if let Some(routine_id) = editor.routine_id {
                 DesktopCommand::UpdateRoutine {
                     routine_id,
@@ -2047,30 +2151,41 @@ impl HomeBotApp {
                 }
             };
             self.send_transport(command);
+        } else if !response.should_close() {
+            self.routine_editor = Some(editor);
         }
     }
 
-    fn routine_recording_content(&mut self, ui: &mut egui::Ui) {
+    fn routine_recording_dialog(&mut self, context: &egui::Context) {
         let Some(recording) = self.routine_recording.clone() else {
             return;
         };
-        Frame::NONE
-            .fill(self.theme.palette.surface)
-            .stroke(Stroke::new(
-                self.theme.layout.hairline,
-                self.theme.palette.warning,
-            ))
-            .corner_radius(CornerRadius::same(self.theme.radii.lg))
-            .inner_margin(egui::Margin::same(self.theme.insets.xl))
-            .show(ui, |ui| {
-                ui.strong(format!("Teaching {}", recording.name));
-                ui.label(format!("{} recorded actions", recording.actions.len()));
-                ui.text_edit_multiline(&mut self.routine_recording_prompt);
+        let mut cancel = false;
+        let size = modal_size(context, self.theme, crate::tokens::Layout::MODAL_WIDTH);
+        let response = egui::Modal::new(egui::Id::new("routine_recording_modal"))
+            .backdrop_color(self.theme.palette.overlay)
+            .frame(modal_frame(self.theme))
+            .show(context, |ui| {
+                ui.set_width(size.x);
+                ui.heading(format!("Teaching {}", recording.name));
+                ui.label(
+                    RichText::new(format!("{} recorded actions", recording.actions.len()))
+                        .color(self.theme.palette.text_secondary),
+                );
+                ui.add_space(self.theme.spacing.lg);
+                ui.label("Bot prompt");
+                ui.add(
+                    egui::TextEdit::multiline(&mut self.routine_recording_prompt)
+                        .hint_text("Describe the action HomeBot should repeat")
+                        .desired_rows(5)
+                        .desired_width(f32::INFINITY),
+                );
                 ui.checkbox(
                     &mut self.routine_recording_requires_approval,
                     "Preserve an approval boundary",
                 );
-                ui.horizontal(|ui| {
+                ui.add_space(self.theme.spacing.xl);
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     if ui
                         .add_enabled(
                             !self.routine_recording_prompt.trim().is_empty(),
@@ -2100,11 +2215,15 @@ impl HomeBotApp {
                         self.send_transport(DesktopCommand::FinishRoutineRecording(recording.id));
                     }
                     if ui.button("Cancel recording").clicked() {
-                        self.send_transport(DesktopCommand::CancelRoutineRecording(recording.id));
-                        self.routine_recording = None;
+                        cancel = true;
+                        ui.close();
                     }
                 });
             });
+        if cancel || response.should_close() {
+            self.send_transport(DesktopCommand::CancelRoutineRecording(recording.id));
+            self.routine_recording = None;
+        }
     }
 
     #[allow(clippy::too_many_lines)] // Message, activity and approval ordering must remain explicit.
@@ -2121,31 +2240,10 @@ impl HomeBotApp {
                             self.theme.palette.warning,
                             "Provider unavailable · choose another in Bot settings.",
                         );
+                        if ui.button("Edit Bot settings").clicked() {
+                            self.roster.begin_edit(bot.id);
+                        }
                     });
-            }
-            if self.details_open {
-                Frame::NONE
-                    .fill(self.theme.palette.surface)
-                    .stroke(Stroke::new(
-                        self.theme.layout.hairline,
-                        self.theme.palette.border,
-                    ))
-                    .corner_radius(CornerRadius::same(self.theme.radii.md))
-                    .inner_margin(egui::Margin::same(self.theme.insets.md))
-                    .show(ui, |ui| {
-                        ui.horizontal(|ui| {
-                            ui.strong("Computer & coding details");
-                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                if ui.small_button("Close").clicked() {
-                                    self.details_open = false;
-                                }
-                            });
-                        });
-                        self.workspace_controls(ui);
-                        self.checkpoint_controls(ui);
-                        self.working_context_controls(ui);
-                    });
-                ui.add_space(self.theme.spacing.md);
             }
             let scroll = egui::ScrollArea::vertical()
                 .id_salt("direct_chat_timeline")
@@ -2297,6 +2395,171 @@ impl HomeBotApp {
         });
     }
 
+    #[allow(clippy::too_many_lines)] // Group and computer details share one contextual surface.
+    fn details_dialog(&mut self, context: &egui::Context) {
+        let size = modal_size(context, self.theme, crate::tokens::Layout::MODAL_WIDTH);
+        let response = egui::Modal::new(egui::Id::new("conversation_details_modal"))
+            .backdrop_color(self.theme.palette.overlay)
+            .frame(modal_frame(self.theme))
+            .show(context, |ui| {
+                ui.set_width(size.x);
+                ui.set_max_height(size.y);
+                egui::ScrollArea::vertical()
+                    .id_salt("conversation_details_content")
+                    .max_height(size.y - self.theme.spacing.xxl * 2.0)
+                    .show(ui, |ui| {
+                if self.selected_group.is_some() {
+                    ui.heading("Group coordination");
+                    ui.label(
+                        RichText::new("Manage ownership, participation, and coordination limits.")
+                            .color(self.theme.palette.text_secondary),
+                    );
+                    ui.add_space(self.theme.spacing.lg);
+                    let group = self.group_timeline.group.clone();
+                    let participants = self.group_timeline.participants.clone();
+                    if let Some(group) = &group {
+                        Frame::NONE
+                            .fill(self.theme.palette.surface_hover)
+                            .corner_radius(CornerRadius::same(self.theme.radii.sm))
+                            .inner_margin(egui::Margin::same(self.theme.insets.md))
+                            .show(ui, |ui| {
+                                ui.strong(format!(
+                                    "{} of {} coordination turns",
+                                    group.coordination_turns_used,
+                                    group.coordination_max_turns
+                                ));
+                                ui.label(format!(
+                                    "Up to {} Bots can work in parallel.",
+                                    group.max_parallel_bots
+                                ));
+                            });
+                        ui.add_space(self.theme.spacing.md);
+                        ui.label("Group name");
+                        ui.horizontal(|ui| {
+                            ui.add(
+                                egui::TextEdit::singleline(&mut self.group_title_draft)
+                                    .desired_width((ui.available_width() - 88.0).max(120.0)),
+                            );
+                            if ui.button("Rename").clicked() {
+                                self.group_timeline.rename(&self.group_title_draft);
+                            }
+                        });
+                        ui.add_space(self.theme.spacing.lg);
+                        ui.strong("Participants");
+                        for participant in &participants {
+                            let name = self
+                                .roster
+                                .bots
+                                .iter()
+                                .find(|bot| bot.id == participant.bot_id)
+                                .map_or("Bot", |bot| bot.name.as_str());
+                            Frame::NONE
+                                .inner_margin(egui::Margin::symmetric(
+                                    self.theme.insets.sm,
+                                    self.theme.insets.md,
+                                ))
+                                .show(ui, |ui| {
+                                    ui.horizontal(|ui| {
+                                        ui.vertical(|ui| {
+                                            ui.strong(name);
+                                            ui.label(
+                                                RichText::new(group_status_label(
+                                                    participant.status,
+                                                ))
+                                                    .color(self.theme.palette.text_secondary),
+                                            );
+                                        });
+                                        ui.with_layout(
+                                            Layout::right_to_left(Align::Center),
+                                            |ui| {
+                                                if participant.bot_id
+                                                    != group.ownership_bot_id
+                                                    && participants.len() > 2
+                                                    && ui.button("Remove").clicked()
+                                                {
+                                                    self.group_timeline
+                                                        .remove_participant(participant.bot_id);
+                                                }
+                                                if participant.bot_id
+                                                    != group.ownership_bot_id
+                                                    && ui.button("Hand off").clicked()
+                                                {
+                                                    self.group_timeline.handoff(
+                                                        participant.bot_id,
+                                                        self.group_timeline
+                                                            .messages
+                                                            .last()
+                                                            .map(|item| item.id),
+                                                        "User requested ownership handoff",
+                                                    );
+                                                }
+                                            },
+                                        );
+                                    });
+                                });
+                            ui.separator();
+                        }
+                        if let Some(bot) = self.roster.bots.iter().find(|bot| {
+                            !participants
+                                .iter()
+                                .any(|participant| participant.bot_id == bot.id)
+                        }) && ui.button(format!("Add {}", bot.name)).clicked()
+                        {
+                            self.group_timeline.add_participant(bot.id);
+                        }
+                    }
+                } else {
+                    ui.heading("Computer & coding");
+                    ui.label(
+                        RichText::new(
+                            "Inspect the attached workspace, context, checkpoints, and source control.",
+                        )
+                        .color(self.theme.palette.text_secondary),
+                    );
+                    ui.add_space(self.theme.spacing.lg);
+                    let chat_id = self.timeline.chat.as_ref().map(|chat| chat.id);
+                    let has_details = self.timeline.working_context.is_some()
+                        || !self.timeline.checkpoints.is_empty()
+                        || self.workspaces.repositories().next().is_some()
+                        || chat_id
+                            .and_then(|chat_id| self.workspaces.for_chat(chat_id))
+                            .is_some();
+                    if has_details {
+                        self.workspace_controls(ui);
+                        self.checkpoint_controls(ui);
+                        self.working_context_controls(ui);
+                    } else {
+                        Frame::NONE
+                            .fill(self.theme.palette.surface_hover)
+                            .corner_radius(CornerRadius::same(self.theme.radii.sm))
+                            .inner_margin(egui::Margin::same(self.theme.insets.xl))
+                            .show(ui, |ui| {
+                                ui.set_min_width(ui.available_width());
+                                ui.vertical_centered(|ui| {
+                                    ui.strong("No computer or repository attached");
+                                    ui.label(
+                                        RichText::new(
+                                            "Coding context will appear here when this Bot starts computer work.",
+                                        )
+                                        .color(self.theme.palette.text_secondary),
+                                    );
+                                });
+                            });
+                    }
+                }
+                    });
+                ui.add_space(self.theme.spacing.lg);
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if ui.button("Done").clicked() {
+                        ui.close();
+                    }
+                });
+            });
+        if response.should_close() {
+            self.details_open = false;
+        }
+    }
+
     fn should_show_composer(&self) -> bool {
         !self.assistant_packs_open
             && !self.routines_open
@@ -2337,7 +2600,7 @@ impl HomeBotApp {
             ))
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
-                    ui.menu_button("+", |ui| {
+                    ui.menu_button("Files", |ui| {
                         ui.label("Mention a Bot");
                         for participant in self.group_timeline.participants.clone() {
                             let Some(bot) = self
@@ -2438,7 +2701,7 @@ impl HomeBotApp {
             ))
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
-                    ui.menu_button("+", |ui| {
+                    ui.menu_button("Files", |ui| {
                         ui.label("Drop up to six files anywhere in HomeBot to attach them.");
                         if !self.timeline.composer.attachment_ids.is_empty() {
                             ui.label(format!(
@@ -2461,7 +2724,7 @@ impl HomeBotApp {
                         self.focus_composer = false;
                     }
                     if running {
-                        ui.menu_button("●", |ui| {
+                        ui.menu_button("Running", |ui| {
                             if ui.button("Queue follow-up").clicked() {
                                 self.composer_error = self.timeline.submit(false).err();
                                 ui.close();
@@ -2829,82 +3092,128 @@ impl HomeBotApp {
         }
     }
 
+    #[allow(clippy::too_many_lines)] // Identity, provider choice, validation and commit are one form.
     fn editor(&mut self, context: &egui::Context) {
         let Some(mut draft) = self.roster.editor.take() else {
             return;
         };
         let mut keep_open = true;
-        egui::Window::new(if draft.bot_id.is_some() {
-            "Edit Bot"
-        } else {
-            "Create a Bot"
-        })
-        .collapsible(false)
-        .resizable(false)
-        .show(context, |ui| {
-            ui.label("Name");
-            ui.text_edit_singleline(&mut draft.name);
-            ui.label("Title");
-            ui.text_edit_singleline(&mut draft.title);
-            ui.label("Description");
-            ui.text_edit_multiline(&mut draft.description);
-            identity_picker(ui, &mut draft);
-            ui.collapsing("Advanced settings", |ui| {
-                let selected = draft
-                    .provider_profile_id
-                    .and_then(|id| {
-                        self.provider_profiles
-                            .iter()
-                            .find(|profile| profile.id == id)
-                    })
-                    .map_or("Not configured", |profile| profile.display_name.as_str());
-                egui::ComboBox::from_label("Provider")
-                    .selected_text(selected)
-                    .show_ui(ui, |ui| {
-                        ui.selectable_value(&mut draft.provider_profile_id, None, "Not configured");
-                        for profile in &self.provider_profiles {
-                            ui.selectable_value(
-                                &mut draft.provider_profile_id,
-                                Some(profile.id),
-                                format!("{} · {}", profile.display_name, profile.availability),
-                            );
+        let size = modal_size(context, self.theme, crate::tokens::Layout::MODAL_WIDTH);
+        let response = egui::Modal::new(egui::Id::new("bot_editor_modal"))
+            .backdrop_color(self.theme.palette.overlay)
+            .frame(modal_frame(self.theme))
+            .show(context, |ui| {
+                ui.set_width(size.x);
+                ui.set_max_height(size.y);
+                ui.heading(if draft.bot_id.is_some() {
+                    "Edit Bot"
+                } else {
+                    "Create a Bot"
+                });
+                ui.label(
+                    RichText::new("Give this teammate a clear identity and responsibility.")
+                        .color(self.theme.palette.text_secondary),
+                );
+                ui.add_space(self.theme.spacing.lg);
+                egui::ScrollArea::vertical()
+                    .id_salt("bot_editor_content")
+                    .max_height(size.y - self.theme.spacing.xxl * 3.0)
+                    .show(ui, |ui| {
+                        ui.label("Name");
+                        ui.add(
+                            egui::TextEdit::singleline(&mut draft.name)
+                                .desired_width(f32::INFINITY),
+                        );
+                        ui.add_space(self.theme.spacing.md);
+                        ui.label("Role");
+                        ui.add(
+                            egui::TextEdit::singleline(&mut draft.title)
+                                .hint_text("Research and planning")
+                                .desired_width(f32::INFINITY),
+                        );
+                        ui.add_space(self.theme.spacing.md);
+                        ui.label("Description");
+                        ui.add(
+                            egui::TextEdit::multiline(&mut draft.description)
+                                .hint_text("What should this Bot be responsible for?")
+                                .desired_rows(3)
+                                .desired_width(f32::INFINITY),
+                        );
+                        ui.add_space(self.theme.spacing.lg);
+                        ui.strong("Identity");
+                        identity_picker(ui, &mut draft);
+                        ui.add_space(self.theme.spacing.md);
+                        ui.collapsing("Advanced settings", |ui| {
+                            let selected = draft
+                                .provider_profile_id
+                                .and_then(|id| {
+                                    self.provider_profiles
+                                        .iter()
+                                        .find(|profile| profile.id == id)
+                                })
+                                .map_or("Not configured", |profile| profile.display_name.as_str());
+                            egui::ComboBox::from_label("Provider")
+                                .selected_text(selected)
+                                .width(ui.available_width())
+                                .show_ui(ui, |ui| {
+                                    ui.selectable_value(
+                                        &mut draft.provider_profile_id,
+                                        None,
+                                        "Not configured",
+                                    );
+                                    for profile in &self.provider_profiles {
+                                        ui.selectable_value(
+                                            &mut draft.provider_profile_id,
+                                            Some(profile.id),
+                                            format!(
+                                                "{} · {}",
+                                                profile.display_name, profile.availability
+                                            ),
+                                        );
+                                    }
+                                });
+                            if let Some(profile) = draft.provider_profile_id.and_then(|id| {
+                                self.provider_profiles
+                                    .iter()
+                                    .find(|profile| profile.id == id)
+                            }) {
+                                ui.small(&profile.status_message);
+                            }
+                        });
+                        if let Some(error) = self.editor_error {
+                            ui.add_space(self.theme.spacing.md);
+                            ui.colored_label(self.theme.palette.danger, editor_message(error));
                         }
                     });
-                if let Some(profile) = draft.provider_profile_id.and_then(|id| {
-                    self.provider_profiles
-                        .iter()
-                        .find(|profile| profile.id == id)
-                }) {
-                    ui.small(&profile.status_message);
-                }
-            });
-            if let Some(error) = self.editor_error {
-                ui.colored_label(self.theme.palette.danger, editor_message(error));
-            }
-            ui.horizontal(|ui| {
-                if ui.button("Cancel").clicked() {
-                    keep_open = false;
-                    self.editor_error = None;
-                }
-                if ui
-                    .button(if draft.bot_id.is_some() {
+                ui.separator();
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    let action = if draft.bot_id.is_some() {
                         "Save changes"
                     } else {
                         "Create Bot"
-                    })
-                    .clicked()
-                {
-                    self.roster.editor = Some(draft.clone());
-                    match self.roster.submit_editor() {
-                        Ok(()) => {
-                            keep_open = false;
-                            self.editor_error = None;
+                    };
+                    if primary_button(ui, self.theme, action, true).clicked() {
+                        self.roster.editor = Some(draft.clone());
+                        match self.roster.submit_editor() {
+                            Ok(()) => {
+                                keep_open = false;
+                                self.editor_error = None;
+                                ui.close();
+                            }
+                            Err(error) => self.editor_error = Some(error),
                         }
-                        Err(error) => self.editor_error = Some(error),
                     }
-                }
+                    if ui.button("Cancel").clicked() {
+                        keep_open = false;
+                        self.editor_error = None;
+                        ui.close();
+                    }
+                });
             });
-        });
+        if response.should_close() {
+            keep_open = false;
+            self.editor_error = None;
+        }
         if keep_open && self.roster.editor.is_none() {
             self.roster.editor = Some(draft);
         }
@@ -2915,20 +3224,47 @@ impl HomeBotApp {
             return;
         };
         let mut keep_open = true;
-        egui::Window::new("Delete Bot")
-            .collapsible(false).resizable(false)
+        let size = modal_size(
+            context,
+            self.theme,
+            crate::tokens::Layout::MODAL_COMPACT_WIDTH,
+        );
+        let response = egui::Modal::new(egui::Id::new("delete_bot_modal"))
+            .backdrop_color(self.theme.palette.overlay)
+            .frame(modal_frame(self.theme))
             .show(context, |ui| {
-                ui.label(format!("Delete {name} and its HomeBot chat and routines? Shared computer files are not deleted."));
+                ui.set_width(size.x);
+                ui.heading(format!("Delete {name}?"));
+                ui.label("This removes the Bot, its chat, and its routines. Shared computer files are not deleted.");
+                ui.add_space(self.theme.spacing.lg);
                 ui.label(format!("Type {name} to confirm"));
-                ui.text_edit_singleline(&mut confirmation);
-                ui.horizontal(|ui| {
-                    if ui.add_enabled(confirmation == name, egui::Button::new("Delete permanently")).clicked() {
+                ui.add(
+                    egui::TextEdit::singleline(&mut confirmation)
+                        .desired_width(f32::INFINITY),
+                );
+                ui.add_space(self.theme.spacing.xl);
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if danger_button(
+                        ui,
+                        self.theme,
+                        "Delete permanently",
+                        confirmation == name,
+                    )
+                    .clicked()
+                    {
                         self.roster.queue_delete(bot_id, confirmation.clone());
                         keep_open = false;
+                        ui.close();
                     }
-                    if ui.button("Cancel").clicked() { keep_open = false; }
+                    if ui.button("Cancel").clicked() {
+                        keep_open = false;
+                        ui.close();
+                    }
                 });
             });
+        if response.should_close() {
+            keep_open = false;
+        }
         if keep_open {
             self.delete_confirmation = Some((bot_id, name, confirmation));
         }
@@ -2945,7 +3281,11 @@ fn upsert_chat(chats: &mut Vec<ChatSummary>, changed: ChatSummary) {
 
 fn identity_picker(ui: &mut egui::Ui, draft: &mut BotEditorDraft) {
     egui::ComboBox::from_label("Shape")
-        .selected_text(format!("{:?}", draft.shape))
+        .selected_text(match draft.shape {
+            BotShape::Circle => "Circle",
+            BotShape::RoundedSquare => "Rounded square",
+            BotShape::Hexagon => "Hexagon",
+        })
         .show_ui(ui, |ui| {
             ui.selectable_value(&mut draft.shape, BotShape::Circle, "Circle");
             ui.selectable_value(&mut draft.shape, BotShape::RoundedSquare, "Rounded square");
@@ -2965,6 +3305,17 @@ fn identity_picker(ui: &mut egui::Ui, draft: &mut BotEditorDraft) {
                 ui.selectable_value(&mut draft.color, color, label);
             }
         });
+}
+
+const fn group_status_label(status: GroupBotStatus) -> &'static str {
+    match status {
+        GroupBotStatus::Idle => "Idle",
+        GroupBotStatus::Running => "Working",
+        GroupBotStatus::Waiting => "Waiting",
+        GroupBotStatus::Completed => "Completed",
+        GroupBotStatus::Failed => "Failed",
+        GroupBotStatus::Stopped => "Stopped",
+    }
 }
 
 fn identity(theme: HomeBotTheme, bot: &BotSummary) -> BotIdentity<'_> {
@@ -3096,6 +3447,14 @@ fn message_reference_labels(ui: &mut egui::Ui, message: &homebot_protocol::Messa
     }
 }
 
+fn modal_size(context: &egui::Context, theme: HomeBotTheme, preferred_width: f32) -> egui::Vec2 {
+    let available = context.screen_rect().size() - egui::Vec2::splat(theme.spacing.xxl * 2.0);
+    egui::vec2(
+        preferred_width.min(available.x),
+        crate::tokens::Layout::MODAL_MAX_HEIGHT.min(available.y),
+    )
+}
+
 const fn editor_message(error: EditorError) -> &'static str {
     match error {
         EditorError::EmptyName => "Give this Bot a name.",
@@ -3121,6 +3480,9 @@ pub enum ProductionFixtureState {
     RoutineEditor,
     RoutineRecording,
     ComputerDetails,
+    GroupDetails,
+    BotEditor,
+    DeleteBot,
 }
 
 /// Renders a deterministic fixture through `HomeBotApp::render` without a live server.
@@ -3175,7 +3537,10 @@ fn production_fixture(theme: HomeBotTheme, state: ProductionFixtureState) -> Hom
     }
     let chat = ChatSummary {
         id: Uuid::from_u128(10),
-        title: if state == ProductionFixtureState::GroupChat {
+        title: if matches!(
+            state,
+            ProductionFixtureState::GroupChat | ProductionFixtureState::GroupDetails
+        ) {
             "Launch crew".to_owned()
         } else {
             "Homepage launch".to_owned()
@@ -3252,7 +3617,10 @@ fn production_fixture(theme: HomeBotTheme, state: ProductionFixtureState) -> Hom
         boundary_sequence: 9,
     });
     app.timeline.set_at_bottom(false);
-    if state == ProductionFixtureState::GroupChat {
+    if matches!(
+        state,
+        ProductionFixtureState::GroupChat | ProductionFixtureState::GroupDetails
+    ) {
         let group = GroupChatSummary {
             id: Uuid::from_u128(40),
             title: "Launch crew".to_owned(),
@@ -3290,6 +3658,7 @@ fn production_fixture(theme: HomeBotTheme, state: ProductionFixtureState) -> Hom
             handoffs: Vec::new(),
             boundary_sequence: 9,
         });
+        "Launch crew".clone_into(&mut app.group_title_draft);
     }
     app.settings_open = matches!(
         state,
@@ -3393,7 +3762,16 @@ fn production_fixture(theme: HomeBotTheme, state: ProductionFixtureState) -> Hom
             "Draft the public announcement".clone_into(&mut app.routine_recording_prompt);
         }
     }
-    app.details_open = state == ProductionFixtureState::ComputerDetails;
+    app.details_open = matches!(
+        state,
+        ProductionFixtureState::ComputerDetails | ProductionFixtureState::GroupDetails
+    );
+    if state == ProductionFixtureState::BotEditor {
+        app.roster.begin_edit(Uuid::from_u128(1));
+    }
+    if state == ProductionFixtureState::DeleteBot {
+        app.delete_confirmation = Some((Uuid::from_u128(1), "Nova".to_owned(), "Nova".to_owned()));
+    }
     app
 }
 

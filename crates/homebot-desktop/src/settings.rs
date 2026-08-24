@@ -41,6 +41,18 @@ impl SettingsSection {
             Self::Devices => "Devices",
         }
     }
+
+    #[must_use]
+    pub const fn description(self) -> &'static str {
+        match self {
+            Self::General => "Startup and notification preferences.",
+            Self::Plugins => "Connect local tools and control their availability.",
+            Self::Appearance => "Choose how HomeBot looks and moves on this computer.",
+            Self::Updates => "Check, verify, and stage desktop updates.",
+            Self::Connection => "Manage the HomeBot server and provider status.",
+            Self::Devices => "Pair devices and review security capabilities.",
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -145,6 +157,7 @@ pub struct DesktopSettings {
     pub section: SettingsSection,
     pub theme: ThemePreference,
     pub text_scale_percent: u16,
+    pub reduce_motion: bool,
     pub notifications: NotificationPreferences,
     pub launch_at_login: bool,
     pub server_endpoint: String,
@@ -163,6 +176,7 @@ impl Default for DesktopSettings {
             section: SettingsSection::General,
             theme: ThemePreference::System,
             text_scale_percent: 100,
+            reduce_motion: false,
             notifications: NotificationPreferences::default(),
             launch_at_login: false,
             server_endpoint: "http://127.0.0.1:7123".to_owned(),
@@ -207,6 +221,7 @@ pub(crate) fn settings_view_with(
     extra: impl FnOnce(&mut Ui, SettingsSection),
 ) -> Option<SettingsAction> {
     let mut action = None;
+    let content_width = (ui.available_width() - 176.0 - theme.spacing.xl).max(320.0);
     ui.horizontal_top(|ui| {
         ui.set_min_width(176.0);
         ui.set_max_width(176.0);
@@ -221,20 +236,23 @@ pub(crate) fn settings_view_with(
         ui.add(egui::Separator::default().vertical().grow(0.0));
         ui.add_space(theme.spacing.lg);
         ui.vertical(|ui| {
-            ui.set_min_width(320.0);
+            ui.set_width(content_width);
             ui.label(
                 RichText::new(settings.section.label())
                     .font(theme.typography.font(theme.typography.title))
                     .color(theme.palette.text_primary)
                     .strong(),
             );
-            ui.add_space(theme.spacing.lg);
+            ui.label(
+                RichText::new(settings.section.description()).color(theme.palette.text_secondary),
+            );
+            ui.add_space(theme.spacing.xl);
             match settings.section {
-                SettingsSection::General => action = general(ui, settings),
+                SettingsSection::General => action = general(ui, theme, settings),
                 SettingsSection::Plugins => {
                     action = plugins(ui, theme, &settings.plugins);
                 }
-                SettingsSection::Appearance => appearance(ui, settings),
+                SettingsSection::Appearance => appearance(ui, theme, settings),
                 SettingsSection::Updates => action = updates(ui, theme, settings),
                 SettingsSection::Connection => action = connection(ui, theme, settings),
                 SettingsSection::Devices => devices(ui, theme, settings.paired_devices),
@@ -245,34 +263,54 @@ pub(crate) fn settings_view_with(
     action
 }
 
-fn general(ui: &mut Ui, settings: &mut DesktopSettings) -> Option<SettingsAction> {
-    let launch_changed = ui
-        .checkbox(&mut settings.launch_at_login, "Launch HomeBot at login")
-        .changed();
-    ui.separator();
-    ui.strong("Notifications");
-    notification_checkbox(
-        ui,
-        &mut settings.notifications,
-        NotificationTopic::Finished,
-        "Bot finishes work",
-    );
-    notification_checkbox(
-        ui,
-        &mut settings.notifications,
-        NotificationTopic::Approval,
-        "Bot needs approval",
-    );
-    notification_checkbox(
-        ui,
-        &mut settings.notifications,
-        NotificationTopic::Error,
-        "Bot encounters an error",
-    );
-    let _ = ui.checkbox(
-        &mut settings.notifications.when_focused,
-        "Notify while HomeBot is focused",
-    );
+fn general(
+    ui: &mut Ui,
+    theme: HomeBotTheme,
+    settings: &mut DesktopSettings,
+) -> Option<SettingsAction> {
+    let mut launch_changed = false;
+    settings_card(ui, theme, |ui| {
+        ui.strong("Startup");
+        ui.label(
+            RichText::new("Open HomeBot automatically after you sign in.")
+                .color(theme.palette.text_secondary),
+        );
+        ui.add_space(theme.spacing.sm);
+        launch_changed = ui
+            .checkbox(&mut settings.launch_at_login, "Launch HomeBot at login")
+            .changed();
+    });
+    ui.add_space(theme.spacing.md);
+    settings_card(ui, theme, |ui| {
+        ui.strong("Notifications");
+        ui.label(
+            RichText::new("Choose which Bot events can interrupt you.")
+                .color(theme.palette.text_secondary),
+        );
+        ui.add_space(theme.spacing.sm);
+        notification_checkbox(
+            ui,
+            &mut settings.notifications,
+            NotificationTopic::Finished,
+            "Bot finishes work",
+        );
+        notification_checkbox(
+            ui,
+            &mut settings.notifications,
+            NotificationTopic::Approval,
+            "Bot needs approval",
+        );
+        notification_checkbox(
+            ui,
+            &mut settings.notifications,
+            NotificationTopic::Error,
+            "Bot encounters an error",
+        );
+        let _ = ui.checkbox(
+            &mut settings.notifications.when_focused,
+            "Notify while HomeBot is focused",
+        );
+    });
     launch_changed.then_some(SettingsAction::SetLaunchAtLogin(settings.launch_at_login))
 }
 
@@ -348,21 +386,39 @@ fn plugins(
     None
 }
 
-fn appearance(ui: &mut Ui, settings: &mut DesktopSettings) {
-    ui.strong("Theme");
-    ui.horizontal(|ui| {
-        ui.selectable_value(&mut settings.theme, ThemePreference::System, "System");
-        ui.selectable_value(&mut settings.theme, ThemePreference::Light, "Light");
-        ui.selectable_value(&mut settings.theme, ThemePreference::Dark, "Dark");
+fn appearance(ui: &mut Ui, theme: HomeBotTheme, settings: &mut DesktopSettings) {
+    settings_card(ui, theme, |ui| {
+        ui.strong("Theme");
+        ui.label(
+            RichText::new("Follow this computer or keep a consistent appearance.")
+                .color(theme.palette.text_secondary),
+        );
+        ui.add_space(theme.spacing.sm);
+        ui.horizontal(|ui| {
+            ui.selectable_value(&mut settings.theme, ThemePreference::System, "System");
+            ui.selectable_value(&mut settings.theme, ThemePreference::Light, "Light");
+            ui.selectable_value(&mut settings.theme, ThemePreference::Dark, "Dark");
+        });
     });
-    ui.add_space(8.0);
-    ui.strong("Text size");
-    ui.add(
-        egui::Slider::new(&mut settings.text_scale_percent, 80..=200)
-            .suffix("%")
-            .text("Text scale"),
-    );
-    ui.label("HomeBot supports 80% through 200% text scaling without changing server state.");
+    ui.add_space(theme.spacing.md);
+    settings_card(ui, theme, |ui| {
+        ui.strong("Accessibility");
+        ui.add(
+            egui::Slider::new(&mut settings.text_scale_percent, 80..=200)
+                .suffix("%")
+                .text("Text size"),
+        );
+        ui.label(
+            RichText::new("Text scales without changing server data.")
+                .color(theme.palette.text_secondary),
+        );
+        ui.add_space(theme.spacing.md);
+        ui.checkbox(&mut settings.reduce_motion, "Reduce interface motion");
+        ui.label(
+            RichText::new("Makes sidebar and state transitions immediate.")
+                .color(theme.palette.text_secondary),
+        );
+    });
 }
 
 fn updates(ui: &mut Ui, theme: HomeBotTheme, settings: &DesktopSettings) -> Option<SettingsAction> {
@@ -377,21 +433,30 @@ fn updates(ui: &mut Ui, theme: HomeBotTheme, settings: &DesktopSettings) -> Opti
         UpdateState::Ready => ("Verified update is ready to install", theme.palette.success),
         UpdateState::Failed => ("Update check failed", theme.palette.danger),
     };
-    ui.colored_label(color, label);
-    if let Some(version) = &settings.update_version {
-        ui.label(format!("Version {version}"));
-    }
-    if let Some(message) = &settings.update_message {
-        ui.label(RichText::new(message).color(theme.palette.text_secondary));
-    }
-    match settings.update_state {
-        UpdateState::Available if ui.button("Download verified update").clicked() => {
-            Some(SettingsAction::StageUpdate)
+    let mut action = None;
+    settings_card(ui, theme, |ui| {
+        ui.strong("Desktop app");
+        ui.colored_label(color, label);
+        if let Some(version) = &settings.update_version {
+            ui.label(format!("Version {version}"));
         }
-        UpdateState::Checking | UpdateState::Staging => None,
-        _ if ui.button("Check again").clicked() => Some(SettingsAction::CheckForUpdate),
-        _ => None,
-    }
+        if let Some(message) = &settings.update_message {
+            ui.label(RichText::new(message).color(theme.palette.text_secondary));
+        }
+        ui.add_space(theme.spacing.md);
+        action = match settings.update_state {
+            UpdateState::Available if ui.button("Download verified update").clicked() => {
+                Some(SettingsAction::StageUpdate)
+            }
+            UpdateState::Checking | UpdateState::Staging => {
+                ui.spinner();
+                None
+            }
+            _ if ui.button("Check again").clicked() => Some(SettingsAction::CheckForUpdate),
+            _ => None,
+        };
+    });
+    action
 }
 
 fn connection(
@@ -399,18 +464,27 @@ fn connection(
     theme: HomeBotTheme,
     settings: &mut DesktopSettings,
 ) -> Option<SettingsAction> {
-    ui.label("HomeBot server");
-    ui.horizontal(|ui| {
-        ui.text_edit_singleline(&mut settings.server_endpoint);
-        ui.button("Reconnect")
-            .clicked()
-            .then_some(SettingsAction::Reconnect)
-    })
-    .inner
-    .or_else(|| {
-        settings_row(ui, theme, "Provider", &settings.provider_status, None);
-        None
-    })
+    let mut action = None;
+    settings_card(ui, theme, |ui| {
+        ui.strong("HomeBot server");
+        ui.label(
+            RichText::new("The desktop reconnects securely after this address changes.")
+                .color(theme.palette.text_secondary),
+        );
+        ui.add_space(theme.spacing.sm);
+        ui.horizontal(|ui| {
+            ui.add(
+                egui::TextEdit::singleline(&mut settings.server_endpoint)
+                    .desired_width((ui.available_width() - 96.0).max(120.0)),
+            );
+            if ui.button("Reconnect").clicked() {
+                action = Some(SettingsAction::Reconnect);
+            }
+        });
+    });
+    ui.add_space(theme.spacing.md);
+    settings_row(ui, theme, "Provider", &settings.provider_status, None);
+    action
 }
 
 fn devices(ui: &mut Ui, theme: HomeBotTheme, count: u32) {
@@ -432,7 +506,13 @@ fn settings_row(
 ) -> bool {
     let mut clicked = false;
     Frame::NONE
-        .inner_margin(egui::Margin::symmetric(theme.insets.sm, theme.insets.md))
+        .fill(theme.palette.surface_hover)
+        .stroke(egui::Stroke::new(
+            theme.layout.hairline,
+            theme.palette.border,
+        ))
+        .corner_radius(egui::CornerRadius::same(theme.radii.sm))
+        .inner_margin(egui::Margin::same(theme.insets.md))
         .show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.vertical(|ui| {
@@ -448,8 +528,23 @@ fn settings_row(
                 });
             });
         });
-    ui.separator();
+    ui.add_space(theme.spacing.sm);
     clicked
+}
+
+pub(crate) fn settings_card(ui: &mut Ui, theme: HomeBotTheme, content: impl FnOnce(&mut Ui)) {
+    Frame::NONE
+        .fill(theme.palette.surface_hover)
+        .stroke(egui::Stroke::new(
+            theme.layout.hairline,
+            theme.palette.border,
+        ))
+        .corner_radius(egui::CornerRadius::same(theme.radii.sm))
+        .inner_margin(egui::Margin::same(theme.insets.lg))
+        .show(ui, |ui| {
+            ui.set_min_width(ui.available_width());
+            content(ui);
+        });
 }
 
 #[cfg(test)]

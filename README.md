@@ -11,7 +11,7 @@
 
 HomeBot is an open-source home for persistent AI teammates. Create Bots, message them like people, put specialists in a group chat, and let them hand work to each other while your own Mac or Linux machine remains the computer they work on.
 
-Bring the providers you already use, including Codex CLI, Claude Code, and OpenAI-compatible APIs. Attach a repository when a Bot needs coding powers. Turn a good workflow into a routine. Check in from the native desktop app or the native Android client over your LAN or Tailscale. Your chats, files, credentials, and execution history stay under your control.
+Bring the providers you already use, including Codex CLI, Claude Code, and OpenAI-compatible APIs. Install an Assistant Pack for personal routines such as a Morning Brief, Weekly Rundown, or End-of-Day Review. Attach a repository when a Bot needs coding powers. Check in from the native desktop app or the native Android client over your LAN or Tailscale. Your chats, files, credentials, and execution history stay under your control.
 
 > HomeBot is under active development and is not yet a v1 release. There are no supported release packages yet. Development builds bind conservatively and use authenticated server APIs, but they should still be treated as pre-release software.
 
@@ -23,13 +23,21 @@ Deterministic renders of the production `HomeBotApp`, hydrated through the same 
 | --- | --- | --- |
 | ![HomeBot desktop Bot roster and home view](docs/screenshots/desktop-bot-roster.png) | ![HomeBot direct chat with repository activity cards](docs/screenshots/desktop-chat-activity.png) | ![HomeBot coding activity with file and terminal results](docs/screenshots/desktop-coding-workflow.png) |
 
+### Personal assistant packs
+
+Browse the built-in catalog, choose a Bot and local run time, then install and enable the Skill and routine together. Results appear in that Bot's existing chat and routine history. See [Assistant Packs](docs/assistant-packs.md) for the current catalog and intentionally deferred marketplace features.
+
+| Browse packs | Configure a pack |
+| --- | --- |
+| ![Morning Brief, Weekly Rundown, and End-of-Day Review Assistant Packs](crates/homebot-desktop/tests/snapshots/production_assistant_packs_light.png) | ![Configure an Assistant Pack for a Bot, timezone, and run time](crates/homebot-desktop/tests/snapshots/production_assistant_pack_configure_light.png) |
+
 ### What already works in development
 
 - Persistent, customisable Bots with durable direct chats and group coordination
 - Bring-your-own Codex, Claude Code, OpenAI-compatible, and community process backends
 - Authenticated Rust HTTP/WebSocket server with snapshots, replay, reconnect, idempotent mutations, attachments, and cancellation
 - Native Rust/egui desktop client backed by the authoritative server rather than local-only app state
-- Skills, plugins/MCP connections, OS-backed secrets, recorded routines, schedules, triggers, and durable run history
+- Curated Assistant Packs, versioned Skills, plugins/MCP connections, OS-backed secrets, recorded routines, timezone-safe daily and weekly schedules, triggers, and durable run history
 - Local filesystem, PTY/terminal, browser, and approval-gated computer capabilities
 - Repository workspaces and isolated worktrees per coding chat
 - Turn checkpoints, exact diffs, safe restore, Git status/commit/branch/push, and pull-request workflows
@@ -112,6 +120,7 @@ Read the deeper contracts:
 - [Security and threat model](docs/security.md)
 - [Performance and accessibility](docs/performance-accessibility.md)
 - [Android](docs/android.md)
+- [Assistant Packs](docs/assistant-packs.md)
 - [Routines](docs/routines.md)
 - [Skills](docs/skills.md)
 - [Plugins](docs/plugins.md)

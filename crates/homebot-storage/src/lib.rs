@@ -4949,11 +4949,11 @@ impl Storage {
         owner_id: Uuid,
         chat_id: Uuid,
         now_ms: i64,
-    ) -> Result<DirectChat, StorageError> {
+    ) -> Result<(DirectChat, bool), StorageError> {
         let mut transaction = self.pool.begin().await?;
         let bot_id: Option<String> = sqlx::query_scalar(
             "UPDATE chats SET unread_count = 0, updated_at_ms = ?
-             WHERE id = ? AND owner_id = ? RETURNING direct_bot_id",
+             WHERE id = ? AND owner_id = ? AND unread_count != 0 RETURNING direct_bot_id",
         )
         .bind(now_ms)
         .bind(chat_id.to_string())
@@ -4961,19 +4961,30 @@ impl Storage {
         .fetch_optional(&mut *transaction)
         .await?
         .flatten();
-        let Some(bot_id) = bot_id else {
-            return Err(StorageError::ChatNotFound);
-        };
-        sqlx::query(
-            "UPDATE bots SET unread_count = 0, updated_at_ms = ? WHERE id = ? AND owner_id = ?",
-        )
-        .bind(now_ms)
-        .bind(bot_id)
-        .bind(owner_id.to_string())
-        .execute(&mut *transaction)
-        .await?;
+        let changed = bot_id.is_some();
+        if let Some(bot_id) = bot_id {
+            sqlx::query(
+                "UPDATE bots SET unread_count = 0, updated_at_ms = ? WHERE id = ? AND owner_id = ?",
+            )
+            .bind(now_ms)
+            .bind(bot_id)
+            .bind(owner_id.to_string())
+            .execute(&mut *transaction)
+            .await?;
+        } else {
+            let exists: bool = sqlx::query_scalar(
+                "SELECT EXISTS(SELECT 1 FROM chats WHERE id = ? AND owner_id = ?)",
+            )
+            .bind(chat_id.to_string())
+            .bind(owner_id.to_string())
+            .fetch_one(&mut *transaction)
+            .await?;
+            if !exists {
+                return Err(StorageError::ChatNotFound);
+            }
+        }
         transaction.commit().await?;
-        self.get_direct_chat(owner_id, chat_id).await
+        Ok((self.get_direct_chat(owner_id, chat_id).await?, changed))
     }
 
     /// Inserts or updates a normalized execution activity.

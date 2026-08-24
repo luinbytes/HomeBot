@@ -1953,6 +1953,39 @@ async fn bot_lifecycle_validates_persists_streams_and_reports_provider_health()
 }
 
 #[tokio::test]
+async fn repeated_chat_read_does_not_publish_noop_events() -> Result<(), Box<dyn std::error::Error>>
+{
+    let directory = tempfile::tempdir()?;
+    let storage = Storage::open(&directory.path().join("homebot.db")).await?;
+    let owner = Uuid::nil();
+    let bot = storage
+        .create_bot(owner, homebot_domain::Bot::create("Nova", "Research")?, 1)
+        .await?;
+    let chat = storage
+        .create_direct_chat(owner, bot.id.0, Uuid::now_v7(), 2)
+        .await?;
+    storage.increment_chat_unread(owner, chat.id, 3).await?;
+    let app = router(AppState::new(storage.clone(), "correct-token"));
+
+    for expected_events in [2, 2] {
+        let response = app
+            .clone()
+            .oneshot(json_request(
+                "POST",
+                &format!("/api/v1/chats/{}/read", chat.id),
+                &BotMutationRequest {
+                    request_id: Uuid::now_v7(),
+                    idempotency_key: Uuid::now_v7(),
+                },
+            ))
+            .await?;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(storage.latest_sequence(owner).await?, expected_events);
+    }
+    Ok(())
+}
+
+#[tokio::test]
 #[allow(clippy::too_many_lines)]
 async fn direct_chat_send_queue_replay_and_timeline_are_server_authoritative()
 -> Result<(), Box<dyn std::error::Error>> {

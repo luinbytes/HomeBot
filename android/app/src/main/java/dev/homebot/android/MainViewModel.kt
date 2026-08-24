@@ -471,7 +471,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             is ProductDestination.DirectChat -> {
                 val timeline = homeBot.client.directTimeline(destination.chatId).getOrThrow()
                 mutableProduct.value = mutableProduct.value.copy(directTimeline = timeline, groupTimeline = null)
-                homeBot.client.markChatRead(destination.chatId)
+                if (timeline.chat.unread_count > 0) {
+                    homeBot.client.markChatRead(destination.chatId).getOrThrow()
+                }
             }
             is ProductDestination.GroupChat -> {
                 val timeline = homeBot.client.groupTimeline(destination.chatId).getOrThrow()

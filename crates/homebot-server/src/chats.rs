@@ -357,11 +357,14 @@ pub(super) async fn mark_read(
         .await?,
         IdempotencyClaim::Replayed { .. }
     );
-    let chat = if replayed {
-        state
-            .storage
-            .get_direct_chat(state.owner_id, chat_id)
-            .await?
+    let (chat, changed) = if replayed {
+        (
+            state
+                .storage
+                .get_direct_chat(state.owner_id, chat_id)
+                .await?,
+            false,
+        )
     } else {
         state
             .storage
@@ -369,7 +372,7 @@ pub(super) async fn mark_read(
             .await?
     };
     let chat = chat_summary(chat);
-    if !replayed {
+    if changed {
         publish(
             &state,
             "chat_changed",

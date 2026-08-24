@@ -20,13 +20,15 @@ control state transitions are predominantly 90–180ms. The light semantic
 colors remain `#fcfcfc` base/elevated, `#f7f7f7` subtle, `#14141426` border,
 `#77777717` hover, `#7777772b` selected, and `#1084fe` accent.
 
-The [official launch video](https://x.ai/news/introducing-grok-bot) provides a
-clear populated desktop frame around 78 seconds. It shows a quiet inline
-Search row, dense avatar/title/preview/trailing-state sidebar rows, restrained
-selected state, fixed conversation header, and a bottom-anchored rounded
-composer with a circular vector send control. These observations were made
-from locally extracted frames; the proprietary frames are deliberately not
-redistributed in this repository.
+The [official launch video](https://x.ai/news/introducing-grok-bot) provides
+useful views of the [composer at 30 seconds](evidence/grok-bot-official-launch-composer-30s.png),
+the [demonstration control at 34 seconds](evidence/grok-bot-official-launch-demonstration-34s.png),
+and a [populated desktop at 78 seconds](evidence/grok-bot-official-launch-desktop-78s.png).
+The desktop frame shows a quiet inline Search row, dense
+avatar/title/preview/trailing-state sidebar rows, restrained selected state,
+fixed conversation header, and a bottom-anchored rounded composer with a
+circular vector send control. These stills are excerpts from xAI's official
+launch video, retained as visual-review evidence rather than HomeBot assets.
 
 ## Pinned local 0.18.0 reference and measurable parity contract
 

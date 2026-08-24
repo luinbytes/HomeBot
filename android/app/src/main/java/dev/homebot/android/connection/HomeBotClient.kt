@@ -35,6 +35,13 @@ import dev.homebot.protocol.PROTOCOL_VERSION
 import dev.homebot.protocol.PairingExchangeResponse
 import dev.homebot.protocol.ProtocolRange
 import dev.homebot.protocol.RepositoryWorkspaceSummary
+import dev.homebot.protocol.AttachChatWorkspaceRequest
+import dev.homebot.protocol.ChatWorkspaceSummary
+import dev.homebot.protocol.CreatePullRequestRequest
+import dev.homebot.protocol.CreateRepositoryWorkspaceRequest
+import dev.homebot.protocol.DetachChatWorkspaceRequest
+import dev.homebot.protocol.PullRequestMetadata
+import dev.homebot.protocol.PullRequestMutationResponse
 import dev.homebot.protocol.ReactionMutationRequest
 import dev.homebot.protocol.RenameGroupChatRequest
 import dev.homebot.protocol.RestoreCheckpointRequest
@@ -44,6 +51,11 @@ import dev.homebot.protocol.SendMessageResponse
 import dev.homebot.protocol.Snapshot
 import dev.homebot.protocol.UpdateBotRequest
 import dev.homebot.protocol.VcsStatus
+import dev.homebot.protocol.VcsCommitRequest
+import dev.homebot.protocol.VcsCommitResult
+import dev.homebot.protocol.VcsCreateBranchRequest
+import dev.homebot.protocol.VcsPushRequest
+import dev.homebot.protocol.VcsRemoteMutationResponse
 import dev.homebot.protocol.WorkingTreeDiffResponse
 import dev.homebot.protocol.ApprovalDecisionRequest
 import dev.homebot.protocol.AssistantPackInstallationSummary
@@ -386,8 +398,109 @@ class HomeBotClient(
         get("api/v1/chats/$chatId/vcs/status", VcsStatus.serializer())
     }
 
+    suspend fun registerWorkspace(path: String, name: String?): Result<RepositoryWorkspaceSummary> = authenticated {
+        val request = CreateRepositoryWorkspaceRequest(ids(), ids(), path.trim(), name?.trim()?.ifBlank { null })
+        post(
+            "api/v1/workspaces",
+            request,
+            CreateRepositoryWorkspaceRequest.serializer(),
+            RepositoryWorkspaceSummary.serializer(),
+        )
+    }
+
+    suspend fun attachWorkspace(chatId: String, workspaceId: String): Result<ChatWorkspaceSummary> = authenticated {
+        val request = AttachChatWorkspaceRequest(ids(), ids(), workspaceId, "isolated")
+        put(
+            "api/v1/chats/$chatId/workspace",
+            request,
+            AttachChatWorkspaceRequest.serializer(),
+            ChatWorkspaceSummary.serializer(),
+        )
+    }
+
+    suspend fun detachWorkspace(chatId: String): Result<Unit> = authenticated {
+        postDiscarding(
+            "api/v1/chats/$chatId/workspace/detach",
+            DetachChatWorkspaceRequest(ids(), ids()),
+            DetachChatWorkspaceRequest.serializer(),
+        )
+    }
+
     suspend fun workingTreeDiff(chatId: String, staged: Boolean = false): Result<WorkingTreeDiffResponse> = authenticated {
         get("api/v1/chats/$chatId/vcs/diff?staged=$staged", WorkingTreeDiffResponse.serializer())
+    }
+
+    suspend fun commit(chatId: String, message: String): Result<VcsCommitResult> = authenticated {
+        val request = VcsCommitRequest(ids(), ids(), message.trim(), true)
+        post(
+            "api/v1/chats/$chatId/vcs/commit",
+            request,
+            VcsCommitRequest.serializer(),
+            VcsCommitResult.serializer(),
+        )
+    }
+
+    suspend fun createBranch(chatId: String, branch: String): Result<VcsStatus> = authenticated {
+        val request = VcsCreateBranchRequest(ids(), ids(), branch.trim(), "HEAD")
+        post(
+            "api/v1/chats/$chatId/vcs/branches",
+            request,
+            VcsCreateBranchRequest.serializer(),
+            VcsStatus.serializer(),
+        )
+    }
+
+    suspend fun push(
+        chatId: String,
+        requestId: String,
+        idempotencyKey: String,
+        remote: String,
+        branch: String,
+        approvalId: String?,
+    ): Result<VcsRemoteMutationResponse> = authenticated {
+        val request = VcsPushRequest(requestId, idempotencyKey, remote, branch, true, approvalId)
+        post(
+            "api/v1/chats/$chatId/vcs/push",
+            request,
+            VcsPushRequest.serializer(),
+            VcsRemoteMutationResponse.serializer(),
+        )
+    }
+
+    suspend fun pullRequest(chatId: String, remote: String, head: String, base: String): Result<PullRequestMetadata> = authenticated {
+        get(
+            "api/v1/chats/$chatId/vcs/pull-request?remote=$remote&head_branch=$head&base_branch=$base",
+            PullRequestMetadata.serializer(),
+        )
+    }
+
+    suspend fun createPullRequest(
+        chatId: String,
+        requestId: String,
+        idempotencyKey: String,
+        remote: String,
+        head: String,
+        base: String,
+        title: String,
+        approvalId: String?,
+    ): Result<PullRequestMutationResponse> = authenticated {
+        val request = CreatePullRequestRequest(
+            requestId,
+            idempotencyKey,
+            remote,
+            head,
+            base,
+            title.trim(),
+            "Created with HomeBot Android.",
+            false,
+            approvalId,
+        )
+        post(
+            "api/v1/chats/$chatId/vcs/pull-request",
+            request,
+            CreatePullRequestRequest.serializer(),
+            PullRequestMutationResponse.serializer(),
+        )
     }
 
     suspend fun checkpointDiff(chatId: String, from: String, to: String): Result<CheckpointDiffResponse> = authenticated {
@@ -961,6 +1074,21 @@ class HomeBotClient(
                 browser_sessions = projection.browser_sessions.upsert(
                     json.decodeFromJsonElement<BrowserSessionSummary>(event.getValue("session")),
                 ) { it.id },
+            )
+            "repository_workspace_changed" -> projection.copy(
+                repository_workspaces = projection.repository_workspaces.upsert(
+                    json.decodeFromJsonElement<RepositoryWorkspaceSummary>(event.getValue("workspace")),
+                ) { it.id },
+            )
+            "chat_workspace_changed" -> projection.copy(
+                chat_workspaces = projection.chat_workspaces.upsert(
+                    json.decodeFromJsonElement<ChatWorkspaceSummary>(event.getValue("workspace")),
+                ) { it.chat_id },
+            )
+            "chat_workspace_removed" -> projection.copy(
+                chat_workspaces = projection.chat_workspaces.filterNot {
+                    it.chat_id == event.requiredString("chat_id")
+                },
             )
             else -> projection
         }

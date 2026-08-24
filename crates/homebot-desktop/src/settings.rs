@@ -173,6 +173,7 @@ pub fn settings_view(
     ui: &mut Ui,
     theme: HomeBotTheme,
     settings: &mut DesktopSettings,
+    devices_content: impl FnOnce(&mut Ui),
 ) -> Option<SettingsAction> {
     let mut action = None;
     ui.horizontal_top(|ui| {
@@ -204,7 +205,10 @@ pub fn settings_view(
                 SettingsSection::Appearance => appearance(ui, settings),
                 SettingsSection::Updates => action = updates(ui, theme, settings),
                 SettingsSection::Connection => connection(ui, theme, settings),
-                SettingsSection::Devices => devices(ui, theme, settings.paired_devices),
+                SettingsSection::Devices => {
+                    devices(ui, theme, settings.paired_devices);
+                    devices_content(ui);
+                }
             }
         });
     });

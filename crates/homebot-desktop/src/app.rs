@@ -257,13 +257,15 @@ impl HomeBotApp {
         }
         CentralPanel::default().show(context, |ui| {
             if self.settings_open {
-                if let Some(action) = settings_view(ui, self.theme, &mut self.settings) {
-                    self.handle_settings_action(action);
-                }
-                if self.settings.section == SettingsSection::Devices {
+                let mut settings = std::mem::take(&mut self.settings);
+                let action = settings_view(ui, self.theme, &mut settings, |ui| {
                     self.device_pairing_controls(ui);
                     self.capability_policy_controls(ui);
                     self.shared_browser_controls(ui);
+                });
+                self.settings = settings;
+                if let Some(action) = action {
+                    self.handle_settings_action(action);
                 }
             } else if self.routines_open {
                 self.routine_content(ui);
@@ -2619,6 +2621,7 @@ pub enum ProductionFixtureState {
     Disconnected,
     ProviderUnavailable,
     Settings,
+    SettingsDevices,
     Routines,
     RoutineEditor,
     RoutineRecording,
@@ -2793,7 +2796,14 @@ fn production_fixture(theme: HomeBotTheme, state: ProductionFixtureState) -> Hom
             boundary_sequence: 9,
         });
     }
-    app.settings_open = state == ProductionFixtureState::Settings;
+    app.settings_open = matches!(
+        state,
+        ProductionFixtureState::Settings | ProductionFixtureState::SettingsDevices
+    );
+    if state == ProductionFixtureState::SettingsDevices {
+        app.settings.section = SettingsSection::Devices;
+        app.settings.paired_devices = 1;
+    }
     app.routines_open = matches!(
         state,
         ProductionFixtureState::Routines

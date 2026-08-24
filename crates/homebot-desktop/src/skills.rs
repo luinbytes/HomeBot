@@ -14,10 +14,14 @@ impl SkillProjection {
         self.skills = skills.into_iter().map(|skill| (skill.id, skill)).collect();
     }
 
+    pub fn apply_skill(&mut self, skill: SkillSummary) {
+        self.skills.insert(skill.id, skill);
+    }
+
     pub fn apply(&mut self, event: &ServerEvent) {
         match &event.body {
             ServerEventBody::SkillChanged { skill } => {
-                self.skills.insert(skill.id, skill.clone());
+                self.apply_skill(skill.clone());
             }
             ServerEventBody::SkillRemoved { skill_id } => {
                 self.skills.remove(skill_id);

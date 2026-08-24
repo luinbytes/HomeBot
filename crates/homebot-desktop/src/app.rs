@@ -83,6 +83,15 @@ struct RoutineEditorDraft {
     draft: bool,
 }
 
+#[derive(Clone, Debug)]
+struct AssistantPackInstallDraft {
+    pack_id: String,
+    bot_id: Uuid,
+    timezone: String,
+    hour: u8,
+    minute: u8,
+}
+
 impl RoutineEditorDraft {
     fn from_summary(routine: &RoutineSummary) -> Self {
         Self {
@@ -114,6 +123,7 @@ pub struct HomeBotApp {
     pub capability_rules: Vec<homebot_protocol::CapabilityRuleSummary>,
     pub browser_sessions: Vec<homebot_protocol::BrowserSessionSummary>,
     pub provider_profiles: Vec<ProviderProfileSummary>,
+    pub assistant_packs: Vec<homebot_protocol::AssistantPackSummary>,
     pairing_endpoint: String,
     pairing_insecure_private_acknowledged: bool,
     vcs_commit_message: String,
@@ -128,6 +138,9 @@ pub struct HomeBotApp {
     notification_sink: SystemNotificationSink,
     deep_link_receiver: Receiver<DeepLink>,
     settings_open: bool,
+    assistant_packs_open: bool,
+    assistant_pack_install: Option<AssistantPackInstallDraft>,
+    assistant_pack_notice: Option<String>,
     routines_open: bool,
     routine_editor: Option<RoutineEditorDraft>,
     routine_recording: Option<RoutineRecordingSummary>,
@@ -169,6 +182,7 @@ impl Default for HomeBotApp {
             capability_rules: Vec::new(),
             browser_sessions: Vec::new(),
             provider_profiles: Vec::new(),
+            assistant_packs: Vec::new(),
             pairing_endpoint: "http://127.0.0.1:7123".to_owned(),
             pairing_insecure_private_acknowledged: false,
             vcs_commit_message: String::new(),
@@ -183,6 +197,9 @@ impl Default for HomeBotApp {
             notification_sink: SystemNotificationSink::new(deep_link_sender),
             deep_link_receiver,
             settings_open: false,
+            assistant_packs_open: false,
+            assistant_pack_install: None,
+            assistant_pack_notice: None,
             routines_open: false,
             routine_editor: None,
             routine_recording: None,
@@ -262,7 +279,9 @@ impl HomeBotApp {
             self.composer_panel(context);
         }
         CentralPanel::default().show(context, |ui| {
-            if self.routines_open {
+            if self.assistant_packs_open {
+                self.assistant_pack_content(ui);
+            } else if self.routines_open {
                 self.routine_content(ui);
             } else if self.search.is_some() {
                 self.search_content(ui);
@@ -345,20 +364,24 @@ impl HomeBotApp {
             });
         if settings {
             self.settings_open = !self.settings_open;
+            self.assistant_packs_open = false;
             self.routines_open = false;
         }
         if create_bot {
             self.settings_open = false;
+            self.assistant_packs_open = false;
             self.routines_open = false;
             self.roster.begin_create();
         }
         if composer {
             self.settings_open = false;
+            self.assistant_packs_open = false;
             self.routines_open = false;
             self.focus_composer = true;
         }
         if search {
             self.settings_open = false;
+            self.assistant_packs_open = false;
             self.routines_open = false;
             self.search.get_or_insert_with(SearchProjection::default);
         }
@@ -367,6 +390,7 @@ impl HomeBotApp {
         }
         if escape {
             self.settings_open = false;
+            self.assistant_packs_open = false;
             self.routines_open = false;
             self.roster.editor = None;
             self.editor_error = None;
@@ -628,6 +652,14 @@ impl HomeBotApp {
                 DesktopEvent::DeviceRevoked(device) => self.apply_device_revoked(device),
                 DesktopEvent::CheckpointDiff(diff) => self.checkpoint_diff = Some(diff),
                 DesktopEvent::Search(response) => self.apply_search(response),
+                DesktopEvent::AssistantPacks(packs) => self.assistant_packs = packs,
+                DesktopEvent::AssistantPackInstalled(installation) => {
+                    self.skills.apply_skill(installation.skill);
+                    self.routines.apply_routine(installation.routine);
+                    self.assistant_pack_install = None;
+                    self.assistant_pack_notice =
+                        Some(format!("{} installed and scheduled", installation.pack_id));
+                }
                 DesktopEvent::Routines(routines) => self.routines.hydrate(routines),
                 DesktopEvent::RoutineMutation(routine) => {
                     self.routines.apply_routine(routine);
@@ -674,6 +706,7 @@ impl HomeBotApp {
         self.transport_error = None;
         self.send_transport(DesktopCommand::LoadDevices);
         self.send_transport(DesktopCommand::LoadPlugins);
+        self.send_transport(DesktopCommand::LoadAssistantPacks);
     }
 
     fn apply_plugins(&mut self, plugins: Vec<homebot_protocol::PluginSummary>) {
@@ -1208,6 +1241,7 @@ impl HomeBotApp {
                         .clicked()
                     {
                         self.settings_open = true;
+                        self.assistant_packs_open = false;
                         self.routines_open = false;
                         self.search = None;
                     }
@@ -1220,12 +1254,23 @@ impl HomeBotApp {
                     .clicked()
                     {
                         self.settings_open = true;
+                        self.assistant_packs_open = false;
                         self.routines_open = false;
                         self.settings.section = SettingsSection::Plugins;
                         self.search = None;
                     }
+                    if navigation_row(ui, self.theme, "Assistant Packs", self.assistant_packs_open)
+                        .clicked()
+                    {
+                        self.settings_open = false;
+                        self.assistant_packs_open = true;
+                        self.routines_open = false;
+                        self.search = None;
+                        self.send_transport(DesktopCommand::LoadAssistantPacks);
+                    }
                     if navigation_row(ui, self.theme, "Routines", self.routines_open).clicked() {
                         self.settings_open = false;
+                        self.assistant_packs_open = false;
                         self.routines_open = true;
                         self.search = None;
                         self.send_transport(DesktopCommand::LoadRoutines);
@@ -1282,7 +1327,9 @@ impl HomeBotApp {
                         .selected_group
                         .and_then(|id| self.groups.iter().find(|group| group.id == id));
                     ui.label(
-                        RichText::new(if self.routines_open {
+                        RichText::new(if self.assistant_packs_open {
+                            "Assistant Packs"
+                        } else if self.routines_open {
                             "Routines"
                         } else if self.search.is_some() {
                             "Search"
@@ -1293,6 +1340,14 @@ impl HomeBotApp {
                         })
                         .strong(),
                     );
+                    if self.assistant_packs_open {
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            if ui.button("Done").clicked() {
+                                self.assistant_packs_open = false;
+                            }
+                        });
+                        return;
+                    }
                     if self.routines_open {
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                             if ui.button("Done").clicked() {
@@ -1615,6 +1670,145 @@ impl HomeBotApp {
                         self.send_transport(DesktopCommand::LoadRoutines);
                     }
                 }
+            }
+        });
+    }
+
+    #[allow(clippy::too_many_lines)] // Catalog cards and one contextual install form share one surface.
+    fn assistant_pack_content(&mut self, ui: &mut egui::Ui) {
+        ui.vertical_centered(|ui| {
+            ui.set_max_width(self.theme.layout.content_max_width);
+            ui.add_space(self.theme.spacing.xl);
+            ui.heading("Assistant Packs");
+            ui.label("Install a useful Skill and scheduled routine onto one Bot.");
+            if let Some(notice) = &self.assistant_pack_notice {
+                ui.colored_label(self.theme.palette.success, notice);
+            }
+            ui.add_space(self.theme.spacing.lg);
+            if self.assistant_packs.is_empty() {
+                ui.label("No Assistant Packs are available.");
+            }
+            for pack in self.assistant_packs.clone() {
+                let mut configure = false;
+                Frame::NONE
+                    .fill(self.theme.palette.surface)
+                    .stroke(Stroke::new(
+                        self.theme.layout.hairline,
+                        self.theme.palette.border,
+                    ))
+                    .corner_radius(CornerRadius::same(self.theme.radii.md))
+                    .inner_margin(egui::Margin::same(self.theme.insets.lg))
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.vertical(|ui| {
+                                ui.strong(&pack.name);
+                                let cadence = match pack.schedule.cadence {
+                                    homebot_protocol::AssistantPackCadence::Daily => "Daily",
+                                    homebot_protocol::AssistantPackCadence::Weekly => "Weekly",
+                                };
+                                ui.small(format!(
+                                    "{cadence} · default {:02}:{:02}",
+                                    pack.schedule.default_hour, pack.schedule.default_minute
+                                ));
+                                ui.label(&pack.description);
+                            });
+                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                configure = ui.button("Configure").clicked();
+                            });
+                        });
+                    });
+                ui.add_space(self.theme.spacing.sm);
+                if configure {
+                    let bot_id = self
+                        .roster
+                        .selected
+                        .filter(|selected| {
+                            self.roster
+                                .bots
+                                .iter()
+                                .any(|bot| bot.id == *selected && !bot.archived)
+                        })
+                        .or_else(|| {
+                            self.roster
+                                .bots
+                                .iter()
+                                .find(|bot| !bot.archived)
+                                .map(|bot| bot.id)
+                        });
+                    if let Some(bot_id) = bot_id {
+                        self.assistant_pack_install = Some(AssistantPackInstallDraft {
+                            pack_id: pack.id,
+                            bot_id,
+                            timezone: "UTC".to_owned(),
+                            hour: pack.schedule.default_hour,
+                            minute: pack.schedule.default_minute,
+                        });
+                        self.assistant_pack_notice = None;
+                    } else {
+                        self.assistant_pack_notice =
+                            Some("Create a Bot before installing an Assistant Pack.".to_owned());
+                    }
+                }
+            }
+
+            let Some(mut draft) = self.assistant_pack_install.take() else {
+                return;
+            };
+            ui.separator();
+            let pack_name = self
+                .assistant_packs
+                .iter()
+                .find(|pack| pack.id == draft.pack_id)
+                .map_or(draft.pack_id.as_str(), |pack| pack.name.as_str());
+            ui.heading(format!("Configure {pack_name}"));
+            egui::ComboBox::from_id_salt("assistant_pack_bot")
+                .selected_text(
+                    self.roster
+                        .bots
+                        .iter()
+                        .find(|bot| bot.id == draft.bot_id)
+                        .map_or("Choose Bot", |bot| bot.name.as_str()),
+                )
+                .show_ui(ui, |ui| {
+                    for bot in self.roster.bots.iter().filter(|bot| !bot.archived) {
+                        ui.selectable_value(&mut draft.bot_id, bot.id, &bot.name);
+                    }
+                });
+            ui.horizontal(|ui| {
+                ui.label("Timezone");
+                ui.text_edit_singleline(&mut draft.timezone);
+            });
+            ui.horizontal(|ui| {
+                ui.label("Run at");
+                ui.add(egui::DragValue::new(&mut draft.hour).range(0..=23));
+                ui.label(":");
+                ui.add(egui::DragValue::new(&mut draft.minute).range(0..=59));
+            });
+            let mut keep_draft = true;
+            ui.horizontal(|ui| {
+                if ui
+                    .add_enabled(
+                        !draft.timezone.trim().is_empty(),
+                        egui::Button::new("Install and enable"),
+                    )
+                    .clicked()
+                {
+                    self.send_transport(DesktopCommand::InstallAssistantPack {
+                        pack_id: draft.pack_id.clone(),
+                        bot_id: draft.bot_id,
+                        timezone: draft.timezone.trim().to_owned(),
+                        hour: draft.hour,
+                        minute: draft.minute,
+                    });
+                    self.assistant_pack_notice = Some("Installing Assistant Pack…".to_owned());
+                    keep_draft = false;
+                }
+                if ui.button("Cancel").clicked() {
+                    keep_draft = false;
+                }
+            });
+            if keep_draft {
+                self.assistant_pack_install = Some(draft);
             }
         });
     }
@@ -2104,7 +2298,8 @@ impl HomeBotApp {
     }
 
     fn should_show_composer(&self) -> bool {
-        !self.routines_open
+        !self.assistant_packs_open
+            && !self.routines_open
             && self.search.is_none()
             && self.roster.connection == ConnectionState::Connected
             && (self.roster.selected.is_some() || self.selected_group.is_some())
@@ -2920,6 +3115,8 @@ pub enum ProductionFixtureState {
     ProviderUnavailable,
     Settings,
     SettingsDevices,
+    AssistantPacks,
+    AssistantPackConfigure,
     Routines,
     RoutineEditor,
     RoutineRecording,
@@ -3098,6 +3295,47 @@ fn production_fixture(theme: HomeBotTheme, state: ProductionFixtureState) -> Hom
         state,
         ProductionFixtureState::Settings | ProductionFixtureState::SettingsDevices
     );
+    app.assistant_packs_open = matches!(
+        state,
+        ProductionFixtureState::AssistantPacks | ProductionFixtureState::AssistantPackConfigure
+    );
+    if app.assistant_packs_open {
+        app.assistant_packs = vec![
+            fixture_assistant_pack(
+                "morning-brief",
+                "Morning Brief",
+                "Start the day with priorities, commitments, and anything needing attention.",
+                homebot_protocol::AssistantPackCadence::Daily,
+                None,
+                8,
+            ),
+            fixture_assistant_pack(
+                "weekly-rundown",
+                "Weekly Rundown",
+                "Wrap up the week with progress, loose ends, and next-week priorities.",
+                homebot_protocol::AssistantPackCadence::Weekly,
+                Some(5),
+                17,
+            ),
+            fixture_assistant_pack(
+                "end-of-day-review",
+                "End-of-Day Review",
+                "Close the day with completed work, open loops, and tomorrow's first move.",
+                homebot_protocol::AssistantPackCadence::Daily,
+                None,
+                18,
+            ),
+        ];
+        if state == ProductionFixtureState::AssistantPackConfigure {
+            app.assistant_pack_install = Some(AssistantPackInstallDraft {
+                pack_id: "morning-brief".to_owned(),
+                bot_id: Uuid::from_u128(2),
+                timezone: "Europe/London".to_owned(),
+                hour: 7,
+                minute: 45,
+            });
+        }
+    }
     if state == ProductionFixtureState::SettingsDevices {
         app.settings.section = SettingsSection::Devices;
         app.settings.paired_devices = 1;
@@ -3157,6 +3395,29 @@ fn production_fixture(theme: HomeBotTheme, state: ProductionFixtureState) -> Hom
     }
     app.details_open = state == ProductionFixtureState::ComputerDetails;
     app
+}
+
+fn fixture_assistant_pack(
+    id: &str,
+    name: &str,
+    description: &str,
+    cadence: homebot_protocol::AssistantPackCadence,
+    weekday: Option<u8>,
+    default_hour: u8,
+) -> homebot_protocol::AssistantPackSummary {
+    homebot_protocol::AssistantPackSummary {
+        id: id.to_owned(),
+        name: name.to_owned(),
+        description: description.to_owned(),
+        skill_name: name.to_owned(),
+        routine_name: name.to_owned(),
+        schedule: homebot_protocol::AssistantPackSchedule {
+            cadence,
+            weekday,
+            default_hour,
+            default_minute: 0,
+        },
+    }
 }
 
 fn fixture_bot(id: u128, name: &str, title: &str, color: BotColor, shape: BotShape) -> BotSummary {

@@ -1,6 +1,7 @@
 //! Authoritative authenticated HTTP and WebSocket transport.
 
 pub mod artifacts;
+mod assistant_packs;
 mod attachments;
 mod bots;
 mod browser_sessions;
@@ -516,6 +517,11 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/v1/routines",
             get(routines::list).post(routines::create),
+        )
+        .route("/api/v1/assistant-packs", get(assistant_packs::list))
+        .route(
+            "/api/v1/assistant-packs/{pack_id}/install",
+            post(assistant_packs::install),
         )
         .route(
             "/api/v1/routines/{routine_id}",

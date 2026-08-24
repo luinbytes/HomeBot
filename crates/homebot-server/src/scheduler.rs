@@ -582,7 +582,7 @@ fn schedule(definition: &homebot_routines::RoutineTriggerDefinition) -> Option<&
     }
 }
 
-fn trigger_summary(record: &RoutineTriggerRecord) -> RoutineTriggerSummary {
+pub(super) fn trigger_summary(record: &RoutineTriggerRecord) -> RoutineTriggerSummary {
     RoutineTriggerSummary {
         id: record.id,
         routine_id: record.routine_id,
@@ -641,7 +641,10 @@ fn input_metadata(inputs: &Value) -> Value {
     )
 }
 
-async fn publish_trigger(state: &AppState, trigger: RoutineTriggerSummary) -> Result<(), ApiError> {
+pub(super) async fn publish_trigger(
+    state: &AppState,
+    trigger: RoutineTriggerSummary,
+) -> Result<(), ApiError> {
     persist_event(
         state,
         "routine_trigger_changed",

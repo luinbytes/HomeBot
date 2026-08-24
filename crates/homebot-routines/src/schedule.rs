@@ -24,6 +24,12 @@ pub enum RoutineSchedule {
         hour: u8,
         minute: u8,
     },
+    WeeklyLocal {
+        timezone: String,
+        weekday: u8,
+        hour: u8,
+        minute: u8,
+    },
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
@@ -134,7 +140,13 @@ pub fn next_occurrence(
             timezone,
             hour,
             minute,
-        } => next_daily(timezone, *hour, *minute, after_unix_ms).map(Some),
+        } => next_local(timezone, None, *hour, *minute, after_unix_ms).map(Some),
+        RoutineSchedule::WeeklyLocal {
+            timezone,
+            weekday,
+            hour,
+            minute,
+        } => next_local(timezone, Some(*weekday), *hour, *minute, after_unix_ms).map(Some),
     }
 }
 
@@ -211,13 +223,14 @@ fn apply_missed(
     selected
 }
 
-fn next_daily(
+fn next_local(
     timezone: &str,
+    weekday: Option<u8>,
     hour: u8,
     minute: u8,
     after_unix_ms: i64,
 ) -> Result<i64, ScheduleError> {
-    if hour > 23 || minute > 59 {
+    if hour > 23 || minute > 59 || weekday.is_some_and(|day| !(1..=7).contains(&day)) {
         return Err(ScheduleError::Invalid);
     }
     let timezone: Tz = timezone
@@ -233,6 +246,9 @@ fn next_daily(
                 u64::try_from(day_offset).map_err(|_| ScheduleError::Invalid)?,
             ))
             .ok_or(ScheduleError::Invalid)?;
+        if weekday.is_some_and(|day| date.weekday().number_from_monday() != u32::from(day)) {
+            continue;
+        }
         let candidate = timezone.with_ymd_and_hms(
             date.year(),
             date.month(),
@@ -279,6 +295,26 @@ mod tests {
         assert_eq!(
             next_occurrence(&schedule, utc("2026-10-25T00:00:00Z")?)?,
             Some(utc("2026-10-25T00:30:00Z")?)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn weekly_schedule_keeps_its_local_weekday_across_dst() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let schedule = RoutineSchedule::WeeklyLocal {
+            timezone: "Europe/London".to_owned(),
+            weekday: 1,
+            hour: 8,
+            minute: 0,
+        };
+        assert_eq!(
+            next_occurrence(&schedule, utc("2026-03-23T08:00:00Z")?)?,
+            Some(utc("2026-03-30T07:00:00Z")?)
+        );
+        assert_eq!(
+            next_occurrence(&schedule, utc("2026-10-19T07:00:00Z")?)?,
+            Some(utc("2026-10-26T08:00:00Z")?)
         );
         Ok(())
     }

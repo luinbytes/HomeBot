@@ -388,6 +388,18 @@ data class SkillAssignmentRequest(val request_id: String, val idempotency_key: S
 data class SkillTestSummary(val skill_id: String, val skill_version_id: String, val version: Int, val prompt_preview: String, val capability_policy_enforced: Boolean)
 
 @Serializable
+enum class AssistantPackCadence { @SerialName("daily") DAILY, @SerialName("weekly") WEEKLY }
+
+@Serializable
+data class AssistantPackSchedule(val cadence: AssistantPackCadence, val weekday: Int? = null, val default_hour: Int, val default_minute: Int)
+
+@Serializable
+data class AssistantPackSummary(val id: String, val name: String, val description: String, val skill_name: String, val routine_name: String, val schedule: AssistantPackSchedule)
+
+@Serializable
+data class InstallAssistantPackRequest(val request_id: String, val idempotency_key: String, val bot_id: String, val timezone: String, val hour: Int, val minute: Int)
+
+@Serializable
 data class SkillBundle(val format_version: Int, val name: String, val description: String, val definition: SkillDefinition)
 
 @Serializable
@@ -512,6 +524,9 @@ data class RoutineRunSummary(val id: String, val routine_id: String, val routine
 
 @Serializable
 data class RoutineTriggerSummary(val id: String, val routine_id: String, val definition: JsonElement, val enabled: Boolean, val last_evaluated_at_unix_ms: Long? = null, val next_fire_at_unix_ms: Long? = null, val created_at_unix_ms: Long, val updated_at_unix_ms: Long)
+
+@Serializable
+data class AssistantPackInstallationSummary(val pack_id: String, val skill: SkillSummary, val routine: RoutineSummary, val trigger: RoutineTriggerSummary)
 
 @Serializable
 data class CreateRoutineTriggerRequest(val request_id: String, val idempotency_key: String, val definition: JsonElement, val enabled: Boolean = true)

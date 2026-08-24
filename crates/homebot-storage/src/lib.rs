@@ -1270,6 +1270,82 @@ impl Storage {
         Ok(())
     }
 
+    /// Installs one curated Assistant Pack as a Skill, Bot assignment, routine, and trigger.
+    ///
+    /// # Errors
+    /// Returns missing-Bot, duplicate-name, serialization, integrity, or database errors.
+    pub async fn install_assistant_pack(
+        &self,
+        skill: &SkillRecord,
+        routine: &RoutineRecord,
+        trigger: &RoutineTriggerRecord,
+    ) -> Result<(), StorageError> {
+        if skill.owner_id != routine.owner_id
+            || routine.owner_id != trigger.owner_id
+            || skill.bot_ids.as_slice() != [routine.bot_id]
+            || trigger.routine_id != routine.id
+        {
+            return Err(StorageError::Integrity(
+                "Assistant Pack records do not share one owner, Bot, and routine".to_owned(),
+            ));
+        }
+        let skill_definition = serde_json::to_string(&skill.definition)
+            .map_err(|error| StorageError::Serialization(error.to_string()))?;
+        let routine_definition = serde_json::to_string(&routine.definition)
+            .map_err(|error| StorageError::Serialization(error.to_string()))?;
+        let trigger_definition = serde_json::to_string(&trigger.definition)
+            .map_err(|error| StorageError::Serialization(error.to_string()))?;
+        let last_event_sequence = i64::try_from(trigger.last_event_sequence)
+            .map_err(|_| StorageError::Integrity("event cursor exceeds SQLite range".to_owned()))?;
+        let mut transaction = self.pool.begin().await?;
+        let bot_count: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM bots WHERE owner_id = ? AND id = ?")
+                .bind(routine.owner_id.to_string())
+                .bind(routine.bot_id.to_string())
+                .fetch_one(&mut *transaction)
+                .await?;
+        if bot_count == 0 {
+            return Err(StorageError::BotNotFound);
+        }
+        let duplicate_skill: i64 = sqlx::query_scalar("SELECT count(*) FROM skills WHERE owner_id = ? AND name_normalized = ? AND deleted_at_ms IS NULL")
+            .bind(skill.owner_id.to_string()).bind(normalize_skill_name(&skill.name)).fetch_one(&mut *transaction).await?;
+        if duplicate_skill > 0 {
+            return Err(StorageError::DuplicateSkillName);
+        }
+        let duplicate_routine: i64 = sqlx::query_scalar("SELECT count(*) FROM routines WHERE owner_id = ? AND lower(trim(name)) = lower(trim(?))")
+            .bind(routine.owner_id.to_string()).bind(&routine.name).fetch_one(&mut *transaction).await?;
+        if duplicate_routine > 0 {
+            return Err(StorageError::DuplicateRoutineName);
+        }
+        sqlx::query("INSERT INTO skills (id, owner_id, name, name_normalized, description, active_version_id, version, created_at_ms, updated_at_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
+            .bind(skill.id.to_string()).bind(skill.owner_id.to_string()).bind(&skill.name)
+            .bind(normalize_skill_name(&skill.name)).bind(&skill.description).bind(skill.active_version_id.to_string())
+            .bind(i64::from(skill.version)).bind(skill.created_at_ms).bind(skill.updated_at_ms)
+            .execute(&mut *transaction).await?;
+        sqlx::query("INSERT INTO skill_versions (id, skill_id, version, definition_json, name, description, created_at_ms) VALUES (?, ?, ?, ?, ?, ?, ?)")
+            .bind(skill.active_version_id.to_string()).bind(skill.id.to_string()).bind(i64::from(skill.version))
+            .bind(skill_definition).bind(&skill.name).bind(&skill.description).bind(skill.created_at_ms)
+            .execute(&mut *transaction).await?;
+        sqlx::query("INSERT INTO skill_bot_assignments (owner_id, skill_id, bot_id, assigned_at_ms) VALUES (?, ?, ?, ?)")
+            .bind(skill.owner_id.to_string()).bind(skill.id.to_string()).bind(routine.bot_id.to_string())
+            .bind(skill.created_at_ms).execute(&mut *transaction).await?;
+        sqlx::query("INSERT INTO routines (id, owner_id, bot_id, name, description, active_version_id, enabled, draft, created_at_ms, updated_at_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+            .bind(routine.id.to_string()).bind(routine.owner_id.to_string()).bind(routine.bot_id.to_string())
+            .bind(&routine.name).bind(&routine.description).bind(routine.active_version_id.to_string())
+            .bind(routine.enabled).bind(routine.draft).bind(routine.created_at_ms).bind(routine.updated_at_ms)
+            .execute(&mut *transaction).await?;
+        sqlx::query("INSERT INTO routine_versions (id, routine_id, version, definition_json, created_at_ms) VALUES (?, ?, ?, ?, ?)")
+            .bind(routine.active_version_id.to_string()).bind(routine.id.to_string()).bind(i64::from(routine.version))
+            .bind(routine_definition).bind(routine.created_at_ms).execute(&mut *transaction).await?;
+        sqlx::query("INSERT INTO routine_triggers (id, owner_id, routine_id, kind, configuration_json, enabled, last_evaluated_at_ms, next_fire_at_ms, last_event_sequence, created_at_ms, updated_at_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+            .bind(trigger.id.to_string()).bind(trigger.owner_id.to_string()).bind(trigger.routine_id.to_string())
+            .bind(trigger_kind(&trigger.definition)).bind(trigger_definition).bind(trigger.enabled)
+            .bind(trigger.last_evaluated_at_ms).bind(trigger.next_fire_at_ms).bind(last_event_sequence)
+            .bind(trigger.created_at_ms).bind(trigger.updated_at_ms).execute(&mut *transaction).await?;
+        transaction.commit().await?;
+        Ok(())
+    }
+
     /// Lists active owner-scoped Skills with current versions and Bot assignments.
     ///
     /// # Errors

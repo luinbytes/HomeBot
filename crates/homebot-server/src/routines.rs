@@ -770,7 +770,7 @@ fn render_template(template: &str, inputs: &Value) -> String {
     rendered
 }
 
-fn summary(record: &RoutineRecord) -> RoutineSummary {
+pub(super) fn summary(record: &RoutineRecord) -> RoutineSummary {
     RoutineSummary {
         id: record.id,
         bot_id: record.bot_id,
@@ -817,7 +817,10 @@ fn run_summary(record: &RoutineRunRecord) -> RoutineRunSummary {
 fn millis(value: i64) -> u64 {
     u64::try_from(value).unwrap_or_default()
 }
-async fn publish_routine(state: &AppState, routine: RoutineSummary) -> Result<(), ApiError> {
+pub(super) async fn publish_routine(
+    state: &AppState,
+    routine: RoutineSummary,
+) -> Result<(), ApiError> {
     persist_event(
         state,
         "routine_changed",

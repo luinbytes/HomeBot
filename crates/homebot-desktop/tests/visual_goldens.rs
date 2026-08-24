@@ -59,6 +59,7 @@ fn production_shell_exposes_working_navigation_and_send_states() {
 
     for label in [
         "Search",
+        "Assistant Packs",
         "Routines",
         "Plugins",
         "Account & settings",
@@ -116,6 +117,16 @@ fn production_desktop_visual_goldens() {
         "production_devices_light",
         HomeBotTheme::light(),
         ProductionFixtureState::SettingsDevices,
+    );
+    snapshot(
+        "production_assistant_packs_light",
+        HomeBotTheme::light(),
+        ProductionFixtureState::AssistantPacks,
+    );
+    snapshot(
+        "production_assistant_pack_configure_light",
+        HomeBotTheme::light(),
+        ProductionFixtureState::AssistantPackConfigure,
     );
     snapshot(
         "production_routines_dark",

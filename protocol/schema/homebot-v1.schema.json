@@ -19,6 +19,12 @@
     "artifact": {
       "$ref": "#/$defs/ArtifactSummary"
     },
+    "assistant_pack": {
+      "$ref": "#/$defs/AssistantPackSummary"
+    },
+    "assistant_pack_installation": {
+      "$ref": "#/$defs/AssistantPackInstallationSummary"
+    },
     "attach_chat_workspace_request": {
       "$ref": "#/$defs/AttachChatWorkspaceRequest"
     },
@@ -150,6 +156,9 @@
     },
     "import_skill_request": {
       "$ref": "#/$defs/ImportSkillRequest"
+    },
+    "install_assistant_pack_request": {
+      "$ref": "#/$defs/InstallAssistantPackRequest"
     },
     "message_mutation_request": {
       "$ref": "#/$defs/MessageMutationRequest"
@@ -313,6 +322,9 @@
     "skill",
     "skill_test",
     "applied_skill",
+    "assistant_pack",
+    "install_assistant_pack_request",
+    "assistant_pack_installation",
     "create_repository_workspace_request",
     "attach_chat_workspace_request",
     "detach_chat_workspace_request",
@@ -859,6 +871,104 @@
         "size_bytes",
         "sha256",
         "created_at_ms"
+      ]
+    },
+    "AssistantPackCadence": {
+      "type": "string",
+      "enum": [
+        "daily",
+        "weekly"
+      ]
+    },
+    "AssistantPackInstallationSummary": {
+      "type": "object",
+      "properties": {
+        "pack_id": {
+          "type": "string"
+        },
+        "routine": {
+          "$ref": "#/$defs/RoutineSummary"
+        },
+        "skill": {
+          "$ref": "#/$defs/SkillSummary"
+        },
+        "trigger": {
+          "$ref": "#/$defs/RoutineTriggerSummary"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "pack_id",
+        "skill",
+        "routine",
+        "trigger"
+      ]
+    },
+    "AssistantPackSchedule": {
+      "type": "object",
+      "properties": {
+        "cadence": {
+          "$ref": "#/$defs/AssistantPackCadence"
+        },
+        "default_hour": {
+          "type": "integer",
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0
+        },
+        "default_minute": {
+          "type": "integer",
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0
+        },
+        "weekday": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "cadence",
+        "default_hour",
+        "default_minute"
+      ]
+    },
+    "AssistantPackSummary": {
+      "type": "object",
+      "properties": {
+        "description": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "routine_name": {
+          "type": "string"
+        },
+        "schedule": {
+          "$ref": "#/$defs/AssistantPackSchedule"
+        },
+        "skill_name": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "name",
+        "description",
+        "skill_name",
+        "routine_name",
+        "schedule"
       ]
     },
     "AttachChatWorkspaceRequest": {
@@ -2881,6 +2991,47 @@
         "conflict_policy"
       ]
     },
+    "InstallAssistantPackRequest": {
+      "type": "object",
+      "properties": {
+        "bot_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "hour": {
+          "type": "integer",
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0
+        },
+        "idempotency_key": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "minute": {
+          "type": "integer",
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0
+        },
+        "request_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "timezone": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "request_id",
+        "idempotency_key",
+        "bot_id",
+        "timezone",
+        "hour",
+        "minute"
+      ]
+    },
     "InteractionMode": {
       "type": "string",
       "enum": [
@@ -4297,6 +4448,44 @@
           "required": [
             "kind",
             "timezone",
+            "hour",
+            "minute"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "hour": {
+              "type": "integer",
+              "format": "uint8",
+              "maximum": 255,
+              "minimum": 0
+            },
+            "kind": {
+              "type": "string",
+              "const": "weekly_local"
+            },
+            "minute": {
+              "type": "integer",
+              "format": "uint8",
+              "maximum": 255,
+              "minimum": 0
+            },
+            "timezone": {
+              "type": "string"
+            },
+            "weekday": {
+              "type": "integer",
+              "format": "uint8",
+              "maximum": 255,
+              "minimum": 0
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "timezone",
+            "weekday",
             "hour",
             "minute"
           ]

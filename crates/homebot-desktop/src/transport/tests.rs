@@ -117,6 +117,35 @@ fn clean_local_launch_supervises_server_and_persists_real_api_state()
         })
         .ok_or("missing Bot mutation")?;
 
+    transport.send(DesktopCommand::LoadAssistantPacks)?;
+    let packs = receive_until(
+        &transport,
+        Duration::from_secs(10),
+        |event| matches!(event, DesktopEvent::AssistantPacks(packs) if packs.len() == 3),
+    )?;
+    assert!(packs.iter().any(|event| matches!(
+        event,
+        DesktopEvent::AssistantPacks(packs)
+            if packs.iter().any(|pack| pack.id == "morning-brief")
+    )));
+    transport.send(DesktopCommand::InstallAssistantPack {
+        pack_id: "morning-brief".to_owned(),
+        bot_id: bot.id,
+        timezone: "Europe/London".to_owned(),
+        hour: 8,
+        minute: 0,
+    })?;
+    let installed = receive_until(
+        &transport,
+        Duration::from_secs(10),
+        |event| matches!(event, DesktopEvent::AssistantPackInstalled(installation) if installation.pack_id == "morning-brief"),
+    )?;
+    assert!(installed.iter().any(|event| matches!(
+        event,
+        DesktopEvent::AssistantPackInstalled(installation)
+            if installation.skill.bot_ids == vec![bot.id] && installation.routine.enabled
+    )));
+
     transport.send(DesktopCommand::Timeline {
         bot_id: bot.id,
         chat_id: None,
@@ -401,11 +430,11 @@ fn clean_local_launch_supervises_server_and_persists_real_api_state()
     let routines = receive_until(
         &restarted,
         Duration::from_secs(10),
-        |event| matches!(event, DesktopEvent::Routines(routines) if routines.len() == 3),
+        |event| matches!(event, DesktopEvent::Routines(routines) if routines.len() == 4),
     )?;
     assert!(routines.iter().any(|event| matches!(
         event,
-        DesktopEvent::Routines(routines) if routines.len() == 3
+        DesktopEvent::Routines(routines) if routines.len() == 4
     )));
     Ok(())
 }

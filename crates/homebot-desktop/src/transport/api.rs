@@ -170,6 +170,41 @@ pub(super) async fn execute_command(
             let _ = events.send(DesktopEvent::Search(response));
             Ok(())
         }
+        DesktopCommand::LoadAssistantPacks => {
+            let packs = response_json(
+                authenticated(client, config, Method::GET, "/api/v1/assistant-packs")
+                    .send()
+                    .await
+                    .map_err(request_error)?,
+            )
+            .await?;
+            let _ = events.send(DesktopEvent::AssistantPacks(packs));
+            Ok(())
+        }
+        DesktopCommand::InstallAssistantPack {
+            pack_id,
+            bot_id,
+            timezone,
+            hour,
+            minute,
+        } => {
+            let installed = post_json(
+                client,
+                config,
+                &format!("/api/v1/assistant-packs/{pack_id}/install"),
+                &homebot_protocol::InstallAssistantPackRequest {
+                    request_id: Uuid::now_v7(),
+                    idempotency_key: Uuid::now_v7(),
+                    bot_id,
+                    timezone,
+                    hour,
+                    minute,
+                },
+            )
+            .await?;
+            let _ = events.send(DesktopEvent::AssistantPackInstalled(installed));
+            Ok(())
+        }
         DesktopCommand::LoadRoutines => {
             let routines = response_json(
                 authenticated(client, config, Method::GET, "/api/v1/routines")

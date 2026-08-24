@@ -50,6 +50,8 @@ The public sources specify product surfaces and observable states. Exact pixel m
 | `desktop.composer.mention` | `@` mention picker | Chat, Message a Bot | Bot/group/routine/plugin results | Capture required |
 | `desktop.composer.skill` | `/` skill picker | Chat; Skills, Save a skill | Empty/search/selected states | Capture required |
 | `desktop.composer.attachments` | Drag/paste/select files | Files, Attach files | Uploading, complete, limit/error | Capture required |
+| `desktop.assistant-packs.catalog` | Curated personal-assistant pack catalog | HomeBot Assistant Packs contract | `production_assistant_packs_light` | HomeBot-original golden present |
+| `desktop.assistant-packs.configure` | Choose Bot, timezone, and run time | HomeBot Assistant Packs contract | `production_assistant_pack_configure_light` | HomeBot-original golden present |
 | `desktop.message.reply` | Thread/reply view | Chat, threads and reactions | Collapsed/open thread states | Capture required |
 | `desktop.message.reactions` | Message reactions | Chat, threads and reactions | Picker and applied reactions | Capture required |
 | `desktop.activity.tool` | Tool activity in transcript | Chat, transcript activity | Running/success/failure/expanded | Capture required |
@@ -89,6 +91,7 @@ HomeBot intentionally exceeds initial Grok Bot mobile parity where the official 
 | `android.activity.approval` | Approval request | Security, Review an action | Approve once/deny/stale | Capture required |
 | `android.computer.observe` | Watch/take over/return control | Mobile, Review the computer | Loading/live/disconnected | Capture required |
 | `android.routines` | List, schedule, history, controls | Mobile, Manage recurring work; Skills | Full HomeBot parity states | Capture required |
+| `android.assistant-packs` | Catalog and Bot/time installation | HomeBot Assistant Packs contract | Catalog, configuration, validation, installed notice | Capture required; transport contract tested |
 | `android.plugins` | Install/review plugins | Mobile, Settings | Auth and health states | Capture required |
 | `android.notifications` | Result/question/approval push | Mobile setup; Settings notifications | Permission/deep-link/fallback | Capture required |
 | `android.settings` | Appearance, devices, providers | Mobile, Settings | Full HomeBot settings reachability | Capture required |

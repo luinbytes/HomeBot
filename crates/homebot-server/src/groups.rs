@@ -46,10 +46,7 @@ pub(super) async fn provider_tools(
                 .storage
                 .get_bot(state.owner_id, participant.bot_id)
                 .await?;
-            recipients.push(json!({
-                "const": participant.bot_id.to_string(),
-                "title": bot.name,
-            }));
+            recipients.push(bot.name);
         }
     }
     if recipients.is_empty() {
@@ -62,10 +59,10 @@ pub(super) async fn provider_tools(
             "type": "object",
             "additionalProperties": false,
             "properties": {
-                "to_bot_id": {
+                "to_bot_name": {
                     "type": "string",
-                    "oneOf": recipients,
-                    "description": "The HomeBot teammate that should continue this work"
+                    "enum": recipients,
+                    "description": "The exact name of the HomeBot teammate that should continue this work"
                 },
                 "reason": {
                     "type": "string",
@@ -74,7 +71,7 @@ pub(super) async fn provider_tools(
                     "description": "What the recipient should do with your findings"
                 }
             },
-            "required": ["to_bot_id", "reason"]
+            "required": ["to_bot_name", "reason"]
         }),
     }])
 }
@@ -99,6 +96,7 @@ pub(super) async fn handle_provider_tool(
     }
 }
 
+#[allow(clippy::too_many_lines)]
 async fn provider_handoff(
     state: &AppState,
     chat_id: Uuid,
@@ -109,12 +107,13 @@ async fn provider_handoff(
     if call.name != HANDOFF_TOOL {
         return Err("HomeBot does not recognize this collaboration tool".to_owned());
     }
-    let to_bot_id = call
+    let to_bot_name = call
         .arguments
-        .get("to_bot_id")
+        .get("to_bot_name")
         .and_then(serde_json::Value::as_str)
-        .and_then(|value| Uuid::parse_str(value).ok())
-        .ok_or_else(|| "Choose a valid Bot from the handoff tool options".to_owned())?;
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "Choose a valid teammate name from the handoff tool options".to_owned())?;
     let reason = call
         .arguments
         .get("reason")
@@ -132,16 +131,29 @@ async fn provider_handoff(
         .group_participants(state.owner_id, chat_id)
         .await
         .map_err(|_| "HomeBot could not read the group participants".to_owned())?;
-    if to_bot_id == from_bot_id
-        || !participants
-            .iter()
-            .any(|participant| participant.bot_id == from_bot_id)
-        || !participants
-            .iter()
-            .any(|participant| participant.bot_id == to_bot_id)
+    if !participants
+        .iter()
+        .any(|participant| participant.bot_id == from_bot_id)
     {
         return Err("The handoff recipient must be another Bot in this group".to_owned());
     }
+    let mut to_bot_id = None;
+    for participant in &participants {
+        if participant.bot_id == from_bot_id {
+            continue;
+        }
+        let bot = state
+            .storage
+            .get_bot(state.owner_id, participant.bot_id)
+            .await
+            .map_err(|_| "HomeBot could not read the group participants".to_owned())?;
+        if bot.name.eq_ignore_ascii_case(to_bot_name) {
+            to_bot_id = Some(participant.bot_id);
+            break;
+        }
+    }
+    let to_bot_id = to_bot_id
+        .ok_or_else(|| "Choose another teammate by the exact name shown in the tool".to_owned())?;
     let running = participants
         .iter()
         .filter(|participant| participant.status == DomainBotStatus::Running)

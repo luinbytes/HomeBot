@@ -463,16 +463,15 @@ fn fake_handoff_call(prompt: &str, tools: &[ProviderTool]) -> Option<ProviderToo
         return None;
     }
     let tool = tools.iter().find(|tool| tool.name == "homebot_handoff")?;
-    let recipient = tool.input_schema["properties"]["to_bot_id"]["oneOf"]
+    let recipient = tool.input_schema["properties"]["to_bot_name"]["enum"]
         .as_array()?
         .iter()
-        .find(|choice| choice["title"] == "Reviewer")?["const"]
-        .as_str()?;
+        .find(|choice| choice.as_str() == Some("Reviewer"))?;
     Some(ProviderToolCall {
         call_id: Uuid::now_v7().to_string(),
         name: tool.name.clone(),
         arguments: serde_json::json!({
-            "to_bot_id": recipient,
+            "to_bot_name": recipient,
             "reason": "Review Scout's findings and report back",
         }),
     })

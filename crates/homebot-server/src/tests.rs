@@ -2341,6 +2341,20 @@ async fn direct_chat_send_queue_replay_and_timeline_are_server_authoritative()
         storage.message(Uuid::nil(), invalid_reference_key).await,
         Err(homebot_storage::StorageError::MessageNotFound)
     ));
+    let corrected_reference = SendMessageRequest {
+        request_id: Uuid::now_v7(),
+        references: Vec::new(),
+        ..invalid_reference
+    };
+    let corrected = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            &format!("/api/v1/chats/{chat_key}/messages"),
+            &corrected_reference,
+        ))
+        .await?;
+    assert_eq!(corrected.status(), StatusCode::OK);
 
     let reaction = ReactionMutationRequest {
         request_id: Uuid::now_v7(),
@@ -2451,7 +2465,7 @@ async fn direct_chat_send_queue_replay_and_timeline_are_server_authoritative()
         )
         .await?;
     let timeline = response_json::<ChatTimelineResponse>(timeline).await?;
-    assert_eq!(timeline.messages.len(), 1);
+    assert_eq!(timeline.messages.len(), 2);
     assert_eq!(timeline.approvals.len(), 1);
     assert_eq!(timeline.queued_prompts.len(), 2);
     assert_eq!(timeline.queued_prompts[0].kind, QueuedPromptKind::Steering);
@@ -3655,6 +3669,44 @@ async fn group_message_runs_each_mentioned_bot_and_persists_visible_replies()
         serde_json::to_string(&cancelled_timeline)?
     )
     .into())
+}
+
+#[tokio::test]
+async fn failed_group_creation_does_not_consume_its_idempotency_key()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let storage = Storage::open(&directory.path().join("homebot.db")).await?;
+    let owner = Uuid::nil();
+    let first = storage
+        .create_bot(owner, homebot_domain::Bot::create("Scout", "Research")?, 1)
+        .await?;
+    let second = storage
+        .create_bot(owner, homebot_domain::Bot::create("Codey", "Build")?, 2)
+        .await?;
+    let app = router(AppState::new(storage, "correct-token"));
+    let key = Uuid::now_v7();
+    let mut request = CreateGroupChatRequest {
+        request_id: Uuid::now_v7(),
+        idempotency_key: key,
+        title: "Product team".to_owned(),
+        bot_ids: vec![first.id.0, Uuid::now_v7()],
+        ownership_bot_id: first.id.0,
+        coordination_max_turns: 4,
+        max_parallel_bots: 2,
+    };
+
+    let invalid = app
+        .clone()
+        .oneshot(json_request("POST", "/api/v1/groups", &request))
+        .await?;
+    assert_eq!(invalid.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+    request.bot_ids = vec![first.id.0, second.id.0];
+    let corrected = app
+        .oneshot(json_request("POST", "/api/v1/groups", &request))
+        .await?;
+    assert_eq!(corrected.status(), StatusCode::CREATED);
+    Ok(())
 }
 
 #[tokio::test]

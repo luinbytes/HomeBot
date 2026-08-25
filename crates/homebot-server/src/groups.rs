@@ -214,7 +214,7 @@ pub(super) async fn create(
             .get_group_chat(state.owner_id, request.idempotency_key)
             .await?
     } else {
-        state
+        match state
             .storage
             .create_group_chat(
                 state.owner_id,
@@ -226,7 +226,18 @@ pub(super) async fn create(
                 request.max_parallel_bots,
                 unix_time_ms(),
             )
-            .await?
+            .await
+        {
+            Ok(group) => group,
+            Err(homebot_storage::StorageError::InvalidGroupParticipants) => {
+                state
+                    .storage
+                    .release_idempotency(request.idempotency_key)
+                    .await?;
+                return Err(homebot_storage::StorageError::InvalidGroupParticipants.into());
+            }
+            Err(error) => return Err(error.into()),
+        }
     };
     let participants = state
         .storage

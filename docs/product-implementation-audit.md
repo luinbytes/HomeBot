@@ -40,7 +40,7 @@ and background restart recovery is truthful failure rather than continuation.
 | Routines and Assistant Packs | Partial | Scheduler, triggers, durable jobs, retries, dry runs, and installed packs exist. Runs can launch a direct provider turn, but real-provider scheduled execution, host reboot continuity, notifications, and a reopenable assistant-grade run history are unproven. |
 | Notifications | Partial | Desktop/Android notification surfaces and attention state exist. Android relies on a live process/WebSocket and reconnect-on-open; there is no push path after Android process death. |
 | Remote access and pairing | Implemented but unproven | Loopback default, explicit remote bind, single-use pairing, device sessions, revocation, and Android transport policy exist. No real LAN/Tailscale/HTTPS phone acceptance was run. |
-| Group chats and Bot collaboration | Partial; two-Bot Codex handoff usable locally | A user message starts each mentioned Bot concurrently, or the current owner when no Bot is mentioned. Streaming replies and participant operations persist; turn/parallel budgets apply; stopping a group cancels its provider operations. Codex group turns receive a participant-scoped `homebot_handoff` dynamic tool. HomeBot validates it, persists the sender message and handoff, starts the recipient independently, and returns the result to the sender's still-running turn. The exact rebuilt server completed an authenticated chain in which Scout persisted `SCOUT_FOUND_ALPHA`, invoked the tool, and Reviewer independently completed `REVIEWER_VERIFIED_ALPHA`. Deterministic integration covers the same server-owned flow. Concurrent real-provider groups, other provider bridges, distinct depth/cycle policy, and a completed Scout → Codey → Reviewer → Codey chain remain unproven. |
+| Group chats and Bot collaboration | Partial; full Codex handoff chain usable locally | A user message starts each mentioned Bot concurrently, or the current owner when no Bot is mentioned. Streaming replies and participant operations persist; turn/parallel budgets apply; stopping a group cancels its provider operations. Codex group turns receive a participant-scoped `homebot_handoff` dynamic tool whose targets are visible teammate names resolved server-side. HomeBot validates it, persists the sender message and handoff, starts the recipient independently, and returns the result to the sender's still-running turn. The exact rebuilt server completed Scout → Codey → Reviewer → Codey with three visible handoffs and four independent completed operations ending in `CODEY_FIXED_CHAIN`. Deterministic integration covers the same server-owned flow. Concurrent real-provider groups, other provider bridges, and distinct depth/cycle policy remain unproven. |
 | Desktop UX | Partial | Conversation/Bot hierarchy and composer exist, with many functional secondary panels. Runtime/VCS/provider detail still dominates significant space; snapshots prove rendering, not daily interaction, responsiveness, accessibility, or background management. |
 | Android UX | Implemented but unproven | Compose covers chat, stream projection, approvals, status, cancel, attachments, routines, groups, and reconnect logic. It is a dense single-activity client with no physical-device, notification, lifecycle, TalkBack, performance, or signed-release acceptance. |
 | macOS/Linux installation | Implemented but unproven | Packaging/service assets exist. macOS writes a raw LaunchAgent rather than using status-aware `SMAppService`; Linux headless continuity depends on an explicit lingering/service choice. Signing, notarization, clean install, upgrade, rollback, and distro coverage remain open. |
@@ -64,6 +64,10 @@ no API key was added.
   authenticated Codex turn. Scout persisted `SCOUT_FOUND_ALPHA`, initiated a
   visible handoff, Reviewer started as a separate operation and persisted
   `REVIEWER_VERIFIED_ALPHA`, and both participant states completed.
+* A longer authenticated acceptance then completed Scout → Codey → Reviewer →
+  Codey. HomeBot persisted all three correctly addressed handoffs by teammate
+  name and four independent completed Bot messages ending in
+  `CODEY_FIXED_CHAIN`.
 * A long turn cancelled through HomeBot and persisted as `cancelled`.
 * Completed output, activity, approval, and cancellation survived restart.
 * A deliberately interrupted server restart reproduced a permanently
@@ -93,9 +97,8 @@ repository, but token/time budgets still need measured release-build work.
 
 ## Product gate before a v1 claim
 
-Extend the live two-Bot Codex handoff into the full Scout → Codey → Reviewer →
-Codey acceptance chain, then add explicit collaboration depth/cycle/permission policy beyond the
-existing turn and parallel budgets. Wire the existing skills/MCP/browser/file
+Add explicit collaboration depth/cycle/permission policy beyond the existing
+turn and parallel budgets. Wire the existing skills/MCP/browser/file
 capabilities into provider turns, add health-driven onboarding, and run a sustained Mac/Linux
 plus physical-Android dogfood lane. Until those are proven, HomeBot is a
 promising assistant host—not yet the private personal AI team described by the

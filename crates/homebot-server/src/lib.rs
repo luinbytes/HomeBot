@@ -86,10 +86,12 @@ struct OperationControl {
 #[derive(Clone, Debug)]
 struct ChatOperation {
     operation: Uuid,
+    chat: Uuid,
     adapter: ProviderAdapterId,
     profile: Uuid,
     bot: Uuid,
     message: Uuid,
+    group: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

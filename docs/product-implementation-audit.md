@@ -7,12 +7,13 @@ claims are not treated as acceptance evidence.
 
 ## Bottom line
 
-HomeBot is a durable direct-chat server with real provider adapters and broad
+HomeBot is a durable chat server with real provider adapters and broad
 administration surfaces. It is not yet a usable private AI team. Direct Codex
-chat now works locally, but collaboration does not execute Bots, most assistant
-tools are not connected to provider turns, Android has no physical-device
-acceptance, and background restart recovery is truthful failure rather than
-continuation.
+chat works locally; one real Codex group turn and the concurrent/handoff paths
+through deterministic integration tests now execute independent Bots.
+Providers still cannot initiate delegation themselves, most assistant tools
+are not connected to provider turns, Android has no physical-device acceptance,
+and background restart recovery is truthful failure rather than continuation.
 
 ## Capability classification
 
@@ -20,7 +21,7 @@ continuation.
 | --- | --- | --- |
 | Rust server, auth, HTTP/WebSocket protocol | Actually usable | The server starts, bearer auth is enforced, event frames stream, and cursor-backed SQLite state replays. The live probe used HTTP plus persisted timelines; a real remote phone was not used. |
 | SQLite messages and direct chats | Actually usable | User messages are durable before dispatch; streamed Bot text, activities, approvals, usage, terminal state, and provider conversation IDs persist. Completed/cancelled state survived a server restart. |
-| Bot identity | Actually usable after this change | Name, role, and responsibility now enter every direct provider turn. Previously these fields were UI/storage metadata only. Avatar shape/color persist; there is no image avatar. |
+| Bot identity | Actually usable after this change | Name, role, and responsibility now enter every direct and group provider turn. Previously these fields were UI/storage metadata only. Avatar shape/color persist; there is no image avatar. |
 | Bot files/workspace | Partial | Each Bot now gets a neutral persistent directory and an attached repository/worktree overrides it. Previously Codex/Claude inherited a profile or server process directory, so attaching a repository did not control execution. General Bot files have no polished file-management flow. |
 | Codex CLI with ChatGPT auth | Actually usable locally; broader acceptance unproven | Installed `codex-cli 0.149.1` completed authenticated turns through HomeBot. Live evidence covered streaming, a resumed follow-up, a terminal command approval in the attached repository, cancellation, two concurrent Bots, and restart persistence. Packaging, login onboarding, write approval, and Linux remain unproven. |
 | Claude Code | Implemented but unproven | Structured streaming, local account health, cwd, resume, and cancellation exist. Real account execution was not run because `claude` is not installed. Headless approvals are explicitly unsupported. |
@@ -28,7 +29,7 @@ continuation.
 | Streaming and cancellation | Actually usable with local Codex | Live content/activity state persisted; a long Codex turn became `cancelled` 355 ms after HomeBot stop. No Android rendering or network-loss acceptance was performed. |
 | Concurrent direct Bots | Actually usable with local Codex | Scout and Codey started 1 ms apart and completed independent markers in overlapping 3.3 s/4.8 s windows. This does not prove multiple accounts or heavy tool workloads. |
 | Client disconnect/reconnect | Partial | Server-owned turns continued after short-lived HTTP clients exited, and later timeline reads recovered the result. WebSocket loss, Wi-Fi/Tailscale roaming, cursor expiry, and Android process death remain unproven. |
-| Server restart during a turn | Partial after this change | HomeBot cannot reattach to an in-flight provider. Startup now marks orphaned streaming messages/activities failed, expires approvals, and clears false running state with a retryable error. Before the fix the UI remained stuck on `streaming` forever. |
+| Server restart during a turn | Partial after this change | HomeBot cannot reattach to an in-flight provider. Startup now marks orphaned direct/group streaming messages and activities failed, expires approvals, clears false direct running state, and moves affected group participants from running to failed with a retryable error. Before the fix the UI remained stuck on `streaming` forever. |
 | Status / “What are you working on?” | Partial | Chat running/queue state and normalized activities exist, but there is no first-class human summary across Bots. Provider readiness shown on Bot cards only proves a configured profile record, not executable/auth health. |
 | Approvals | Partial | Codex command approval was live-proven and durable. Claude has no approval bridge; Android-device handling, offline decisions, duplicate decision races, and file-write approval were not accepted live. |
 | Repository, VCS, checkpoints | Partial | Repository registration, isolated worktrees, status/diff/commit/branch/push/PR/checkpoint APIs exist and are fixture-tested. Provider cwd was disconnected until this change. A real Codex read in the attached repository now works; a real write/diff/restore/push/PR chain is still unproven. |
@@ -38,7 +39,7 @@ continuation.
 | Routines and Assistant Packs | Partial | Scheduler, triggers, durable jobs, retries, dry runs, and installed packs exist. Runs can launch a direct provider turn, but real-provider scheduled execution, host reboot continuity, notifications, and a reopenable assistant-grade run history are unproven. |
 | Notifications | Partial | Desktop/Android notification surfaces and attention state exist. Android relies on a live process/WebSocket and reconnect-on-open; there is no push path after Android process death. |
 | Remote access and pairing | Implemented but unproven | Loopback default, explicit remote bind, single-use pairing, device sessions, revocation, and Android transport policy exist. No real LAN/Tailscale/HTTPS phone acceptance was run. |
-| Group chats and Bot collaboration | Scaffold/mock/demo only | Group messages, participants, client-written statuses, turn budgets, stop flags, and handoff records persist. `groups.rs` never starts a provider turn: messages do not wake Bots, handoffs do not deliver work, and no recipient continues. There is no delegation/cycle engine or deterministic Scout → Codey → Reviewer chain. |
+| Group chats and Bot collaboration | Partial; single-Bot group execution usable locally | A user message now starts each mentioned Bot concurrently, or the current owner when no Bot is mentioned. Streaming replies and participant operations persist; turn/parallel budgets apply; stopping a group cancels its provider operations. A handoff wakes the recipient with the persisted sender message and reason. The exact rebuilt server completed one authenticated Codex group turn in 7 s and persisted `HOMEBOT_GROUP_CODEX_OK`; a deterministic fake-provider test proves Scout and Codey running independently before Reviewer receives Scout's output. Concurrent real-provider groups, provider-initiated delegation, cycle/depth controls, and a completed autonomous Scout → Codey → Reviewer → Codey chain remain unproven. |
 | Desktop UX | Partial | Conversation/Bot hierarchy and composer exist, with many functional secondary panels. Runtime/VCS/provider detail still dominates significant space; snapshots prove rendering, not daily interaction, responsiveness, accessibility, or background management. |
 | Android UX | Implemented but unproven | Compose covers chat, stream projection, approvals, status, cancel, attachments, routines, groups, and reconnect logic. It is a dense single-activity client with no physical-device, notification, lifecycle, TalkBack, performance, or signed-release acceptance. |
 | macOS/Linux installation | Implemented but unproven | Packaging/service assets exist. macOS writes a raw LaunchAgent rather than using status-aware `SMAppService`; Linux headless continuity depends on an explicit lingering/service choice. Signing, notarization, clean install, upgrade, rollback, and distro coverage remain open. |
@@ -55,6 +56,9 @@ no API key was added.
   the exact disposable repository, then persisted the successful output.
 * Two independent Bots launched 1 ms apart and completed
   `SCOUT_CONCURRENT_OK` and `CODEY_CONCURRENT_OK` without crossed transcripts.
+* After the group runner change, the exact rebuilt server started Scout from a
+  persisted group mention, exposed its operation/status and turn budget, and
+  completed `HOMEBOT_GROUP_CODEX_OK` through authenticated Codex in 7 s.
 * A long turn cancelled through HomeBot and persisted as `cancelled`.
 * Completed output, activity, approval, and cancellation survived restart.
 * A deliberately interrupted server restart reproduced a permanently
@@ -70,8 +74,8 @@ repository, but token/time budgets still need measured release-build work.
 
 ## Largest paper-versus-product gaps
 
-1. Group collaboration is a persisted data model and API, not autonomous
-   independent Bot execution.
+1. Group collaboration can execute independent Bots, but delegation still has
+   to be initiated through the HomeBot API rather than by a provider tool.
 2. HomeBot tools/plugins look broad in API and UI, but are not connected to the
    provider execution loop.
 3. Provider “ready” on a Bot is configuration presence, not live health.
@@ -84,10 +88,10 @@ repository, but token/time budgets still need measured release-build work.
 
 ## Product gate before a v1 claim
 
-Build one server-owned collaboration runner that persists each sender/recipient
-message and independently starts the receiving Bot, with depth/budget/cycle,
-permission, ownership, and cancellation limits. Then wire the existing
-skills/MCP/browser/file capabilities into provider turns, add health-driven
-onboarding, and run a sustained Mac/Linux plus physical-Android dogfood lane.
-Until those are proven, HomeBot is a promising direct-chat agent host—not yet
-the private personal AI team described by the product goal.
+Add a server-owned collaboration tool that lets a running Bot create a visible
+message or handoff, then enforce depth/cycle/permission limits across that
+autonomous chain. Wire the existing skills/MCP/browser/file capabilities into
+provider turns, add health-driven onboarding, and run a sustained Mac/Linux
+plus physical-Android dogfood lane. Until those are proven, HomeBot is a
+promising assistant host—not yet the private personal AI team described by the
+product goal.

@@ -3382,6 +3382,249 @@ async fn failed_provider_message_can_be_retried_idempotently()
 
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
+async fn group_message_runs_each_mentioned_bot_and_persists_visible_replies()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let storage = Storage::open(&directory.path().join("homebot.db")).await?;
+    let profile_id = Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO provider_profiles (
+            id, adapter_kind, display_name, configuration_json, created_at_ms, updated_at_ms
+         ) VALUES (?, 'chat-fake', 'Fixture', '{\"model\":\"fixture\"}', 1, 1)",
+    )
+    .bind(profile_id.to_string())
+    .execute(storage.pool())
+    .await?;
+    let runtime = Arc::new(ProviderRuntime::new());
+    let provider = Arc::new(ChatFakeAdapter::new()?);
+    runtime.register(provider.clone()).await?;
+    let app = router(AppState::new(storage, "correct-token").with_provider_runtime(runtime));
+
+    let mut bot_ids = Vec::new();
+    for name in ["Scout", "Codey", "Reviewer"] {
+        let bot_id = Uuid::now_v7();
+        let response = app
+            .clone()
+            .oneshot(json_request(
+                "POST",
+                "/api/v1/bots",
+                &CreateBotRequest {
+                    request_id: Uuid::now_v7(),
+                    idempotency_key: bot_id,
+                    name: name.to_owned(),
+                    title: "Teammate".to_owned(),
+                    description: String::new(),
+                    shape: BotShape::RoundedSquare,
+                    color: BotColor::Violet,
+                    provider_profile_id: Some(profile_id),
+                    permission_profile: BotPermissionProfile::AskBeforeChanges,
+                },
+            ))
+            .await?;
+        assert_eq!(response.status(), StatusCode::CREATED);
+        bot_ids.push(bot_id);
+    }
+    let chat_id = Uuid::now_v7();
+    let response = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/groups",
+            &CreateGroupChatRequest {
+                request_id: Uuid::now_v7(),
+                idempotency_key: chat_id,
+                title: "Product team".to_owned(),
+                bot_ids: bot_ids.clone(),
+                ownership_bot_id: bot_ids[0],
+                coordination_max_turns: 4,
+                max_parallel_bots: 3,
+            },
+        ))
+        .await?;
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let response = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            &format!("/api/v1/groups/{chat_id}/messages"),
+            &SendGroupMessageRequest {
+                request_id: Uuid::now_v7(),
+                idempotency_key: Uuid::now_v7(),
+                content: "Investigate this together".to_owned(),
+                mentioned_bot_ids: bot_ids[..2].to_vec(),
+                shared_context_message_ids: Vec::new(),
+                reply_to_message_id: None,
+                references: Vec::new(),
+            },
+        ))
+        .await?;
+    if response.status() != StatusCode::OK {
+        let status = response.status();
+        let body = to_bytes(response.into_body(), usize::MAX).await?;
+        return Err(format!(
+            "group message failed with {status}: {}",
+            String::from_utf8_lossy(&body)
+        )
+        .into());
+    }
+
+    let mut timeline = None;
+    for _ in 0..200 {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::get(format!("/api/v1/groups/{chat_id}/timeline"))
+                    .header("authorization", "Bearer correct-token")
+                    .body(Body::empty())?,
+            )
+            .await?;
+        let current = response_json::<GroupTimelineResponse>(response).await?;
+        if current.messages.len() == 3 {
+            timeline = Some(current);
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let timeline = timeline.ok_or("timed out waiting for group Bot replies")?;
+    let scout_id = bot_ids[0];
+    let reviewer_id = bot_ids[2];
+    let scout_message_id = timeline
+        .messages
+        .iter()
+        .find(|message| message.author_bot_id == Some(scout_id))
+        .ok_or("Scout reply missing")?
+        .id;
+    let mut authors = timeline
+        .messages
+        .iter()
+        .filter_map(|message| message.author_bot_id)
+        .collect::<Vec<_>>();
+    authors.sort_unstable();
+    let mut expected_authors = bot_ids[..2].to_vec();
+    expected_authors.sort_unstable();
+    assert_eq!(authors, expected_authors);
+    assert_eq!(
+        timeline
+            .participants
+            .iter()
+            .filter(|participant| participant.status == GroupBotStatus::Running)
+            .count(),
+        2
+    );
+    let response = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            &format!("/api/v1/groups/{chat_id}/messages"),
+            &SendGroupMessageRequest {
+                request_id: Uuid::now_v7(),
+                idempotency_key: Uuid::now_v7(),
+                content: "Duplicate Scout work".to_owned(),
+                mentioned_bot_ids: vec![scout_id],
+                shared_context_message_ids: Vec::new(),
+                reply_to_message_id: None,
+                references: Vec::new(),
+            },
+        ))
+        .await?;
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    let response = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            &format!("/api/v1/groups/{chat_id}/handoff"),
+            &HandoffGroupRequest {
+                request_id: Uuid::now_v7(),
+                idempotency_key: Uuid::now_v7(),
+                from_bot_id: scout_id,
+                to_bot_id: reviewer_id,
+                message_id: Some(scout_message_id),
+                reason: "Use Scout's findings to choose the safest implementation".to_owned(),
+            },
+        ))
+        .await?;
+    assert_eq!(response.status(), StatusCode::OK);
+    let mut handoff_timeline = None;
+    for _ in 0..200 {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::get(format!("/api/v1/groups/{chat_id}/timeline"))
+                    .header("authorization", "Bearer correct-token")
+                    .body(Body::empty())?,
+            )
+            .await?;
+        let current = response_json::<GroupTimelineResponse>(response).await?;
+        if current.messages.len() == 4 {
+            handoff_timeline = Some(current);
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let handoff_timeline = handoff_timeline.ok_or("handoff did not wake the receiving Bot")?;
+    assert_eq!(handoff_timeline.handoffs.len(), 1);
+    assert_eq!(
+        handoff_timeline
+            .messages
+            .last()
+            .and_then(|message| message.author_bot_id),
+        Some(reviewer_id)
+    );
+    let prompts = provider.prompts.lock().await;
+    let handoff_prompt = prompts.last().ok_or("handoff prompt missing")?;
+    assert!(handoff_prompt.contains("From: Scout"));
+    assert!(handoff_prompt.contains("Use Scout's findings"));
+    assert!(handoff_prompt.contains("Hello from the Bot"));
+    drop(prompts);
+    let response = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            &format!("/api/v1/groups/{chat_id}/stop"),
+            &BotMutationRequest {
+                request_id: Uuid::now_v7(),
+                idempotency_key: Uuid::now_v7(),
+            },
+        ))
+        .await?;
+    assert_eq!(response.status(), StatusCode::OK);
+    let mut cancelled_timeline = None;
+    for _ in 0..200 {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::get(format!("/api/v1/groups/{chat_id}/timeline"))
+                    .header("authorization", "Bearer correct-token")
+                    .body(Body::empty())?,
+            )
+            .await?;
+        let timeline = response_json::<GroupTimelineResponse>(response).await?;
+        if timeline
+            .messages
+            .iter()
+            .filter(|message| message.author_bot_id.is_some())
+            .all(|message| message.status == homebot_protocol::MessageStatus::Cancelled)
+        {
+            assert!(
+                timeline
+                    .participants
+                    .iter()
+                    .all(|participant| participant.status == GroupBotStatus::Stopped)
+            );
+            return Ok(());
+        }
+        cancelled_timeline = Some(timeline);
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    Err(format!(
+        "timed out waiting for group cancellation: {}",
+        serde_json::to_string(&cancelled_timeline)?
+    )
+    .into())
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn group_chat_contract_coordinates_three_bots_with_bounded_handoff()
 -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;

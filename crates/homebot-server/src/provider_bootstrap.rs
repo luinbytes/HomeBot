@@ -292,7 +292,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn production_startup_fails_an_orphaned_provider_turn() -> anyhow::Result<()> {
+    async fn production_startup_fails_orphaned_direct_and_group_provider_turns()
+    -> anyhow::Result<()> {
         let directory = tempfile::tempdir()?;
         let storage = Storage::open(&directory.path().join("homebot.db")).await?;
         let bot = storage
@@ -311,6 +312,41 @@ mod tests {
         let message_id = Uuid::now_v7();
         storage
             .create_bot_message(Uuid::nil(), chat.id, bot.id.0, message_id, 4)
+            .await?;
+        let reviewer = storage
+            .create_bot(
+                Uuid::nil(),
+                homebot_domain::Bot::create("Reviewer", "Review")?,
+                5,
+            )
+            .await?;
+        let group_id = Uuid::now_v7();
+        storage
+            .create_group_chat(
+                Uuid::nil(),
+                group_id,
+                "Team",
+                &[bot.id.0, reviewer.id.0],
+                bot.id.0,
+                4,
+                2,
+                6,
+            )
+            .await?;
+        let group_operation_id = Uuid::now_v7();
+        storage
+            .set_group_bot_status(
+                Uuid::nil(),
+                group_id,
+                reviewer.id.0,
+                homebot_domain::chat::GroupBotStatus::Running,
+                Some(group_operation_id),
+                7,
+            )
+            .await?;
+        let group_message_id = Uuid::now_v7();
+        storage
+            .create_bot_message(Uuid::nil(), group_id, reviewer.id.0, group_message_id, 8)
             .await?;
 
         let _state = compose_app_state(
@@ -332,6 +368,21 @@ mod tests {
                 .is_some_and(|error| error["retryable"] == true)
         );
         assert!(!storage.get_direct_chat(Uuid::nil(), chat.id).await?.running);
+        assert_eq!(
+            storage.message(Uuid::nil(), group_message_id).await?.status,
+            homebot_domain::chat::MessageStatus::Failed
+        );
+        let reviewer_state = storage
+            .group_participants(Uuid::nil(), group_id)
+            .await?
+            .into_iter()
+            .find(|participant| participant.bot_id == reviewer.id.0)
+            .ok_or_else(|| anyhow::anyhow!("Reviewer group state missing"))?;
+        assert_eq!(
+            reviewer_state.status,
+            homebot_domain::chat::GroupBotStatus::Failed
+        );
+        assert!(reviewer_state.active_operation_id.is_none());
         Ok(())
     }
 

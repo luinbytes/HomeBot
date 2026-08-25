@@ -5177,6 +5177,70 @@ impl Storage {
         Ok((activities, approvals))
     }
 
+    /// Marks provider turns left in progress by a server restart as retryable failures.
+    ///
+    /// # Errors
+    ///
+    /// Returns database errors.
+    pub async fn recover_interrupted_chat_turns(
+        &self,
+        owner_id: Uuid,
+        now_ms: i64,
+    ) -> Result<u64, StorageError> {
+        let mut transaction = self.pool.begin().await?;
+        let owner_id = owner_id.to_string();
+        sqlx::query(
+            "UPDATE execution_activities SET status = 'failed', finished_at_ms = ?
+             WHERE status IN ('pending', 'running') AND message_id IN (
+                 SELECT m.id FROM messages m JOIN chats c ON c.id = m.chat_id
+                 WHERE m.status = 'streaming' AND c.owner_id = ?
+             )",
+        )
+        .bind(now_ms)
+        .bind(&owner_id)
+        .execute(&mut *transaction)
+        .await?;
+        sqlx::query(
+            "UPDATE approvals SET status = 'expired', decided_at_ms = ?
+             WHERE status = 'pending' AND owner_id = ? AND message_id IN (
+                 SELECT m.id FROM messages m WHERE m.status = 'streaming'
+             )",
+        )
+        .bind(now_ms)
+        .bind(&owner_id)
+        .execute(&mut *transaction)
+        .await?;
+        let messages = sqlx::query(
+            "UPDATE messages SET status = 'failed', error_json = ?, completed_at_ms = ?
+             WHERE status = 'streaming' AND chat_id IN (
+                 SELECT id FROM chats WHERE owner_id = ? AND kind = 'direct'
+             )",
+        )
+        .bind(serde_json::json!({
+            "code": "provider_unavailable",
+            "message": "HomeBot restarted before the provider turn completed",
+            "retryable": true,
+            "request_id": null,
+            "retry_after_ms": null,
+            "details": null
+        }))
+        .bind(now_ms)
+        .bind(&owner_id)
+        .execute(&mut *transaction)
+        .await?
+        .rows_affected();
+        sqlx::query(
+            "UPDATE chats SET running = 0, updated_at_ms = ?
+             WHERE owner_id = ? AND kind = 'direct' AND running = 1",
+        )
+        .bind(now_ms)
+        .bind(&owner_id)
+        .execute(&mut *transaction)
+        .await?;
+        transaction.commit().await?;
+        Ok(messages)
+    }
+
     /// Creates a pending approval for a chat operation.
     ///
     /// # Errors

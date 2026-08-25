@@ -95,6 +95,7 @@ impl ClaudeAdapter {
         conversation_id: Option<String>,
         prompt: String,
         model: Option<String>,
+        working_directory: Option<PathBuf>,
         mode: ExecutionMode,
     ) -> Result<ProviderRun, ProviderError> {
         let binary = resolve_binary(&self.profile).ok_or_else(not_installed)?;
@@ -124,7 +125,10 @@ impl ClaudeAdapter {
             if mode == ExecutionMode::Plan {
                 spec = spec.arg("--permission-mode").arg("plan");
             }
-            if let Some(cwd) = &self.profile.working_directory {
+            if let Some(cwd) = working_directory
+                .as_ref()
+                .or(self.profile.working_directory.as_ref())
+            {
                 spec = spec.current_dir(cwd);
             }
             for (key, value) in &self.profile.environment {
@@ -269,6 +273,7 @@ impl ProviderAdapter for ClaudeAdapter {
             None,
             request.prompt,
             request.model,
+            request.working_directory,
             request.mode,
         )
         .await
@@ -281,6 +286,7 @@ impl ProviderAdapter for ClaudeAdapter {
             Some(request.conversation_id),
             request.prompt,
             request.model,
+            request.working_directory,
             request.mode,
         )
         .await

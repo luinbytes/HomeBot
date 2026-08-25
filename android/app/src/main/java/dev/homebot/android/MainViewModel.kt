@@ -343,18 +343,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         refreshSelection()
     }
 
-    fun createBot(name: String, title: String) = perform {
+    fun createBot(name: String, title: String, description: String) = perform {
         val request = CreateBotRequest(
             request_id = id(), idempotency_key = id(), name = name.trim(), title = title.trim(),
+            description = description.trim(),
             shape = "circle", color = "violet", permission_profile = "ask_before_changes",
         )
         homeBot.client.createBot(request).getOrThrow()
     }
 
-    fun updateBot(bot: BotSummary, name: String, title: String) = perform {
+    fun updateBot(bot: BotSummary, name: String, title: String, description: String) = perform {
         val request = UpdateBotRequest(
             request_id = id(), idempotency_key = id(), name = name.trim(), title = title.trim(),
-            description = bot.description, shape = bot.shape, color = bot.color,
+            description = description.trim(), shape = bot.shape, color = bot.color,
             provider_profile_id = bot.advanced.provider_profile_id,
             permission_profile = bot.advanced.permission_profile,
         )

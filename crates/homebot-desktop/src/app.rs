@@ -3132,7 +3132,7 @@ impl HomeBotApp {
                                 .desired_width(f32::INFINITY),
                         );
                         ui.add_space(self.theme.spacing.md);
-                        ui.label("Description");
+                        ui.label("Responsibility");
                         ui.add(
                             egui::TextEdit::multiline(&mut draft.description)
                                 .hint_text("What should this Bot be responsible for?")

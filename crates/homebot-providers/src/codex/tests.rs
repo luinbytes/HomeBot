@@ -68,6 +68,7 @@ async fn turn_fails_closed_without_an_effective_model() -> Result<(), Box<dyn st
             "thread".to_owned(),
             "Plan".to_owned(),
             None,
+            None,
             ExecutionMode::Plan,
         )
         .await;
@@ -121,14 +122,14 @@ while IFS= read -r line; do
       ;;
     *'"method":"thread/start"'*)
       case "$line" in
-        *'"approvalPolicy":"untrusted"'*'"sandbox":"read-only"'*) ;;
+        *'"approvalPolicy":"untrusted"'*'"cwd":"/workspace/chat"'*'"sandbox":"read-only"'*) ;;
         *) exit 2 ;;
       esac
       printf '%s\n' '{"id":2,"result":{"thread":{"id":"thr_fixture"},"model":"fixture-model"}}'
       ;;
     *'"method":"turn/start"'*)
       case "$line" in
-        *'"collaborationMode":{"mode":"default","settings":{"developer_instructions":null,"model":"fixture-model"}}'*) ;;
+        *'"collaborationMode":{"mode":"default","settings":{"developer_instructions":null,"model":"fixture-model"}}'*'"cwd":"/workspace/chat"'*) ;;
         *) exit 2 ;;
       esac
       printf '%s\n' '{"id":3,"result":{"turn":{"id":"turn_fixture","status":"inProgress","items":[],"error":null}}}'
@@ -159,6 +160,7 @@ done
             chat_id: Uuid::now_v7(),
             prompt: "Run tests".to_owned(),
             model: None,
+            working_directory: Some("/workspace/chat".into()),
             mode: ExecutionMode::Normal,
             attachments: Vec::new(),
         })
@@ -208,14 +210,14 @@ while IFS= read -r line; do
       ;;
     *'"method":"thread/resume"'*)
       case "$line" in
-        *'"approvalPolicy":"untrusted"'*'"sandbox":"read-only"'*) ;;
+        *'"approvalPolicy":"untrusted"'*'"cwd":"/workspace/chat"'*'"sandbox":"read-only"'*) ;;
         *) exit 2 ;;
       esac
       printf '%s\n' '{"id":2,"result":{"thread":{"id":"thr_existing"},"model":"fixture-model"}}'
       ;;
     *'"method":"turn/start"'*)
       case "$line" in
-        *'"collaborationMode":{"mode":"plan","settings":{"developer_instructions":null,"model":"fixture-model"}}'*) ;;
+        *'"collaborationMode":{"mode":"plan","settings":{"developer_instructions":null,"model":"fixture-model"}}'*'"cwd":"/workspace/chat"'*) ;;
         *) exit 2 ;;
       esac
       printf '%s\n' '{"id":3,"result":{"turn":{"id":"turn_interrupt","status":"inProgress","items":[],"error":null}}}'
@@ -244,6 +246,7 @@ done
             conversation_id: "thr_existing".to_owned(),
             prompt: "Continue".to_owned(),
             model: None,
+            working_directory: Some("/workspace/chat".into()),
             mode: ExecutionMode::Plan,
             attachments: Vec::new(),
         })

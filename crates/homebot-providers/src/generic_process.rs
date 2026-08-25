@@ -126,6 +126,11 @@ impl GenericProcessAdapter {
             ));
         }
         drop(operations);
+        let working_directory = match &request {
+            GenericRequest::Start(request) => request.working_directory.clone(),
+            GenericRequest::Resume(request) => request.working_directory.clone(),
+        }
+        .or_else(|| self.profile.working_directory.clone());
         let setup = async {
             let mut spec = ProcessSpec::new(program);
             for argument in &self.profile.arguments {
@@ -134,7 +139,7 @@ impl GenericProcessAdapter {
             for (key, value) in &self.profile.environment {
                 spec = spec.environment(key, value);
             }
-            if let Some(cwd) = &self.profile.working_directory {
+            if let Some(cwd) = &working_directory {
                 spec = spec.current_dir(cwd);
             }
             let mut process = SupervisedProcess::spawn(spec).map_err(process_error)?;

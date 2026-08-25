@@ -54,6 +54,7 @@ use sha2::{Digest, Sha256};
 use std::os::unix::fs::PermissionsExt;
 use std::{
     collections::HashMap,
+    path::PathBuf,
     sync::{Arc, OnceLock},
     time::{Duration, Instant},
 };
@@ -200,6 +201,7 @@ struct ChatFakeAdapter {
     operations: Arc<Mutex<HashMap<Uuid, watch::Sender<bool>>>>,
     approvals: Arc<Mutex<HashMap<Uuid, watch::Sender<bool>>>>,
     prompts: Arc<Mutex<Vec<String>>>,
+    working_directories: Arc<Mutex<Vec<Option<PathBuf>>>>,
     modes: Arc<Mutex<Vec<homebot_providers::ExecutionMode>>>,
     compactions: Arc<Mutex<Vec<CompactRequest>>>,
     context_features: bool,
@@ -212,6 +214,7 @@ impl ChatFakeAdapter {
             operations: Arc::new(Mutex::new(HashMap::new())),
             approvals: Arc::new(Mutex::new(HashMap::new())),
             prompts: Arc::new(Mutex::new(Vec::new())),
+            working_directories: Arc::new(Mutex::new(Vec::new())),
             modes: Arc::new(Mutex::new(Vec::new())),
             compactions: Arc::new(Mutex::new(Vec::new())),
             context_features: true,
@@ -336,6 +339,10 @@ impl ProviderAdapter for ChatFakeAdapter {
 
     async fn start(&self, request: StartRequest) -> Result<ProviderRun, ProviderError> {
         self.prompts.lock().await.push(request.prompt.clone());
+        self.working_directories
+            .lock()
+            .await
+            .push(request.working_directory.clone());
         self.modes.lock().await.push(request.mode);
         Ok(self
             .run(request.operation_id, format!("chat-{}", request.chat_id))
@@ -344,6 +351,10 @@ impl ProviderAdapter for ChatFakeAdapter {
 
     async fn resume(&self, request: ResumeRequest) -> Result<ProviderRun, ProviderError> {
         self.prompts.lock().await.push(request.prompt.clone());
+        self.working_directories
+            .lock()
+            .await
+            .push(request.working_directory.clone());
         self.modes.lock().await.push(request.mode);
         Ok(self
             .run(request.operation_id, request.conversation_id)
@@ -2417,8 +2428,12 @@ async fn provider_turn_streams_persists_approves_resumes_and_cancels()
     .execute(storage.pool())
     .await?;
     let runtime = Arc::new(ProviderRuntime::new());
-    runtime.register(Arc::new(ChatFakeAdapter::new()?)).await?;
-    let state = AppState::new(storage.clone(), "correct-token").with_provider_runtime(runtime);
+    let provider = Arc::new(ChatFakeAdapter::new()?);
+    runtime.register(provider.clone()).await?;
+    let artifact_root = directory.path().join("artifacts");
+    let state = AppState::new(storage.clone(), "correct-token")
+        .with_artifact_root(artifact_root.clone())
+        .with_provider_runtime(runtime);
     let app = router(state);
 
     let bot_id = Uuid::now_v7();
@@ -2475,6 +2490,14 @@ async fn provider_turn_streams_persists_approves_resumes_and_cancels()
         ))
         .await?;
     assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        *provider.working_directories.lock().await,
+        vec![Some(
+            artifact_root
+                .join("bot-workspaces")
+                .join(bot_id.to_string())
+        )]
+    );
     let timeline = wait_for_timeline(&app, chat_id, |timeline| {
         timeline.approvals.len() == 1
             && timeline.messages.len() == 2
@@ -3008,7 +3031,13 @@ async fn queued_turns_plan_mode_compaction_and_reset_preserve_homebot_history()
     .await
     .map_err(|error| format!("queued turns completed: {error}"))?;
     assert_eq!(
-        adapter.prompts.lock().await.as_slice(),
+        adapter
+            .prompts
+            .lock()
+            .await
+            .iter()
+            .map(|prompt| prompt.rsplit('\n').next().unwrap_or_default())
+            .collect::<Vec<_>>(),
         ["First turn", "Second turn", "Third turn"]
     );
     assert!(
@@ -3096,9 +3125,13 @@ async fn queued_turns_plan_mode_compaction_and_reset_preserve_homebot_history()
     })
     .await
     .map_err(|error| format!("post-compaction turn completed: {error}"))?;
-    assert_eq!(
-        adapter.prompts.lock().await.last().map(String::as_str),
-        Some("Post-compact boundary")
+    assert!(
+        adapter
+            .prompts
+            .lock()
+            .await
+            .last()
+            .is_some_and(|prompt| prompt.ends_with("Post-compact boundary"))
     );
 
     storage
@@ -3161,9 +3194,13 @@ async fn queued_turns_plan_mode_compaction_and_reset_preserve_homebot_history()
     let _ = wait_for_timeline(&app, chat.id, |timeline| timeline.messages.len() == 10)
         .await
         .map_err(|error| format!("reset turn persisted: {error}"))?;
-    assert_eq!(
-        adapter.prompts.lock().await.last().map(String::as_str),
-        Some("Fresh context only")
+    assert!(
+        adapter
+            .prompts
+            .lock()
+            .await
+            .last()
+            .is_some_and(|prompt| prompt.ends_with("Fresh context only"))
     );
     let _ = app
         .clone()
@@ -5302,9 +5339,8 @@ async fn coding_turn_checkpoints_diff_restore_and_fork_provider_conversation()
         })
         .await?;
     let provider_runtime = Arc::new(ProviderRuntime::new());
-    provider_runtime
-        .register(Arc::new(ChatFakeAdapter::new()?))
-        .await?;
+    let provider = Arc::new(ChatFakeAdapter::new()?);
+    provider_runtime.register(provider.clone()).await?;
     let app = router(
         AppState::new(storage.clone(), "correct-token")
             .with_provider_runtime(provider_runtime)
@@ -5332,6 +5368,10 @@ async fn coding_turn_checkpoints_diff_restore_and_fork_provider_conversation()
         ))
         .await?;
     assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        *provider.working_directories.lock().await,
+        vec![Some(PathBuf::from(&repository_root))]
+    );
     let timeline = wait_for_timeline(&app, chat.id, |timeline| {
         timeline.approvals.len() == 1
             && timeline
@@ -5480,6 +5520,13 @@ async fn skill_versions_are_assembled_for_providers_and_pinned_to_message_histor
     sqlx::query("INSERT INTO provider_profiles (id, adapter_kind, display_name, configuration_json, created_at_ms, updated_at_ms) VALUES (?, 'chat-fake', 'Fixture', '{}', 1, 1)")
         .bind(profile_id.to_string()).execute(storage.pool()).await?;
     let mut domain_bot = homebot_domain::Bot::create("Nova", "Research")?;
+    domain_bot.update_identity(
+        "Nova",
+        "Research",
+        "Find useful context and cite exact evidence.",
+        domain_bot.shape,
+        domain_bot.color,
+    )?;
     domain_bot.provider_profile_id = Some(profile_id);
     let bot = storage.create_bot(Uuid::nil(), domain_bot, 1).await?;
     let chat = storage
@@ -5537,6 +5584,10 @@ async fn skill_versions_are_assembled_for_providers_and_pinned_to_message_histor
         .await?;
     assert_eq!(response.status(), StatusCode::OK);
     let prompt = prompts.lock().await[0].clone();
+    assert!(prompt.contains("<homebot_bot>"));
+    assert!(prompt.contains("Name: Nova"));
+    assert!(prompt.contains("Role: Research"));
+    assert!(prompt.contains("Responsibility: Find useful context and cite exact evidence."));
     assert!(prompt.contains("## Skill: Source reviewer (version 1)"));
     assert!(prompt.contains("Use exact evidence."));
     assert!(prompt.contains("capability policy still applies"));

@@ -91,6 +91,7 @@ async fn responses_profile_resolves_secret_at_request_time_and_streams()
             chat_id: Uuid::now_v7(),
             prompt: "Hello".to_owned(),
             model: None,
+            working_directory: None,
             mode: ExecutionMode::Normal,
             attachments: Vec::new(),
         })
@@ -160,6 +161,7 @@ async fn cancellation_stops_an_openai_compatible_stream() -> Result<(), Box<dyn 
             chat_id: Uuid::now_v7(),
             prompt: "Wait".to_owned(),
             model: None,
+            working_directory: None,
             mode: ExecutionMode::Normal,
             attachments: Vec::new(),
         })

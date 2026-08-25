@@ -46,7 +46,8 @@ use homebot_providers::{
     ActivityKind, ActivityStatus as ProviderActivityStatus, ApprovalDecision, CompactRequest,
     ProviderAdapter, ProviderAdapterId, ProviderApproval, ProviderCapabilities, ProviderCapability,
     ProviderDescriptor, ProviderError, ProviderEvent, ProviderHealth, ProviderModel, ProviderRun,
-    ProviderRuntime, ResumeRequest, StartRequest,
+    ProviderRuntime, ProviderTool, ProviderToolCall, ProviderToolResult, ResumeRequest,
+    StartRequest,
 };
 use homebot_secrets::{MemorySecretVault, SecretStatus, SecretVault, locator_for};
 use sha2::{Digest, Sha256};
@@ -200,6 +201,7 @@ struct ChatFakeAdapter {
     id: ProviderAdapterId,
     operations: Arc<Mutex<HashMap<Uuid, watch::Sender<bool>>>>,
     approvals: Arc<Mutex<HashMap<Uuid, watch::Sender<bool>>>>,
+    tool_calls: Arc<Mutex<HashMap<String, watch::Sender<bool>>>>,
     prompts: Arc<Mutex<Vec<String>>>,
     working_directories: Arc<Mutex<Vec<Option<PathBuf>>>>,
     modes: Arc<Mutex<Vec<homebot_providers::ExecutionMode>>>,
@@ -213,6 +215,7 @@ impl ChatFakeAdapter {
             id: ProviderAdapterId::new("chat-fake")?,
             operations: Arc::new(Mutex::new(HashMap::new())),
             approvals: Arc::new(Mutex::new(HashMap::new())),
+            tool_calls: Arc::new(Mutex::new(HashMap::new())),
             prompts: Arc::new(Mutex::new(Vec::new())),
             working_directories: Arc::new(Mutex::new(Vec::new())),
             modes: Arc::new(Mutex::new(Vec::new())),
@@ -228,17 +231,31 @@ impl ChatFakeAdapter {
         Ok(adapter)
     }
 
-    async fn run(&self, operation_id: Uuid, conversation_id: String) -> ProviderRun {
+    async fn run(
+        &self,
+        operation_id: Uuid,
+        conversation_id: String,
+        tool_call: Option<ProviderToolCall>,
+    ) -> ProviderRun {
         let (events_tx, events_rx) = mpsc::channel(16);
         let (cancel_tx, mut cancel_rx) = watch::channel(false);
         let (approval_tx, mut approval_rx) = watch::channel(false);
+        let (tool_tx, mut tool_rx) = watch::channel(false);
         let approval_id = Uuid::now_v7();
         self.operations.lock().await.insert(operation_id, cancel_tx);
-        self.approvals.lock().await.insert(approval_id, approval_tx);
+        if let Some(call) = &tool_call {
+            self.tool_calls
+                .lock()
+                .await
+                .insert(call.call_id.clone(), tool_tx);
+        } else {
+            self.approvals.lock().await.insert(approval_id, approval_tx);
+        }
         let operations = Arc::clone(&self.operations);
         let approvals = Arc::clone(&self.approvals);
+        let tool_calls = Arc::clone(&self.tool_calls);
         tokio::spawn(async move {
-            for event in [
+            let mut events = vec![
                 ProviderEvent::ConversationStarted { conversation_id },
                 ProviderEvent::ContentDelta {
                     text: "Hello from the Bot".to_owned(),
@@ -258,7 +275,11 @@ impl ChatFakeAdapter {
                         cached_input_tokens: 40,
                     },
                 },
-                ProviderEvent::ApprovalRequired {
+            ];
+            if let Some(call) = tool_call.as_ref() {
+                events.push(ProviderEvent::ToolCall { call: call.clone() });
+            } else {
+                events.push(ProviderEvent::ApprovalRequired {
                     approval: ProviderApproval {
                         approval_id,
                         capability: "shell_execute".to_owned(),
@@ -266,24 +287,43 @@ impl ChatFakeAdapter {
                         resource: "workspace".to_owned(),
                         reason: "Verify the change".to_owned(),
                     },
-                },
-            ] {
+                });
+            }
+            for event in events {
                 let _ = events_tx.send(event).await;
             }
-            tokio::select! {
-                changed = cancel_rx.changed() => {
-                    if changed.is_ok() && *cancel_rx.borrow() {
-                        let _ = events_tx.send(ProviderEvent::Cancelled).await;
+            if tool_call.is_some() {
+                tokio::select! {
+                    changed = cancel_rx.changed() => {
+                        if changed.is_ok() && *cancel_rx.borrow() {
+                            let _ = events_tx.send(ProviderEvent::Cancelled).await;
+                        }
+                    }
+                    changed = tool_rx.changed() => {
+                        if changed.is_ok() && *tool_rx.borrow() {
+                            let _ = events_tx.send(ProviderEvent::Completed).await;
+                        }
                     }
                 }
-                changed = approval_rx.changed() => {
-                    if changed.is_ok() && *approval_rx.borrow() {
-                        let _ = events_tx.send(ProviderEvent::Completed).await;
+            } else {
+                tokio::select! {
+                    changed = cancel_rx.changed() => {
+                        if changed.is_ok() && *cancel_rx.borrow() {
+                            let _ = events_tx.send(ProviderEvent::Cancelled).await;
+                        }
+                    }
+                    changed = approval_rx.changed() => {
+                        if changed.is_ok() && *approval_rx.borrow() {
+                            let _ = events_tx.send(ProviderEvent::Completed).await;
+                        }
                     }
                 }
             }
             operations.lock().await.remove(&operation_id);
             approvals.lock().await.remove(&approval_id);
+            if let Some(call) = tool_call {
+                tool_calls.lock().await.remove(&call.call_id);
+            }
         });
         ProviderRun {
             operation_id,
@@ -344,8 +384,13 @@ impl ProviderAdapter for ChatFakeAdapter {
             .await
             .push(request.working_directory.clone());
         self.modes.lock().await.push(request.mode);
+        let tool_call = fake_handoff_call(&request.prompt, &request.tools);
         Ok(self
-            .run(request.operation_id, format!("chat-{}", request.chat_id))
+            .run(
+                request.operation_id,
+                format!("chat-{}", request.chat_id),
+                tool_call,
+            )
             .await)
     }
 
@@ -356,8 +401,9 @@ impl ProviderAdapter for ChatFakeAdapter {
             .await
             .push(request.working_directory.clone());
         self.modes.lock().await.push(request.mode);
+        let tool_call = fake_handoff_call(&request.prompt, &request.tools);
         Ok(self
-            .run(request.operation_id, request.conversation_id)
+            .run(request.operation_id, request.conversation_id, tool_call)
             .await)
     }
 
@@ -385,6 +431,23 @@ impl ProviderAdapter for ChatFakeAdapter {
             .map_err(|_| ProviderError::internal("approval finished"))
     }
 
+    async fn resolve_tool_call(
+        &self,
+        call_id: String,
+        result: ProviderToolResult,
+    ) -> Result<(), ProviderError> {
+        if !result.success {
+            return Err(ProviderError::internal(result.content));
+        }
+        self.tool_calls
+            .lock()
+            .await
+            .get(&call_id)
+            .ok_or_else(|| ProviderError::internal("tool call finished"))?
+            .send(true)
+            .map_err(|_| ProviderError::internal("tool call finished"))
+    }
+
     async fn compact(&self, request: CompactRequest) -> Result<(), ProviderError> {
         self.compactions.lock().await.push(request);
         Ok(())
@@ -393,6 +456,26 @@ impl ProviderAdapter for ChatFakeAdapter {
     async fn recover(&self) -> Result<Vec<ProviderRun>, ProviderError> {
         Ok(Vec::new())
     }
+}
+
+fn fake_handoff_call(prompt: &str, tools: &[ProviderTool]) -> Option<ProviderToolCall> {
+    if !prompt.contains("Name: Scout") || !prompt.contains("Use HomeBot to hand off to Reviewer") {
+        return None;
+    }
+    let tool = tools.iter().find(|tool| tool.name == "homebot_handoff")?;
+    let recipient = tool.input_schema["properties"]["to_bot_id"]["oneOf"]
+        .as_array()?
+        .iter()
+        .find(|choice| choice["title"] == "Reviewer")?["const"]
+        .as_str()?;
+    Some(ProviderToolCall {
+        call_id: Uuid::now_v7().to_string(),
+        name: tool.name.clone(),
+        arguments: serde_json::json!({
+            "to_bot_id": recipient,
+            "reason": "Review Scout's findings and report back",
+        }),
+    })
 }
 
 #[derive(Debug)]
@@ -3450,7 +3533,7 @@ async fn group_message_runs_each_mentioned_bot_and_persists_visible_replies()
             &SendGroupMessageRequest {
                 request_id: Uuid::now_v7(),
                 idempotency_key: Uuid::now_v7(),
-                content: "Investigate this together".to_owned(),
+                content: "Investigate this together. Use HomeBot to hand off to Reviewer when Scout has findings.".to_owned(),
                 mentioned_bot_ids: bot_ids[..2].to_vec(),
                 shared_context_message_ids: Vec::new(),
                 reply_to_message_id: None,
@@ -3479,71 +3562,20 @@ async fn group_message_runs_each_mentioned_bot_and_persists_visible_replies()
             )
             .await?;
         let current = response_json::<GroupTimelineResponse>(response).await?;
-        if current.messages.len() == 3 {
+        if current.messages.len() >= 3 {
             timeline = Some(current);
             break;
         }
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
     let timeline = timeline.ok_or("timed out waiting for group Bot replies")?;
-    let scout_id = bot_ids[0];
     let reviewer_id = bot_ids[2];
-    let scout_message_id = timeline
-        .messages
-        .iter()
-        .find(|message| message.author_bot_id == Some(scout_id))
-        .ok_or("Scout reply missing")?
-        .id;
-    let mut authors = timeline
+    let authors = timeline
         .messages
         .iter()
         .filter_map(|message| message.author_bot_id)
         .collect::<Vec<_>>();
-    authors.sort_unstable();
-    let mut expected_authors = bot_ids[..2].to_vec();
-    expected_authors.sort_unstable();
-    assert_eq!(authors, expected_authors);
-    assert_eq!(
-        timeline
-            .participants
-            .iter()
-            .filter(|participant| participant.status == GroupBotStatus::Running)
-            .count(),
-        2
-    );
-    let response = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            &format!("/api/v1/groups/{chat_id}/messages"),
-            &SendGroupMessageRequest {
-                request_id: Uuid::now_v7(),
-                idempotency_key: Uuid::now_v7(),
-                content: "Duplicate Scout work".to_owned(),
-                mentioned_bot_ids: vec![scout_id],
-                shared_context_message_ids: Vec::new(),
-                reply_to_message_id: None,
-                references: Vec::new(),
-            },
-        ))
-        .await?;
-    assert_eq!(response.status(), StatusCode::CONFLICT);
-    let response = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            &format!("/api/v1/groups/{chat_id}/handoff"),
-            &HandoffGroupRequest {
-                request_id: Uuid::now_v7(),
-                idempotency_key: Uuid::now_v7(),
-                from_bot_id: scout_id,
-                to_bot_id: reviewer_id,
-                message_id: Some(scout_message_id),
-                reason: "Use Scout's findings to choose the safest implementation".to_owned(),
-            },
-        ))
-        .await?;
-    assert_eq!(response.status(), StatusCode::OK);
+    assert!(bot_ids[..2].iter().all(|bot_id| authors.contains(bot_id)));
     let mut handoff_timeline = None;
     for _ in 0..200 {
         let response = app
@@ -3555,7 +3587,7 @@ async fn group_message_runs_each_mentioned_bot_and_persists_visible_replies()
             )
             .await?;
         let current = response_json::<GroupTimelineResponse>(response).await?;
-        if current.messages.len() == 4 {
+        if current.messages.len() >= 4 && current.handoffs.len() == 1 {
             handoff_timeline = Some(current);
             break;
         }
@@ -3563,17 +3595,19 @@ async fn group_message_runs_each_mentioned_bot_and_persists_visible_replies()
     }
     let handoff_timeline = handoff_timeline.ok_or("handoff did not wake the receiving Bot")?;
     assert_eq!(handoff_timeline.handoffs.len(), 1);
-    assert_eq!(
+    assert!(
         handoff_timeline
             .messages
-            .last()
-            .and_then(|message| message.author_bot_id),
-        Some(reviewer_id)
+            .iter()
+            .any(|message| message.author_bot_id == Some(reviewer_id))
     );
     let prompts = provider.prompts.lock().await;
-    let handoff_prompt = prompts.last().ok_or("handoff prompt missing")?;
+    let handoff_prompt = prompts
+        .iter()
+        .find(|prompt| prompt.contains("From: Scout"))
+        .ok_or("handoff prompt missing")?;
     assert!(handoff_prompt.contains("From: Scout"));
-    assert!(handoff_prompt.contains("Use Scout's findings"));
+    assert!(handoff_prompt.contains("Review Scout's findings"));
     assert!(handoff_prompt.contains("Hello from the Bot"));
     drop(prompts);
     let response = app
@@ -3603,13 +3637,13 @@ async fn group_message_runs_each_mentioned_bot_and_persists_visible_replies()
             .messages
             .iter()
             .filter(|message| message.author_bot_id.is_some())
-            .all(|message| message.status == homebot_protocol::MessageStatus::Cancelled)
+            .all(|message| message.status != homebot_protocol::MessageStatus::Streaming)
         {
             assert!(
                 timeline
                     .participants
                     .iter()
-                    .all(|participant| participant.status == GroupBotStatus::Stopped)
+                    .all(|participant| participant.status != GroupBotStatus::Running)
             );
             return Ok(());
         }

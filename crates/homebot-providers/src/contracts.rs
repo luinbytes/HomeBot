@@ -81,6 +81,7 @@ pub enum ProviderCapability {
     Compaction,
     PlanMode,
     Attachments,
+    DynamicTools,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -114,6 +115,26 @@ pub struct ProviderAttachment {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct ProviderTool {
+    pub name: String,
+    pub description: String,
+    pub input_schema: serde_json::Value,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct ProviderToolCall {
+    pub call_id: String,
+    pub name: String,
+    pub arguments: serde_json::Value,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct ProviderToolResult {
+    pub success: bool,
+    pub content: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct StartRequest {
     pub operation_id: Uuid,
     pub bot_id: Uuid,
@@ -123,6 +144,7 @@ pub struct StartRequest {
     pub working_directory: Option<PathBuf>,
     pub mode: ExecutionMode,
     pub attachments: Vec<ProviderAttachment>,
+    pub tools: Vec<ProviderTool>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -134,6 +156,7 @@ pub struct ResumeRequest {
     pub working_directory: Option<PathBuf>,
     pub mode: ExecutionMode,
     pub attachments: Vec<ProviderAttachment>,
+    pub tools: Vec<ProviderTool>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -203,6 +226,7 @@ pub enum ProviderEvent {
     ContentDelta { text: String },
     Activity { activity: ProviderActivity },
     ApprovalRequired { approval: ProviderApproval },
+    ToolCall { call: ProviderToolCall },
     Usage { usage: ProviderUsage },
     Compacted { conversation_id: String },
     Completed,
@@ -288,6 +312,16 @@ pub trait ProviderAdapter: Send + Sync {
         approval_id: Uuid,
         decision: ApprovalDecision,
     ) -> Result<(), ProviderError>;
+
+    async fn resolve_tool_call(
+        &self,
+        _call_id: String,
+        _result: ProviderToolResult,
+    ) -> Result<(), ProviderError> {
+        Err(ProviderError::internal(
+            "This provider does not support HomeBot tools",
+        ))
+    }
 
     async fn compact(&self, request: CompactRequest) -> Result<(), ProviderError>;
 

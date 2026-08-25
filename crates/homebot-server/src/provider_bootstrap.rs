@@ -530,6 +530,7 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"session_id
                     working_directory: None,
                     mode: ExecutionMode::Normal,
                     attachments: Vec::new(),
+                    tools: Vec::new(),
                 },
             )
             .await?;
@@ -565,6 +566,7 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"session_id
                     working_directory: None,
                     mode: ExecutionMode::Normal,
                     attachments: Vec::new(),
+                    tools: Vec::new(),
                 },
             )
             .await?;

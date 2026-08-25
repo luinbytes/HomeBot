@@ -39,6 +39,7 @@ printf '%s\n' '{"kind":"completed"}'
             working_directory: None,
             mode: crate::ExecutionMode::Normal,
             attachments: Vec::new(),
+            tools: Vec::new(),
         })
         .await?;
     assert!(matches!(
@@ -90,6 +91,7 @@ IFS= read -r continue
             working_directory: None,
             mode: crate::ExecutionMode::Normal,
             attachments: Vec::new(),
+            tools: Vec::new(),
         })
         .await?;
     assert!(matches!(
@@ -156,6 +158,7 @@ async fn simple_command_resolves_only_from_the_selected_search_path()
             working_directory: None,
             mode: crate::ExecutionMode::Normal,
             attachments: Vec::new(),
+            tools: Vec::new(),
         })
         .await?;
     assert_eq!(run.events.recv().await, Some(ProviderEvent::Completed));

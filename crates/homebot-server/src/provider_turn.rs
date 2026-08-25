@@ -67,6 +67,11 @@ fn start<'a>(
         let operation_id = Uuid::now_v7();
         let message_id = Uuid::now_v7();
         let attachments = provider_attachments(state, attachment_ids).await?;
+        let tools = if group {
+            crate::groups::provider_tools(state, chat_id, bot_id).await?
+        } else {
+            Vec::new()
+        };
         let conversation = state
             .storage
             .provider_conversation(bot_id, chat_id, route.profile_id)
@@ -136,6 +141,7 @@ fn start<'a>(
                         working_directory: working_directory.clone(),
                         mode: crate::working_context::execution_mode(mode),
                         attachments,
+                        tools,
                     },
                 )
                 .await
@@ -153,6 +159,7 @@ fn start<'a>(
                         working_directory,
                         mode: crate::working_context::execution_mode(mode),
                         attachments,
+                        tools,
                     },
                 )
                 .await
@@ -326,11 +333,32 @@ pub(super) async fn cancel_group(state: &AppState, chat_id: Uuid) -> Result<(), 
         .cloned()
         .collect::<Vec<_>>();
     for operation in operations {
-        state
+        if state
             .provider_runtime
             .cancel(operation.operation)
             .await
-            .map_err(|_| ApiError::internal())?;
+            .is_err()
+        {
+            for _ in 0..100 {
+                if !state
+                    .chat_operations
+                    .lock()
+                    .await
+                    .contains_key(&operation.operation)
+                {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+            if state
+                .chat_operations
+                .lock()
+                .await
+                .contains_key(&operation.operation)
+            {
+                return Err(ApiError::internal());
+            }
+        }
     }
     Ok(())
 }
@@ -490,6 +518,28 @@ async fn consume(
                     },
                 )
                 .await?;
+            }
+            ProviderEvent::ToolCall { call } => {
+                let result = if operation.group {
+                    crate::groups::handle_provider_tool(
+                        &state,
+                        chat_id,
+                        operation.bot,
+                        operation.message,
+                        &call,
+                    )
+                    .await
+                } else {
+                    homebot_providers::ProviderToolResult {
+                        success: false,
+                        content: "HomeBot collaboration tools require a group chat".to_owned(),
+                    }
+                };
+                state
+                    .provider_runtime
+                    .resolve_tool_call(&operation.adapter, call.call_id, result)
+                    .await
+                    .map_err(|_| ApiError::internal())?;
             }
             ProviderEvent::Usage { usage } => {
                 if !operation.group {

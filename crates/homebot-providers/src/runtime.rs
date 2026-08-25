@@ -2,7 +2,8 @@
 
 use crate::{
     ApprovalDecision, CompactRequest, ProviderAdapter, ProviderAdapterId, ProviderDescriptor,
-    ProviderError, ProviderHealth, ProviderModel, ProviderRun, ResumeRequest, StartRequest,
+    ProviderError, ProviderHealth, ProviderModel, ProviderRun, ProviderToolResult, ResumeRequest,
+    StartRequest,
 };
 use std::{collections::HashMap, sync::Arc};
 use tokio::sync::RwLock;
@@ -208,6 +209,24 @@ impl ProviderRuntime {
         self.adapter(adapter_id)
             .await?
             .resolve_approval(approval_id, decision)
+            .await
+            .map_err(ProviderRuntimeError::Provider)
+    }
+
+    /// Returns a client-executed tool result to the provider turn that requested it.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the adapter is unknown or the tool call is no longer pending.
+    pub async fn resolve_tool_call(
+        &self,
+        adapter_id: &ProviderAdapterId,
+        call_id: String,
+        result: ProviderToolResult,
+    ) -> Result<(), ProviderRuntimeError> {
+        self.adapter(adapter_id)
+            .await?
+            .resolve_tool_call(call_id, result)
             .await
             .map_err(ProviderRuntimeError::Provider)
     }

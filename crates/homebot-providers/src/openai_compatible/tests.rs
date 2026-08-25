@@ -94,6 +94,7 @@ async fn responses_profile_resolves_secret_at_request_time_and_streams()
             working_directory: None,
             mode: ExecutionMode::Normal,
             attachments: Vec::new(),
+            tools: Vec::new(),
         })
         .await?;
     assert!(
@@ -164,6 +165,7 @@ async fn cancellation_stops_an_openai_compatible_stream() -> Result<(), Box<dyn 
             working_directory: None,
             mode: ExecutionMode::Normal,
             attachments: Vec::new(),
+            tools: Vec::new(),
         })
         .await?;
     assert!(matches!(

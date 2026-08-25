@@ -8,7 +8,7 @@ The server sends the Bot's name, role and responsibility to the configured provi
 
 A group message starts every explicitly mentioned Bot, bounded by the group's persisted turn and parallel-operation limits. With no mentions, it starts the current owner. Each provider operation has its own persisted Bot-authored message and visible participant status; stopping the group cancels every active group operation.
 
-An ownership handoff can reference a persisted group message. HomeBot sends that message, the sender's name and the handoff reason to the receiving Bot, then starts an independent provider turn. This is currently an authenticated HomeBot action: providers do not yet have a built-in collaboration tool with which to initiate their own messages or handoffs.
+An ownership handoff can reference a persisted group message. HomeBot sends that message, the sender's name and the handoff reason to the receiving Bot, then starts an independent provider turn. In Codex-backed group turns, HomeBot also supplies a scoped `homebot_handoff` tool whose recipient choices are the other persisted participants. A running Bot can call it after writing its findings; HomeBot validates the recipient and group limits, persists the visible handoff, starts the recipient independently, and returns the outcome to the original turn. Other providers do not yet expose this dynamic-tool bridge.
 
 ## Lifecycle and validation
 

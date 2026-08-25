@@ -7,7 +7,7 @@ use axum::{
 };
 use homebot_domain::chat::{
     GroupBotStatus as DomainBotStatus, GroupChat, GroupParticipant,
-    GroupParticipantRole as DomainRole, OwnershipHandoff,
+    GroupParticipantRole as DomainRole, MessagePart as DomainMessagePart, OwnershipHandoff,
 };
 use homebot_protocol::{
     AddGroupParticipantRequest, BotMutationRequest, CreateGroupChatRequest,
@@ -189,6 +189,47 @@ pub(super) async fn send_message(
         .await?,
         IdempotencyClaim::Replayed { .. }
     );
+    let group = state
+        .storage
+        .get_group_chat(state.owner_id, chat_id)
+        .await?;
+    let mut target_bot_ids = if request.mentioned_bot_ids.is_empty() {
+        vec![group.ownership_bot_id]
+    } else {
+        Vec::with_capacity(request.mentioned_bot_ids.len())
+    };
+    for bot_id in &request.mentioned_bot_ids {
+        if !target_bot_ids.contains(bot_id) {
+            target_bot_ids.push(*bot_id);
+        }
+    }
+    let requested_turns = u32::try_from(target_bot_ids.len()).unwrap_or(u32::MAX);
+    let participants = state
+        .storage
+        .group_participants(state.owner_id, chat_id)
+        .await?;
+    let running = u32::try_from(
+        participants
+            .iter()
+            .filter(|participant| participant.status == DomainBotStatus::Running)
+            .count(),
+    )
+    .unwrap_or(u32::MAX);
+    let target_running = participants.iter().any(|participant| {
+        target_bot_ids.contains(&participant.bot_id)
+            && participant.status == DomainBotStatus::Running
+    });
+    if !replayed
+        && (group.stop_requested
+            || target_running
+            || running.saturating_add(requested_turns) > group.max_parallel_bots
+            || requested_turns
+                > group
+                    .coordination_max_turns
+                    .saturating_sub(group.coordination_turns_used))
+    {
+        return Err(homebot_storage::StorageError::CoordinationLimitReached.into());
+    }
     let message = if replayed {
         state
             .storage
@@ -220,10 +261,20 @@ pub(super) async fn send_message(
             },
         )
         .await?;
+        for bot_id in target_bot_ids {
+            let _ = crate::provider_turn::start_group_if_configured(
+                &state,
+                chat_id,
+                bot_id,
+                &request.content,
+            )
+            .await?;
+        }
     }
     Ok(Json(message))
 }
 
+#[allow(clippy::too_many_lines)]
 pub(super) async fn handoff(
     State(state): State<AppState>,
     Path(chat_id): Path<Uuid>,
@@ -239,6 +290,30 @@ pub(super) async fn handoff(
         .await?,
         IdempotencyClaim::Replayed { .. }
     );
+    let should_start = if replayed {
+        false
+    } else {
+        let group = state
+            .storage
+            .get_group_chat(state.owner_id, chat_id)
+            .await?;
+        let participants = state
+            .storage
+            .group_participants(state.owner_id, chat_id)
+            .await?;
+        let running = participants
+            .iter()
+            .filter(|participant| participant.status == DomainBotStatus::Running)
+            .count();
+        let recipient_running = participants.iter().any(|participant| {
+            participant.bot_id == request.to_bot_id
+                && participant.status == DomainBotStatus::Running
+        });
+        !group.stop_requested
+            && group.coordination_turns_used < group.coordination_max_turns
+            && running < usize::try_from(group.max_parallel_bots).unwrap_or(usize::MAX)
+            && !recipient_running
+    };
     let handoff = if replayed {
         state
             .storage
@@ -284,6 +359,38 @@ pub(super) async fn handoff(
             },
         )
         .await?;
+        if should_start {
+            let from_bot = state
+                .storage
+                .get_bot(state.owner_id, request.from_bot_id)
+                .await?;
+            let shared_message = if let Some(message_id) = request.message_id {
+                let message = state.storage.message(state.owner_id, message_id).await?;
+                message
+                    .parts
+                    .iter()
+                    .filter_map(|part| match part {
+                        DomainMessagePart::Text { text, .. }
+                        | DomainMessagePart::Notice { text, .. } => Some(text.as_str()),
+                        DomainMessagePart::Attachment { .. } => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            } else {
+                String::new()
+            };
+            let prompt = format!(
+                "<homebot_handoff>\nFrom: {}\nReason: {}\nShared message:\n{}\n</homebot_handoff>\n\nContinue the work from this handoff.",
+                from_bot.name, request.reason, shared_message
+            );
+            let _ = crate::provider_turn::start_group_if_configured(
+                &state,
+                chat_id,
+                request.to_bot_id,
+                &prompt,
+            )
+            .await?;
+        }
     }
     Ok(Json(handoff))
 }
@@ -472,6 +579,7 @@ pub(super) async fn stop(
             .get_group_chat(state.owner_id, chat_id)
             .await?
     } else {
+        crate::provider_turn::cancel_group(&state, chat_id).await?;
         state
             .storage
             .stop_group_chat(state.owner_id, chat_id, unix_time_ms())
@@ -503,7 +611,7 @@ pub(super) fn group_summary(group: GroupChat) -> GroupChatSummary {
     }
 }
 
-fn participant_summary(participant: &GroupParticipant) -> GroupParticipantSummary {
+pub(super) fn participant_summary(participant: &GroupParticipant) -> GroupParticipantSummary {
     GroupParticipantSummary {
         chat_id: participant.chat_id,
         bot_id: participant.bot_id,

@@ -4241,8 +4241,30 @@ impl Storage {
         message_id: Uuid,
         now_ms: i64,
     ) -> Result<ChatMessage, StorageError> {
-        let chat = self.get_direct_chat(owner_id, chat_id).await?;
-        if chat.bot_id != bot_id {
+        let chat: Option<(String, Option<String>)> =
+            sqlx::query_as("SELECT kind, direct_bot_id FROM chats WHERE id = ? AND owner_id = ?")
+                .bind(chat_id.to_string())
+                .bind(owner_id.to_string())
+                .fetch_optional(&self.pool)
+                .await?;
+        let Some((kind, direct_bot_id)) = chat else {
+            return Err(StorageError::ChatNotFound);
+        };
+        let allowed = if kind == "direct" {
+            direct_bot_id.as_deref() == Some(&bot_id.to_string())
+        } else if kind == "group" {
+            sqlx::query_scalar::<_, i64>(
+                "SELECT count(*) FROM chat_participants WHERE chat_id = ? AND bot_id = ?",
+            )
+            .bind(chat_id.to_string())
+            .bind(bot_id.to_string())
+            .fetch_one(&self.pool)
+            .await?
+                == 1
+        } else {
+            false
+        };
+        if !allowed {
             return Err(StorageError::BotNotFound);
         }
         let part = MessagePart::Text {
@@ -4308,33 +4330,26 @@ impl Storage {
         message_id: Uuid,
         delta: &str,
     ) -> Result<ChatMessage, StorageError> {
-        let mut transaction = self.pool.begin().await?;
-        let row = sqlx::query(
-            "SELECT p.id, p.content_json FROM message_parts p
-             JOIN messages m ON m.id = p.message_id
-             JOIN chats c ON c.id = m.chat_id
-             WHERE p.message_id = ? AND p.ordinal = 0 AND p.kind = 'text'
-               AND m.status = 'streaming' AND c.owner_id = ?",
+        let result = sqlx::query(
+            "UPDATE message_parts
+             SET content_json = json_set(
+                 content_json, '$.text', json_extract(content_json, '$.text') || ?
+             )
+             WHERE message_id = ? AND ordinal = 0 AND kind = 'text'
+               AND EXISTS (
+                   SELECT 1 FROM messages m JOIN chats c ON c.id = m.chat_id
+                   WHERE m.id = message_parts.message_id
+                     AND m.status = 'streaming' AND c.owner_id = ?
+               )",
         )
+        .bind(delta)
         .bind(message_id.to_string())
         .bind(owner_id.to_string())
-        .fetch_optional(&mut *transaction)
-        .await?
-        .ok_or(StorageError::MessageNotFound)?;
-        let mut part: MessagePart = serde_json::from_value(row.try_get("content_json")?)
-            .map_err(|error| json_error(&error))?;
-        let MessagePart::Text { text, .. } = &mut part else {
-            return Err(StorageError::Integrity(
-                "streaming message has a non-text primary part".to_owned(),
-            ));
-        };
-        text.push_str(delta);
-        sqlx::query("UPDATE message_parts SET content_json = ? WHERE id = ?")
-            .bind(serde_json::to_value(part).map_err(|error| json_error(&error))?)
-            .bind(row.try_get::<String, _>("id")?)
-            .execute(&mut *transaction)
-            .await?;
-        transaction.commit().await?;
+        .execute(&self.pool)
+        .await?;
+        if result.rows_affected() == 0 {
+            return Err(StorageError::MessageNotFound);
+        }
         self.message(owner_id, message_id).await
     }
 
@@ -5210,10 +5225,26 @@ impl Storage {
         .bind(&owner_id)
         .execute(&mut *transaction)
         .await?;
+        sqlx::query(
+            "UPDATE group_bot_states
+             SET status = 'failed', active_operation_id = NULL, updated_at_ms = ?
+             WHERE status = 'running' AND chat_id IN (
+                 SELECT id FROM chats WHERE owner_id = ? AND kind = 'group'
+             ) AND EXISTS (
+                 SELECT 1 FROM messages m
+                 WHERE m.chat_id = group_bot_states.chat_id
+                   AND m.author_bot_id = group_bot_states.bot_id
+                   AND m.status = 'streaming'
+             )",
+        )
+        .bind(now_ms)
+        .bind(&owner_id)
+        .execute(&mut *transaction)
+        .await?;
         let messages = sqlx::query(
             "UPDATE messages SET status = 'failed', error_json = ?, completed_at_ms = ?
              WHERE status = 'streaming' AND chat_id IN (
-                 SELECT id FROM chats WHERE owner_id = ? AND kind = 'direct'
+                 SELECT id FROM chats WHERE owner_id = ?
              )",
         )
         .bind(serde_json::json!({
@@ -5231,7 +5262,7 @@ impl Storage {
         .rows_affected();
         sqlx::query(
             "UPDATE chats SET running = 0, updated_at_ms = ?
-             WHERE owner_id = ? AND kind = 'direct' AND running = 1",
+             WHERE owner_id = ? AND running = 1",
         )
         .bind(now_ms)
         .bind(&owner_id)

@@ -2,7 +2,13 @@
 
 Bots are durable HomeBot identities. Their name, title, description, color, shape, permissions, unread state and attention state belong to HomeBot and survive server and client restarts. A provider profile is an advanced setting, not the Bot's identity.
 
-The server sends the Bot's name, role and responsibility to the configured provider on every direct-chat, queued, retried and routine turn. This keeps the identity current across provider switches, conversation resets and clients; desktop and Android only edit the server-owned fields. Applied Skills add task-specific instructions without replacing the Bot's standing responsibility.
+The server sends the Bot's name, role and responsibility to the configured provider on every direct-chat, group, queued, retried and routine turn. This keeps the identity current across provider switches, conversation resets and clients; desktop and Android only edit the server-owned fields. Applied Skills add task-specific instructions without replacing the Bot's standing responsibility.
+
+## Group execution
+
+A group message starts every explicitly mentioned Bot, bounded by the group's persisted turn and parallel-operation limits. With no mentions, it starts the current owner. Each provider operation has its own persisted Bot-authored message and visible participant status; stopping the group cancels every active group operation.
+
+An ownership handoff can reference a persisted group message. HomeBot sends that message, the sender's name and the handoff reason to the receiving Bot, then starts an independent provider turn. This is currently an authenticated HomeBot action: providers do not yet have a built-in collaboration tool with which to initiate their own messages or handoffs.
 
 ## Lifecycle and validation
 

@@ -3,7 +3,8 @@
 use homebot_domain::{
     Bot,
     chat::{
-        ActivityStatus, ApprovalStatus, ChatApproval, DirectChat, ExecutionActivity, MessageStatus,
+        ActivityStatus, ApprovalStatus, ChatApproval, DirectChat, ExecutionActivity,
+        GroupBotStatus, MessageStatus,
     },
 };
 use homebot_protocol::{
@@ -30,15 +31,36 @@ pub(super) fn start_if_configured<'a>(
     prompt: &'a str,
     attachment_ids: &'a [Uuid],
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<bool, ApiError>> + Send + 'a>> {
+    start(state, chat.id, chat.bot_id, prompt, attachment_ids, false)
+}
+
+pub(super) fn start_group_if_configured<'a>(
+    state: &'a AppState,
+    chat_id: Uuid,
+    bot_id: Uuid,
+    prompt: &'a str,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<bool, ApiError>> + Send + 'a>> {
+    start(state, chat_id, bot_id, prompt, &[], true)
+}
+
+#[allow(clippy::too_many_lines)]
+fn start<'a>(
+    state: &'a AppState,
+    chat_id: Uuid,
+    bot_id: Uuid,
+    prompt: &'a str,
+    attachment_ids: &'a [Uuid],
+    group: bool,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<bool, ApiError>> + Send + 'a>> {
     Box::pin(async move {
         let Some(route) = state
             .storage
-            .provider_route_for_bot(state.owner_id, chat.bot_id)
+            .provider_route_for_bot(state.owner_id, bot_id)
             .await?
         else {
             return Ok(false);
         };
-        let bot = state.storage.get_bot(state.owner_id, chat.bot_id).await?;
+        let bot = state.storage.get_bot(state.owner_id, bot_id).await?;
         let prompt = prompt_with_bot(&bot, prompt);
         let adapter_id =
             ProviderAdapterId::new(route.adapter_kind).map_err(|_| ApiError::internal())?;
@@ -47,17 +69,23 @@ pub(super) fn start_if_configured<'a>(
         let attachments = provider_attachments(state, attachment_ids).await?;
         let conversation = state
             .storage
-            .provider_conversation(chat.bot_id, chat.id, route.profile_id)
+            .provider_conversation(bot_id, chat_id, route.profile_id)
             .await?;
+        let operation = ChatOperation {
+            operation: operation_id,
+            chat: chat_id,
+            adapter: adapter_id.clone(),
+            profile: route.profile_id,
+            bot: bot_id,
+            message: message_id,
+            group,
+        };
+        if group {
+            prepare_group_turn(state, &operation).await?;
+        }
         let assistant = state
             .storage
-            .create_bot_message(
-                state.owner_id,
-                chat.id,
-                chat.bot_id,
-                message_id,
-                unix_time_ms(),
-            )
+            .create_bot_message(state.owner_id, chat_id, bot_id, message_id, unix_time_ms())
             .await?;
         publish(
             state,
@@ -67,16 +95,9 @@ pub(super) fn start_if_configured<'a>(
             },
         )
         .await?;
-        let operation = ChatOperation {
-            operation: operation_id,
-            adapter: adapter_id.clone(),
-            profile: route.profile_id,
-            bot: chat.bot_id,
-            message: message_id,
-        };
         if crate::checkpoints::capture_for_turn(
             state,
-            chat.id,
+            chat_id,
             message_id,
             route.profile_id,
             conversation.clone(),
@@ -87,17 +108,21 @@ pub(super) fn start_if_configured<'a>(
         {
             finish_failed_start(
                 state,
-                chat.id,
+                chat_id,
                 operation,
                 checkpoint_error("The coding workspace could not be checkpointed before this turn"),
             )
             .await?;
             return Ok(true);
         }
-        let mode = crate::working_context::summary(state, chat.id)
-            .await?
-            .map_or(InteractionMode::Default, |context| context.interaction_mode);
-        let working_directory = provider_working_directory(state, chat.id, chat.bot_id).await?;
+        let mode = if group {
+            InteractionMode::Default
+        } else {
+            crate::working_context::summary(state, chat_id)
+                .await?
+                .map_or(InteractionMode::Default, |context| context.interaction_mode)
+        };
+        let working_directory = provider_working_directory(state, chat_id, bot_id).await?;
         let result = if let Some(conversation_id) = conversation {
             state
                 .provider_runtime
@@ -121,8 +146,8 @@ pub(super) fn start_if_configured<'a>(
                     &adapter_id,
                     StartRequest {
                         operation_id,
-                        bot_id: chat.bot_id,
-                        chat_id: chat.id,
+                        bot_id,
+                        chat_id,
                         prompt,
                         model: route.model.clone(),
                         working_directory,
@@ -135,7 +160,7 @@ pub(super) fn start_if_configured<'a>(
         let run = match result {
             Ok(run) => run,
             Err(error) => {
-                finish_failed_start(state, chat.id, operation, provider_error(&error)).await?;
+                finish_failed_start(state, chat_id, operation, provider_error(&error)).await?;
                 return Ok(true);
             }
         };
@@ -143,11 +168,18 @@ pub(super) fn start_if_configured<'a>(
             .chat_operations
             .lock()
             .await
-            .insert(chat.id, operation);
+            .insert(operation_id, operation.clone());
         let state = state.clone();
-        let chat_id = chat.id;
         tokio::spawn(async move {
-            if consume(state.clone(), chat_id, run).await.is_err() {
+            if consume(state.clone(), operation.clone(), run)
+                .await
+                .is_err()
+                && state
+                    .chat_operations
+                    .lock()
+                    .await
+                    .contains_key(&operation_id)
+            {
                 let error = ErrorEnvelope {
                     code: ErrorCode::Internal,
                     message: "The Bot turn ended unexpectedly".to_owned(),
@@ -156,21 +188,71 @@ pub(super) fn start_if_configured<'a>(
                     retry_after_ms: None,
                     details: None,
                 };
-                let operation = state.chat_operations.lock().await.get(&chat_id).cloned();
-                if let Some(operation) = operation {
-                    let _ = finish(
-                        &state,
-                        chat_id,
-                        operation,
-                        MessageStatus::Failed,
-                        Some(error),
-                    )
-                    .await;
-                }
+                let _ = finish(
+                    &state,
+                    chat_id,
+                    operation,
+                    MessageStatus::Failed,
+                    Some(error),
+                )
+                .await;
             }
         });
         Ok(true)
     })
+}
+
+async fn prepare_group_turn(state: &AppState, operation: &ChatOperation) -> Result<(), ApiError> {
+    let now = unix_time_ms();
+    let participant = state
+        .storage
+        .set_group_bot_status(
+            state.owner_id,
+            operation.chat,
+            operation.bot,
+            GroupBotStatus::Running,
+            Some(operation.operation),
+            now,
+        )
+        .await?;
+    let group = match state
+        .storage
+        .record_group_coordination_turn(state.owner_id, operation.chat, now)
+        .await
+    {
+        Ok(group) => group,
+        Err(error) => {
+            let _ = state
+                .storage
+                .set_group_bot_status(
+                    state.owner_id,
+                    operation.chat,
+                    operation.bot,
+                    GroupBotStatus::Idle,
+                    None,
+                    now,
+                )
+                .await;
+            return Err(error.into());
+        }
+    };
+    publish(
+        state,
+        "group_participant_changed",
+        ServerEventBody::GroupParticipantChanged {
+            participant: crate::groups::participant_summary(&participant),
+        },
+    )
+    .await?;
+    publish(
+        state,
+        "group_chat_changed",
+        ServerEventBody::GroupChatChanged {
+            group: crate::groups::group_summary(group),
+        },
+    )
+    .await?;
+    Ok(())
 }
 
 async fn provider_working_directory(
@@ -217,8 +299,33 @@ fn prompt_with_bot(bot: &Bot, prompt: &str) -> String {
 }
 
 pub(super) async fn cancel(state: &AppState, chat_id: Uuid) -> Result<(), ApiError> {
-    let operation = state.chat_operations.lock().await.get(&chat_id).cloned();
+    let operation = state
+        .chat_operations
+        .lock()
+        .await
+        .values()
+        .find(|operation| operation.chat == chat_id)
+        .cloned();
     if let Some(operation) = operation {
+        state
+            .provider_runtime
+            .cancel(operation.operation)
+            .await
+            .map_err(|_| ApiError::internal())?;
+    }
+    Ok(())
+}
+
+pub(super) async fn cancel_group(state: &AppState, chat_id: Uuid) -> Result<(), ApiError> {
+    let operations = state
+        .chat_operations
+        .lock()
+        .await
+        .values()
+        .filter(|operation| operation.chat == chat_id)
+        .cloned()
+        .collect::<Vec<_>>();
+    for operation in operations {
         state
             .provider_runtime
             .cancel(operation.operation)
@@ -287,15 +394,13 @@ pub(super) async fn resolve_approval(
 }
 
 #[allow(clippy::too_many_lines)]
-async fn consume(state: AppState, chat_id: Uuid, mut run: ProviderRun) -> Result<(), ApiError> {
+async fn consume(
+    state: AppState,
+    operation: ChatOperation,
+    mut run: ProviderRun,
+) -> Result<(), ApiError> {
+    let chat_id = operation.chat;
     while let Some(event) = run.events.recv().await {
-        let operation = state
-            .chat_operations
-            .lock()
-            .await
-            .get(&chat_id)
-            .cloned()
-            .ok_or_else(ApiError::internal)?;
         match event {
             ProviderEvent::ConversationStarted { conversation_id }
             | ProviderEvent::Compacted { conversation_id } => {
@@ -387,23 +492,25 @@ async fn consume(state: AppState, chat_id: Uuid, mut run: ProviderRun) -> Result
                 .await?;
             }
             ProviderEvent::Usage { usage } => {
-                state
-                    .storage
-                    .update_working_context_usage(
-                        state.owner_id,
-                        chat_id,
-                        usage.input_tokens.saturating_add(usage.output_tokens),
-                        None,
-                        unix_time_ms(),
-                    )
-                    .await?;
-                if let Some(context) = crate::working_context::summary(&state, chat_id).await? {
-                    publish(
-                        &state,
-                        "working_context_changed",
-                        ServerEventBody::WorkingContextChanged { context },
-                    )
-                    .await?;
+                if !operation.group {
+                    state
+                        .storage
+                        .update_working_context_usage(
+                            state.owner_id,
+                            chat_id,
+                            usage.input_tokens.saturating_add(usage.output_tokens),
+                            None,
+                            unix_time_ms(),
+                        )
+                        .await?;
+                    if let Some(context) = crate::working_context::summary(&state, chat_id).await? {
+                        publish(
+                            &state,
+                            "working_context_changed",
+                            ServerEventBody::WorkingContextChanged { context },
+                        )
+                        .await?;
+                    }
                 }
             }
             ProviderEvent::Completed => {
@@ -431,6 +538,7 @@ async fn consume(state: AppState, chat_id: Uuid, mut run: ProviderRun) -> Result
     Err(ApiError::internal())
 }
 
+#[allow(clippy::too_many_lines)]
 async fn finish(
     state: &AppState,
     chat_id: Uuid,
@@ -475,16 +583,12 @@ async fn finish(
             now,
         )
         .await?;
-    if matches!(status, MessageStatus::Completed | MessageStatus::Failed) {
+    if !operation.group && matches!(status, MessageStatus::Completed | MessageStatus::Failed) {
         let _ = state
             .storage
             .increment_chat_unread(state.owner_id, chat_id, now)
             .await?;
     }
-    let chat = state
-        .storage
-        .set_chat_running(state.owner_id, chat_id, false, now)
-        .await?;
     publish(
         state,
         "message_changed",
@@ -493,14 +597,50 @@ async fn finish(
         },
     )
     .await?;
-    publish(
-        state,
-        "chat_changed",
-        ServerEventBody::ChatChanged {
-            chat: crate::chats::chat_summary(chat),
-        },
-    )
-    .await?;
+    if operation.group {
+        let group = state
+            .storage
+            .get_group_chat(state.owner_id, chat_id)
+            .await?;
+        let participant = state
+            .storage
+            .set_group_bot_status(
+                state.owner_id,
+                chat_id,
+                operation.bot,
+                if group.stop_requested || status == MessageStatus::Cancelled {
+                    GroupBotStatus::Stopped
+                } else if status == MessageStatus::Completed {
+                    GroupBotStatus::Completed
+                } else {
+                    GroupBotStatus::Failed
+                },
+                None,
+                now,
+            )
+            .await?;
+        publish(
+            state,
+            "group_participant_changed",
+            ServerEventBody::GroupParticipantChanged {
+                participant: crate::groups::participant_summary(&participant),
+            },
+        )
+        .await?;
+    } else {
+        let chat = state
+            .storage
+            .set_chat_running(state.owner_id, chat_id, false, now)
+            .await?;
+        publish(
+            state,
+            "chat_changed",
+            ServerEventBody::ChatChanged {
+                chat: crate::chats::chat_summary(chat),
+            },
+        )
+        .await?;
+    }
     if matches!(status, MessageStatus::Completed | MessageStatus::Failed) {
         let bot = state.storage.get_bot(state.owner_id, operation.bot).await?;
         publish(
@@ -513,8 +653,12 @@ async fn finish(
         .await?;
     }
     state.provider_runtime.finish(operation.operation).await;
-    state.chat_operations.lock().await.remove(&chat_id);
-    if status == MessageStatus::Completed {
+    state
+        .chat_operations
+        .lock()
+        .await
+        .remove(&operation.operation);
+    if !operation.group && status == MessageStatus::Completed {
         start_next_queued(state, chat_id).await?;
     }
     Ok(())

@@ -16,7 +16,9 @@ use homebot_protocol::{
     OwnershipHandoffSummary, RenameGroupChatRequest, SendGroupMessageRequest, ServerEventBody,
     UpdateGroupParticipantRequest,
 };
+use homebot_providers::{ProviderTool, ProviderToolCall, ProviderToolResult};
 use homebot_storage::IdempotencyClaim;
+use serde_json::json;
 use uuid::Uuid;
 
 use crate::{
@@ -25,6 +27,172 @@ use crate::{
     chats::{message_summary, publish, storage_references},
     unix_time_ms,
 };
+
+const HANDOFF_TOOL: &str = "homebot_handoff";
+
+pub(super) async fn provider_tools(
+    state: &AppState,
+    chat_id: Uuid,
+    from_bot_id: Uuid,
+) -> Result<Vec<ProviderTool>, ApiError> {
+    let participants = state
+        .storage
+        .group_participants(state.owner_id, chat_id)
+        .await?;
+    let mut recipients = Vec::new();
+    for participant in participants {
+        if participant.bot_id != from_bot_id {
+            let bot = state
+                .storage
+                .get_bot(state.owner_id, participant.bot_id)
+                .await?;
+            recipients.push(json!({
+                "const": participant.bot_id.to_string(),
+                "title": bot.name,
+            }));
+        }
+    }
+    if recipients.is_empty() {
+        return Ok(Vec::new());
+    }
+    Ok(vec![ProviderTool {
+        name: HANDOFF_TOOL.to_owned(),
+        description: "Hand your current findings or work to another Bot in this group. Write the useful findings in your response before calling this tool; HomeBot persists that message, starts the recipient independently, and shows the handoff to the user.".to_owned(),
+        input_schema: json!({
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+                "to_bot_id": {
+                    "type": "string",
+                    "oneOf": recipients,
+                    "description": "The HomeBot teammate that should continue this work"
+                },
+                "reason": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 1000,
+                    "description": "What the recipient should do with your findings"
+                }
+            },
+            "required": ["to_bot_id", "reason"]
+        }),
+    }])
+}
+
+pub(super) async fn handle_provider_tool(
+    state: &AppState,
+    chat_id: Uuid,
+    from_bot_id: Uuid,
+    message_id: Uuid,
+    call: &ProviderToolCall,
+) -> ProviderToolResult {
+    let result = provider_handoff(state, chat_id, from_bot_id, message_id, call).await;
+    match result {
+        Ok(content) => ProviderToolResult {
+            success: true,
+            content,
+        },
+        Err(error) => ProviderToolResult {
+            success: false,
+            content: error,
+        },
+    }
+}
+
+async fn provider_handoff(
+    state: &AppState,
+    chat_id: Uuid,
+    from_bot_id: Uuid,
+    message_id: Uuid,
+    call: &ProviderToolCall,
+) -> Result<String, String> {
+    if call.name != HANDOFF_TOOL {
+        return Err("HomeBot does not recognize this collaboration tool".to_owned());
+    }
+    let to_bot_id = call
+        .arguments
+        .get("to_bot_id")
+        .and_then(serde_json::Value::as_str)
+        .and_then(|value| Uuid::parse_str(value).ok())
+        .ok_or_else(|| "Choose a valid Bot from the handoff tool options".to_owned())?;
+    let reason = call
+        .arguments
+        .get("reason")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty() && value.len() <= 1000)
+        .ok_or_else(|| "Explain the handoff in 1 to 1000 characters".to_owned())?;
+    let group = state
+        .storage
+        .get_group_chat(state.owner_id, chat_id)
+        .await
+        .map_err(|_| "This group chat is no longer available".to_owned())?;
+    let participants = state
+        .storage
+        .group_participants(state.owner_id, chat_id)
+        .await
+        .map_err(|_| "HomeBot could not read the group participants".to_owned())?;
+    if to_bot_id == from_bot_id
+        || !participants
+            .iter()
+            .any(|participant| participant.bot_id == from_bot_id)
+        || !participants
+            .iter()
+            .any(|participant| participant.bot_id == to_bot_id)
+    {
+        return Err("The handoff recipient must be another Bot in this group".to_owned());
+    }
+    let running = participants
+        .iter()
+        .filter(|participant| participant.status == DomainBotStatus::Running)
+        .count();
+    let recipient_running = participants.iter().any(|participant| {
+        participant.bot_id == to_bot_id && participant.status == DomainBotStatus::Running
+    });
+    if group.stop_requested
+        || group.coordination_turns_used >= group.coordination_max_turns
+        || running >= usize::try_from(group.max_parallel_bots).unwrap_or(usize::MAX)
+        || recipient_running
+    {
+        return Err("The handoff cannot start now because the group is stopped, busy, or out of coordination turns".to_owned());
+    }
+    let handoff = state
+        .storage
+        .handoff_group_ownership(
+            state.owner_id,
+            chat_id,
+            Uuid::now_v7(),
+            from_bot_id,
+            to_bot_id,
+            Some(message_id),
+            reason,
+            unix_time_ms(),
+        )
+        .await
+        .map_err(|_| "HomeBot could not persist the handoff".to_owned())?;
+    publish_recorded_handoff(state, &handoff)
+        .await
+        .map_err(|_| "HomeBot persisted the handoff but could not publish it".to_owned())?;
+    start_handoff_turn(
+        state,
+        chat_id,
+        from_bot_id,
+        to_bot_id,
+        Some(message_id),
+        reason,
+    )
+    .await
+    .map_err(|_| "HomeBot persisted the handoff but could not start the recipient".to_owned())?;
+    let recipient = state
+        .storage
+        .get_bot(state.owner_id, to_bot_id)
+        .await
+        .map_err(|_| "The receiving Bot is no longer available".to_owned())?;
+    Ok(format!(
+        "Handoff recorded. {} is now working on it.",
+        recipient.name
+    ))
+}
 
 pub(super) async fn create(
     State(state): State<AppState>,
@@ -337,62 +505,81 @@ pub(super) async fn handoff(
             )
             .await?
     };
-    let handoff = handoff_summary(handoff);
     if !replayed {
-        publish(
-            &state,
-            "group_handoff_recorded",
-            ServerEventBody::GroupHandoffRecorded {
-                handoff: handoff.clone(),
-            },
-        )
-        .await?;
-        let group = state
-            .storage
-            .get_group_chat(state.owner_id, chat_id)
-            .await?;
-        publish(
-            &state,
-            "group_chat_changed",
-            ServerEventBody::GroupChatChanged {
-                group: group_summary(group),
-            },
-        )
-        .await?;
+        publish_recorded_handoff(&state, &handoff).await?;
         if should_start {
-            let from_bot = state
-                .storage
-                .get_bot(state.owner_id, request.from_bot_id)
-                .await?;
-            let shared_message = if let Some(message_id) = request.message_id {
-                let message = state.storage.message(state.owner_id, message_id).await?;
-                message
-                    .parts
-                    .iter()
-                    .filter_map(|part| match part {
-                        DomainMessagePart::Text { text, .. }
-                        | DomainMessagePart::Notice { text, .. } => Some(text.as_str()),
-                        DomainMessagePart::Attachment { .. } => None,
-                    })
-                    .collect::<Vec<_>>()
-                    .join("\n")
-            } else {
-                String::new()
-            };
-            let prompt = format!(
-                "<homebot_handoff>\nFrom: {}\nReason: {}\nShared message:\n{}\n</homebot_handoff>\n\nContinue the work from this handoff.",
-                from_bot.name, request.reason, shared_message
-            );
-            let _ = crate::provider_turn::start_group_if_configured(
+            start_handoff_turn(
                 &state,
                 chat_id,
+                request.from_bot_id,
                 request.to_bot_id,
-                &prompt,
+                request.message_id,
+                &request.reason,
             )
             .await?;
         }
     }
-    Ok(Json(handoff))
+    Ok(Json(handoff_summary(handoff)))
+}
+
+async fn publish_recorded_handoff(
+    state: &AppState,
+    handoff: &OwnershipHandoff,
+) -> Result<(), ApiError> {
+    publish(
+        state,
+        "group_handoff_recorded",
+        ServerEventBody::GroupHandoffRecorded {
+            handoff: handoff_summary(handoff.clone()),
+        },
+    )
+    .await?;
+    let group = state
+        .storage
+        .get_group_chat(state.owner_id, handoff.chat_id)
+        .await?;
+    publish(
+        state,
+        "group_chat_changed",
+        ServerEventBody::GroupChatChanged {
+            group: group_summary(group),
+        },
+    )
+    .await
+}
+
+async fn start_handoff_turn(
+    state: &AppState,
+    chat_id: Uuid,
+    from_bot_id: Uuid,
+    to_bot_id: Uuid,
+    message_id: Option<Uuid>,
+    reason: &str,
+) -> Result<(), ApiError> {
+    let from_bot = state.storage.get_bot(state.owner_id, from_bot_id).await?;
+    let shared_message = if let Some(message_id) = message_id {
+        let message = state.storage.message(state.owner_id, message_id).await?;
+        message
+            .parts
+            .iter()
+            .filter_map(|part| match part {
+                DomainMessagePart::Text { text, .. } | DomainMessagePart::Notice { text, .. } => {
+                    Some(text.as_str())
+                }
+                DomainMessagePart::Attachment { .. } => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    } else {
+        String::new()
+    };
+    let prompt = format!(
+        "<homebot_handoff>\nFrom: {}\nReason: {}\nShared message:\n{}\n</homebot_handoff>\n\nContinue the work from this handoff.",
+        from_bot.name, reason, shared_message
+    );
+    let _ =
+        crate::provider_turn::start_group_if_configured(state, chat_id, to_bot_id, &prompt).await?;
+    Ok(())
 }
 
 pub(super) async fn update_participant(

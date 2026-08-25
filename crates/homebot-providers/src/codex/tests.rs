@@ -1,5 +1,5 @@
 use super::*;
-use crate::ActivityKind;
+use crate::{ActivityKind, ProviderTool};
 
 #[test]
 fn fixture_notifications_normalize_without_native_payloads()
@@ -102,8 +102,8 @@ async fn smoke_test_skips_explicitly_when_codex_is_not_installed()
 
 #[cfg(unix)]
 #[tokio::test]
-async fn app_server_fixture_streams_and_resolves_approval() -> Result<(), Box<dyn std::error::Error>>
-{
+async fn app_server_fixture_streams_and_resolves_dynamic_tool()
+-> Result<(), Box<dyn std::error::Error>> {
     use std::os::unix::fs::PermissionsExt;
 
     let directory = tempfile::tempdir()?;
@@ -122,7 +122,7 @@ while IFS= read -r line; do
       ;;
     *'"method":"thread/start"'*)
       case "$line" in
-        *'"approvalPolicy":"untrusted"'*'"cwd":"/workspace/chat"'*'"sandbox":"read-only"'*) ;;
+        *'"approvalPolicy":"untrusted"'*'"cwd":"/workspace/chat"'*'"dynamicTools"'*'"name":"homebot_handoff"'*'"sandbox":"read-only"'*) ;;
         *) exit 2 ;;
       esac
       printf '%s\n' '{"id":2,"result":{"thread":{"id":"thr_fixture"},"model":"fixture-model"}}'
@@ -133,9 +133,9 @@ while IFS= read -r line; do
         *) exit 2 ;;
       esac
       printf '%s\n' '{"id":3,"result":{"turn":{"id":"turn_fixture","status":"inProgress","items":[],"error":null}}}'
-      printf '%s\n' '{"method":"item/commandExecution/requestApproval","id":900,"params":{"threadId":"thr_fixture","turnId":"turn_fixture","itemId":"item_fixture","command":["cargo","test"],"cwd":"/workspace","reason":"Run tests"}}'
+      printf '%s\n' '{"method":"item/tool/call","id":900,"params":{"threadId":"thr_fixture","turnId":"turn_fixture","callId":"call_fixture","namespace":null,"tool":"homebot_handoff","arguments":{"to_bot_id":"00000000-0000-0000-0000-000000000001","reason":"Please review"}}}'
       ;;
-    *'"decision":"accept"'*)
+    *'"success":true'*)
       printf '%s\n' '{"method":"item/agentMessage/delta","params":{"threadId":"thr_fixture","turnId":"turn_fixture","itemId":"message_fixture","delta":"Tests passed"}}'
       printf '%s\n' '{"method":"turn/completed","params":{"threadId":"thr_fixture","turn":{"id":"turn_fixture","status":"completed","items":[],"error":null}}}'
       exit 0
@@ -163,6 +163,11 @@ done
             working_directory: Some("/workspace/chat".into()),
             mode: ExecutionMode::Normal,
             attachments: Vec::new(),
+            tools: vec![ProviderTool {
+                name: "homebot_handoff".to_owned(),
+                description: "Hand work to another Bot".to_owned(),
+                input_schema: json!({"type": "object"}),
+            }],
         })
         .await?;
     assert_eq!(
@@ -171,12 +176,22 @@ done
             conversation_id: "thr_fixture".to_owned()
         })
     );
-    let approval_id = match run.events.recv().await {
-        Some(ProviderEvent::ApprovalRequired { approval }) => approval.approval_id,
-        event => return Err(format!("expected approval, got {event:?}").into()),
+    let call_id = match run.events.recv().await {
+        Some(ProviderEvent::ToolCall { call }) => {
+            assert_eq!(call.name, "homebot_handoff");
+            assert_eq!(call.arguments["reason"], "Please review");
+            call.call_id
+        }
+        event => return Err(format!("expected tool call, got {event:?}").into()),
     };
     adapter
-        .resolve_approval(approval_id, ApprovalDecision::AllowOnce)
+        .resolve_tool_call(
+            call_id,
+            ProviderToolResult {
+                success: true,
+                content: "Handed off to Reviewer".to_owned(),
+            },
+        )
         .await?;
     assert_eq!(
         run.events.recv().await,
@@ -249,6 +264,7 @@ done
             working_directory: Some("/workspace/chat".into()),
             mode: ExecutionMode::Plan,
             attachments: Vec::new(),
+            tools: Vec::new(),
         })
         .await?;
     assert!(matches!(

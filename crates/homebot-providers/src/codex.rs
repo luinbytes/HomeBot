@@ -7,7 +7,8 @@ use crate::{
     ApprovalDecision, CompactRequest, ExecutionMode, ProcessSpec, ProviderAdapter,
     ProviderAdapterId, ProviderApproval, ProviderAvailability, ProviderCapabilities,
     ProviderCapability, ProviderDescriptor, ProviderError, ProviderErrorCode, ProviderEvent,
-    ProviderHealth, ProviderModel, ProviderRun, ResumeRequest, StartRequest, SupervisedProcess,
+    ProviderHealth, ProviderModel, ProviderRun, ProviderToolCall, ProviderToolResult,
+    ResumeRequest, StartRequest, SupervisedProcess,
     supervisor::{BoundedLine, read_bounded_line},
 };
 use serde_json::{Value, json};
@@ -180,6 +181,7 @@ impl ProviderAdapter for CodexAdapter {
                     ProviderCapability::Usage,
                     ProviderCapability::Compaction,
                     ProviderCapability::PlanMode,
+                    ProviderCapability::DynamicTools,
                 ]
                 .into_iter()
                 .collect(),
@@ -289,6 +291,7 @@ impl ProviderAdapter for CodexAdapter {
         {
             params["cwd"] = Value::String(cwd.to_string_lossy().into_owned());
         }
+        params["dynamicTools"] = dynamic_tools(&request.tools);
         let result = client.request("thread/start", params).await?;
         let conversation_id = string_at(&result, &["thread", "id"])
             .ok_or_else(|| protocol_error("thread/start omitted thread.id"))?;
@@ -318,6 +321,7 @@ impl ProviderAdapter for CodexAdapter {
         {
             params["cwd"] = Value::String(cwd.to_string_lossy().into_owned());
         }
+        params["dynamicTools"] = dynamic_tools(&request.tools);
         let result = self
             .client()
             .await?
@@ -358,6 +362,17 @@ impl ProviderAdapter for CodexAdapter {
             .await
     }
 
+    async fn resolve_tool_call(
+        &self,
+        call_id: String,
+        result: ProviderToolResult,
+    ) -> Result<(), ProviderError> {
+        self.client()
+            .await?
+            .resolve_tool_call(call_id, result)
+            .await
+    }
+
     async fn compact(&self, request: CompactRequest) -> Result<(), ProviderError> {
         self.client()
             .await?
@@ -388,12 +403,18 @@ struct PendingApproval {
     thread_id: String,
 }
 
+struct PendingToolCall {
+    request_id: Value,
+    thread_id: String,
+}
+
 struct CodexClient {
     writer: Mutex<ChildStdin>,
     next_request_id: AtomicU64,
     pending: Mutex<HashMap<u64, oneshot::Sender<Result<Value, ProviderError>>>>,
     routes: Mutex<HashMap<Uuid, Route>>,
     approvals: Mutex<HashMap<Uuid, PendingApproval>>,
+    tool_calls: Mutex<HashMap<String, PendingToolCall>>,
     alive: AtomicBool,
 }
 
@@ -428,6 +449,7 @@ impl CodexClient {
             pending: Mutex::new(HashMap::new()),
             routes: Mutex::new(HashMap::new()),
             approvals: Mutex::new(HashMap::new()),
+            tool_calls: Mutex::new(HashMap::new()),
             alive: AtomicBool::new(true),
         });
         let reader_client = Arc::clone(&client);
@@ -615,6 +637,10 @@ impl CodexClient {
                 .lock()
                 .await
                 .retain(|_, approval| request_id != Some(&approval.request_id));
+            self.tool_calls
+                .lock()
+                .await
+                .retain(|_, call| request_id != Some(&call.request_id));
             return Ok(());
         }
         if terminal {
@@ -624,6 +650,10 @@ impl CodexClient {
                     .lock()
                     .await
                     .retain(|_, approval| approval.thread_id != thread_id);
+                self.tool_calls
+                    .lock()
+                    .await
+                    .retain(|_, call| call.thread_id != thread_id);
             }
         }
         Ok(())
@@ -637,7 +667,9 @@ impl CodexClient {
     ) -> Result<(), ProviderError> {
         if !matches!(
             method,
-            "item/commandExecution/requestApproval" | "item/fileChange/requestApproval"
+            "item/commandExecution/requestApproval"
+                | "item/fileChange/requestApproval"
+                | "item/tool/call"
         ) {
             return self
                 .write_message(&json!({
@@ -660,6 +692,29 @@ impl CodexClient {
                 .write_message(&json!({"id": request_id, "result": {"decision": "decline"}}))
                 .await;
         };
+        if method == "item/tool/call" {
+            let call_id = string_at(params, &["callId"])
+                .ok_or_else(|| protocol_error("Codex tool call omitted callId"))?;
+            let name = string_at(params, &["tool"])
+                .ok_or_else(|| protocol_error("Codex tool call omitted tool"))?;
+            self.tool_calls.lock().await.insert(
+                call_id.clone(),
+                PendingToolCall {
+                    request_id,
+                    thread_id,
+                },
+            );
+            return events
+                .send(ProviderEvent::ToolCall {
+                    call: ProviderToolCall {
+                        call_id,
+                        name,
+                        arguments: params.get("arguments").cloned().unwrap_or(Value::Null),
+                    },
+                })
+                .await
+                .map_err(|_| unavailable("HomeBot stopped receiving Codex tool calls"));
+        }
         let approval_id = Uuid::now_v7();
         self.approvals.lock().await.insert(
             approval_id,
@@ -779,6 +834,27 @@ impl CodexClient {
         .await
     }
 
+    async fn resolve_tool_call(
+        &self,
+        call_id: String,
+        result: ProviderToolResult,
+    ) -> Result<(), ProviderError> {
+        let pending = self
+            .tool_calls
+            .lock()
+            .await
+            .remove(&call_id)
+            .ok_or_else(|| invalid_request("Codex tool call is no longer pending"))?;
+        self.write_message(&json!({
+            "id": pending.request_id,
+            "result": {
+                "contentItems": [{"type": "inputText", "text": result.content}],
+                "success": result.success
+            }
+        }))
+        .await
+    }
+
     async fn fail_all(&self, error: ProviderError) {
         if !self.alive.swap(false, Ordering::AcqRel) {
             return;
@@ -802,7 +878,24 @@ impl CodexClient {
                 .await;
         }
         self.approvals.lock().await.clear();
+        self.tool_calls.lock().await.clear();
     }
+}
+
+fn dynamic_tools(tools: &[crate::ProviderTool]) -> Value {
+    Value::Array(
+        tools
+            .iter()
+            .map(|tool| {
+                json!({
+                    "type": "function",
+                    "name": tool.name,
+                    "description": tool.description,
+                    "inputSchema": tool.input_schema,
+                })
+            })
+            .collect(),
+    )
 }
 
 fn resolve_binary(profile: &CodexProfile) -> Option<PathBuf> {

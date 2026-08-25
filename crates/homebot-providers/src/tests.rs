@@ -172,6 +172,7 @@ fn start_request(operation_id: Uuid) -> StartRequest {
         working_directory: None,
         mode: ExecutionMode::Normal,
         attachments: Vec::new(),
+        tools: Vec::new(),
     }
 }
 
@@ -251,6 +252,7 @@ async fn runtime_rejects_duplicate_active_ids_and_allows_reuse_after_finish()
                 working_directory: None,
                 mode: ExecutionMode::Plan,
                 attachments: Vec::new(),
+                tools: Vec::new(),
             },
         )
         .await?;

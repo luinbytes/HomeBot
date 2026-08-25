@@ -333,11 +333,32 @@ pub(super) async fn cancel_group(state: &AppState, chat_id: Uuid) -> Result<(), 
         .cloned()
         .collect::<Vec<_>>();
     for operation in operations {
-        state
+        if state
             .provider_runtime
             .cancel(operation.operation)
             .await
-            .map_err(|_| ApiError::internal())?;
+            .is_err()
+        {
+            for _ in 0..100 {
+                if !state
+                    .chat_operations
+                    .lock()
+                    .await
+                    .contains_key(&operation.operation)
+                {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+            if state
+                .chat_operations
+                .lock()
+                .await
+                .contains_key(&operation.operation)
+            {
+                return Err(ApiError::internal());
+            }
+        }
     }
     Ok(())
 }

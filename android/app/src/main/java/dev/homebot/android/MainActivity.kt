@@ -156,6 +156,7 @@ private fun RosterScreen(viewModel: MainViewModel, live: ConnectionState.Live) {
     var editingPins by rememberSaveable { mutableStateOf(false) }
     var name by remember { mutableStateOf("") }
     var title by remember { mutableStateOf("") }
+    var responsibility by remember { mutableStateOf("") }
     val conversations = botConversations(live.snapshot.bots, live.snapshot.chats, archived, showHidden)
     val pinned = conversations.filter { it.bot.pinned }
     val recent = conversations.filterNot { it.bot.pinned }
@@ -185,8 +186,15 @@ private fun RosterScreen(viewModel: MainViewModel, live: ConnectionState.Live) {
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedTextField(name, { name = it }, label = { Text("Name") }, modifier = Modifier.fillMaxWidth())
                     OutlinedTextField(title, { title = it }, label = { Text("Role") }, modifier = Modifier.fillMaxWidth())
+                    OutlinedTextField(
+                        responsibility,
+                        { responsibility = it },
+                        label = { Text("Responsibility") },
+                        modifier = Modifier.fillMaxWidth(),
+                        minLines = 3,
+                    )
                     Button(
-                        onClick = { viewModel.createBot(name, title); create = false },
+                        onClick = { viewModel.createBot(name, title, responsibility); create = false },
                         enabled = name.isNotBlank() && title.isNotBlank(),
                     ) { Text("Create") }
                 }
@@ -224,7 +232,7 @@ private fun RosterScreen(viewModel: MainViewModel, live: ConnectionState.Live) {
                 bot,
                 { viewModel.openBot(bot.id) },
                 { viewModel.setBotArchived(bot.id, !bot.archived) },
-                { name, role -> viewModel.updateBot(bot, name, role) },
+                { name, role, responsibility -> viewModel.updateBot(bot, name, role, responsibility) },
                 { viewModel.setBotPinned(bot.id, !bot.pinned) },
                 { viewModel.setBotHidden(bot.id, !bot.hidden) },
                 { viewModel.duplicateBot(bot.id) },
@@ -317,7 +325,7 @@ private fun BotRow(
     bot: BotSummary,
     onOpen: () -> Unit,
     onArchive: () -> Unit,
-    onUpdate: (String, String) -> Unit,
+    onUpdate: (String, String, String) -> Unit,
     onPin: () -> Unit,
     onHide: () -> Unit,
     onDuplicate: () -> Unit,
@@ -330,6 +338,7 @@ private fun BotRow(
     var deleteConfirmation by remember(bot.id) { mutableStateOf("") }
     var name by remember(bot.id) { mutableStateOf(bot.name) }
     var role by remember(bot.id) { mutableStateOf(bot.title) }
+    var responsibility by remember(bot.id) { mutableStateOf(bot.description) }
     Card(shape = CardShape) {
         Column(Modifier.fillMaxWidth().padding(15.dp)) {
             Row(Modifier.fillMaxWidth().clickable(onClick = onOpen), verticalAlignment = Alignment.CenterVertically) {
@@ -374,7 +383,14 @@ private fun BotRow(
             if (editing) {
                 OutlinedTextField(name, { name = it }, label = { Text("Name") }, modifier = Modifier.fillMaxWidth())
                 OutlinedTextField(role, { role = it }, label = { Text("Role") }, modifier = Modifier.fillMaxWidth())
-                Button(onClick = { onUpdate(name, role); editing = false }, enabled = name.isNotBlank() && role.isNotBlank()) {
+                OutlinedTextField(
+                    responsibility,
+                    { responsibility = it },
+                    label = { Text("Responsibility") },
+                    modifier = Modifier.fillMaxWidth(),
+                    minLines = 3,
+                )
+                Button(onClick = { onUpdate(name, role, responsibility); editing = false }, enabled = name.isNotBlank() && role.isNotBlank()) {
                     Text("Save changes")
                 }
             }

@@ -110,6 +110,7 @@ impl CodexAdapter {
         conversation_id: String,
         prompt: String,
         model: Option<String>,
+        working_directory: Option<PathBuf>,
         mode: ExecutionMode,
     ) -> Result<ProviderRun, ProviderError> {
         let effective_model = model
@@ -134,7 +135,10 @@ impl CodexAdapter {
         if let Some(model) = model {
             params["model"] = Value::String(model);
         }
-        if let Some(cwd) = &self.profile.working_directory {
+        if let Some(cwd) = working_directory
+            .as_ref()
+            .or(self.profile.working_directory.as_ref())
+        {
             params["cwd"] = Value::String(cwd.to_string_lossy().into_owned());
         }
         let result = match client.request("turn/start", params).await {
@@ -278,7 +282,11 @@ impl ProviderAdapter for CodexAdapter {
         if let Some(model) = &request.model {
             params["model"] = Value::String(model.clone());
         }
-        if let Some(cwd) = &self.profile.working_directory {
+        if let Some(cwd) = request
+            .working_directory
+            .as_ref()
+            .or(self.profile.working_directory.as_ref())
+        {
             params["cwd"] = Value::String(cwd.to_string_lossy().into_owned());
         }
         let result = client.request("thread/start", params).await?;
@@ -290,6 +298,7 @@ impl ProviderAdapter for CodexAdapter {
             conversation_id,
             request.prompt,
             model,
+            request.working_directory,
             request.mode,
         )
         .await
@@ -297,17 +306,22 @@ impl ProviderAdapter for CodexAdapter {
 
     async fn resume(&self, request: ResumeRequest) -> Result<ProviderRun, ProviderError> {
         reject_attachments(&request.attachments)?;
+        let mut params = json!({
+            "threadId": request.conversation_id,
+            "approvalPolicy": "untrusted",
+            "sandbox": "read-only",
+        });
+        if let Some(cwd) = request
+            .working_directory
+            .as_ref()
+            .or(self.profile.working_directory.as_ref())
+        {
+            params["cwd"] = Value::String(cwd.to_string_lossy().into_owned());
+        }
         let result = self
             .client()
             .await?
-            .request(
-                "thread/resume",
-                json!({
-                    "threadId": request.conversation_id,
-                    "approvalPolicy": "untrusted",
-                    "sandbox": "read-only",
-                }),
-            )
+            .request("thread/resume", params)
             .await?;
         let model = request.model.or_else(|| string_at(&result, &["model"]));
         self.begin_turn(
@@ -315,6 +329,7 @@ impl ProviderAdapter for CodexAdapter {
             request.conversation_id,
             request.prompt,
             model,
+            request.working_directory,
             request.mode,
         )
         .await

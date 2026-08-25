@@ -1,7 +1,10 @@
 //! Provider-neutral execution of one direct-chat Bot turn.
 
-use homebot_domain::chat::{
-    ActivityStatus, ApprovalStatus, ChatApproval, DirectChat, ExecutionActivity, MessageStatus,
+use homebot_domain::{
+    Bot,
+    chat::{
+        ActivityStatus, ApprovalStatus, ChatApproval, DirectChat, ExecutionActivity, MessageStatus,
+    },
 };
 use homebot_protocol::{
     CheckpointPhase, ErrorCode, ErrorEnvelope, InteractionMode, ServerEventBody,
@@ -35,6 +38,8 @@ pub(super) fn start_if_configured<'a>(
         else {
             return Ok(false);
         };
+        let bot = state.storage.get_bot(state.owner_id, chat.bot_id).await?;
+        let prompt = prompt_with_bot(&bot, prompt);
         let adapter_id =
             ProviderAdapterId::new(route.adapter_kind).map_err(|_| ApiError::internal())?;
         let operation_id = Uuid::now_v7();
@@ -92,6 +97,7 @@ pub(super) fn start_if_configured<'a>(
         let mode = crate::working_context::summary(state, chat.id)
             .await?
             .map_or(InteractionMode::Default, |context| context.interaction_mode);
+        let working_directory = provider_working_directory(state, chat.id, chat.bot_id).await?;
         let result = if let Some(conversation_id) = conversation {
             state
                 .provider_runtime
@@ -100,8 +106,9 @@ pub(super) fn start_if_configured<'a>(
                     ResumeRequest {
                         operation_id,
                         conversation_id,
-                        prompt: prompt.to_owned(),
+                        prompt: prompt.clone(),
                         model: route.model.clone(),
+                        working_directory: working_directory.clone(),
                         mode: crate::working_context::execution_mode(mode),
                         attachments,
                     },
@@ -116,8 +123,9 @@ pub(super) fn start_if_configured<'a>(
                         operation_id,
                         bot_id: chat.bot_id,
                         chat_id: chat.id,
-                        prompt: prompt.to_owned(),
+                        prompt,
                         model: route.model.clone(),
+                        working_directory,
                         mode: crate::working_context::execution_mode(mode),
                         attachments,
                     },
@@ -163,6 +171,49 @@ pub(super) fn start_if_configured<'a>(
         });
         Ok(true)
     })
+}
+
+async fn provider_working_directory(
+    state: &AppState,
+    chat_id: Uuid,
+    bot_id: Uuid,
+) -> Result<Option<std::path::PathBuf>, ApiError> {
+    let Some(workspace) = state
+        .storage
+        .chat_workspace(state.owner_id, chat_id)
+        .await?
+    else {
+        let directory = state
+            .artifact_root
+            .join("bot-workspaces")
+            .join(bot_id.to_string());
+        tokio::fs::create_dir_all(&directory)
+            .await
+            .map_err(|_| ApiError::internal())?;
+        return Ok(Some(directory));
+    };
+    let repository = state
+        .storage
+        .repository_workspace(state.owner_id, workspace.workspace_id)
+        .await?;
+    Ok(Some(
+        workspace
+            .worktree_path
+            .unwrap_or(repository.root_path)
+            .into(),
+    ))
+}
+
+fn prompt_with_bot(bot: &Bot, prompt: &str) -> String {
+    let responsibility = if bot.description.is_empty() {
+        String::new()
+    } else {
+        format!("\nResponsibility: {}", bot.description)
+    };
+    format!(
+        "<homebot_bot>\nName: {}\nRole: {}{responsibility}\nUse this identity and responsibility for this turn.\n</homebot_bot>\n\n{prompt}",
+        bot.name, bot.title
+    )
 }
 
 pub(super) async fn cancel(state: &AppState, chat_id: Uuid) -> Result<(), ApiError> {

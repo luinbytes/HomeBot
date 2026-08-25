@@ -169,6 +169,7 @@ fn start_request(operation_id: Uuid) -> StartRequest {
         chat_id: Uuid::now_v7(),
         prompt: "Hello".to_owned(),
         model: Some("test-model".to_owned()),
+        working_directory: None,
         mode: ExecutionMode::Normal,
         attachments: Vec::new(),
     }
@@ -247,6 +248,7 @@ async fn runtime_rejects_duplicate_active_ids_and_allows_reuse_after_finish()
                 conversation_id: "existing".to_owned(),
                 prompt: "Continue".to_owned(),
                 model: None,
+                working_directory: None,
                 mode: ExecutionMode::Plan,
                 attachments: Vec::new(),
             },

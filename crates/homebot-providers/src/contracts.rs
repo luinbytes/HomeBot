@@ -1,7 +1,7 @@
 //! Provider-neutral discovery, execution, streaming, and recovery contracts.
 
 use serde::{Deserialize, Serialize};
-use std::{collections::BTreeSet, fmt};
+use std::{collections::BTreeSet, fmt, path::PathBuf};
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
@@ -120,6 +120,7 @@ pub struct StartRequest {
     pub chat_id: Uuid,
     pub prompt: String,
     pub model: Option<String>,
+    pub working_directory: Option<PathBuf>,
     pub mode: ExecutionMode,
     pub attachments: Vec<ProviderAttachment>,
 }
@@ -130,6 +131,7 @@ pub struct ResumeRequest {
     pub conversation_id: String,
     pub prompt: String,
     pub model: Option<String>,
+    pub working_directory: Option<PathBuf>,
     pub mode: ExecutionMode,
     pub attachments: Vec<ProviderAttachment>,
 }

@@ -229,6 +229,9 @@ pub async fn compose_app_state(
     artifact_root: std::path::PathBuf,
     config: ProviderBootstrapConfig,
 ) -> anyhow::Result<AppState> {
+    storage
+        .recover_interrupted_chat_turns(Uuid::nil(), crate::unix_time_ms())
+        .await?;
     let runtime = build_runtime(&storage, config).await?;
     Ok(AppState::new(storage, owner_token)
         .with_artifact_root(artifact_root)
@@ -285,6 +288,50 @@ mod tests {
                 .iter()
                 .all(|profile| profile.secret_reference_id.is_none())
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn production_startup_fails_an_orphaned_provider_turn() -> anyhow::Result<()> {
+        let directory = tempfile::tempdir()?;
+        let storage = Storage::open(&directory.path().join("homebot.db")).await?;
+        let bot = storage
+            .create_bot(
+                Uuid::nil(),
+                homebot_domain::Bot::create("Scout", "Research")?,
+                1,
+            )
+            .await?;
+        let chat = storage
+            .create_direct_chat(Uuid::nil(), bot.id.0, Uuid::now_v7(), 2)
+            .await?;
+        storage
+            .set_chat_running(Uuid::nil(), chat.id, true, 3)
+            .await?;
+        let message_id = Uuid::now_v7();
+        storage
+            .create_bot_message(Uuid::nil(), chat.id, bot.id.0, message_id, 4)
+            .await?;
+
+        let _state = compose_app_state(
+            storage.clone(),
+            "owner-token",
+            directory.path().join("artifacts"),
+            ProviderBootstrapConfig {
+                profiles: Vec::new(),
+            },
+        )
+        .await?;
+
+        let message = storage.message(Uuid::nil(), message_id).await?;
+        assert_eq!(message.status, homebot_domain::chat::MessageStatus::Failed);
+        assert!(
+            message
+                .error_json
+                .as_ref()
+                .is_some_and(|error| error["retryable"] == true)
+        );
+        assert!(!storage.get_direct_chat(Uuid::nil(), chat.id).await?.running);
         Ok(())
     }
 
@@ -429,6 +476,7 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"session_id
                     chat_id: Uuid::now_v7(),
                     prompt: "Hello".to_owned(),
                     model: None,
+                    working_directory: None,
                     mode: ExecutionMode::Normal,
                     attachments: Vec::new(),
                 },
@@ -463,6 +511,7 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"session_id
                     chat_id: Uuid::now_v7(),
                     prompt: "After restart".to_owned(),
                     model: None,
+                    working_directory: None,
                     mode: ExecutionMode::Normal,
                     attachments: Vec::new(),
                 },

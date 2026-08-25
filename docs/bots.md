@@ -2,6 +2,8 @@
 
 Bots are durable HomeBot identities. Their name, title, description, color, shape, permissions, unread state and attention state belong to HomeBot and survive server and client restarts. A provider profile is an advanced setting, not the Bot's identity.
 
+The server sends the Bot's name, role and responsibility to the configured provider on every direct-chat, queued, retried and routine turn. This keeps the identity current across provider switches, conversation resets and clients; desktop and Android only edit the server-owned fields. Applied Skills add task-specific instructions without replacing the Bot's standing responsibility.
+
 ## Lifecycle and validation
 
 Names are trimmed, required, limited to 48 Unicode characters and unique per owner without case sensitivity. Titles are optional and limited to 80 characters. Descriptions are optional and limited to 2,000 characters. Identity fields reject control characters.

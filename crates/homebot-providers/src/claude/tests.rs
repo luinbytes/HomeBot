@@ -52,6 +52,7 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"session_id
             chat_id: Uuid::now_v7(),
             prompt: "Hello".to_owned(),
             model: Some("sonnet".to_owned()),
+            working_directory: None,
             mode: ExecutionMode::Normal,
             attachments: Vec::new(),
         })
@@ -104,6 +105,7 @@ while IFS= read -r more; do :; done
             chat_id: Uuid::now_v7(),
             prompt: "Wait".to_owned(),
             model: None,
+            working_directory: None,
             mode: ExecutionMode::Normal,
             attachments: Vec::new(),
         })

@@ -36,6 +36,7 @@ printf '%s\n' '{"kind":"completed"}'
             chat_id: Uuid::now_v7(),
             prompt: "Hello".to_owned(),
             model: None,
+            working_directory: None,
             mode: crate::ExecutionMode::Normal,
             attachments: Vec::new(),
         })
@@ -86,6 +87,7 @@ IFS= read -r continue
             chat_id: Uuid::now_v7(),
             prompt: "Wait".to_owned(),
             model: None,
+            working_directory: None,
             mode: crate::ExecutionMode::Normal,
             attachments: Vec::new(),
         })
@@ -151,6 +153,7 @@ async fn simple_command_resolves_only_from_the_selected_search_path()
             chat_id: Uuid::now_v7(),
             prompt: "Hello".to_owned(),
             model: None,
+            working_directory: None,
             mode: crate::ExecutionMode::Normal,
             attachments: Vec::new(),
         })

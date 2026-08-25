@@ -127,6 +127,10 @@ pub(super) async fn send_message(
     Path(chat_id): Path<Uuid>,
     Json(request): Json<SendMessageRequest>,
 ) -> Result<Json<SendMessageResponse>, ApiError> {
+    let chat = state
+        .storage
+        .get_direct_chat(state.owner_id, chat_id)
+        .await?;
     let replayed = matches!(
         claim(
             &state,
@@ -137,17 +141,18 @@ pub(super) async fn send_message(
         .await?,
         IdempotencyClaim::Replayed { .. }
     );
-    let chat = state
-        .storage
-        .get_direct_chat(state.owner_id, chat_id)
-        .await?;
     let applied_skills = if replayed {
         Vec::new()
     } else {
-        state
-            .storage
-            .resolve_applied_skills(state.owner_id, chat.bot_id, &request.skill_ids)
-            .await?
+        release_failed_send_claim(
+            &state,
+            request.idempotency_key,
+            state
+                .storage
+                .resolve_applied_skills(state.owner_id, chat.bot_id, &request.skill_ids)
+                .await,
+        )
+        .await?
     };
     if chat.running {
         let prompt = if replayed {
@@ -183,7 +188,16 @@ pub(super) async fn send_message(
         return Ok(Json(SendMessageResponse::Queued { prompt }));
     }
 
-    let provider_prompt = prompt_with_skills(&request.content, &applied_skills)?;
+    let provider_prompt = if replayed {
+        String::new()
+    } else {
+        release_failed_send_claim(
+            &state,
+            request.idempotency_key,
+            prompt_with_skills(&request.content, &applied_skills),
+        )
+        .await?
+    };
     let provider_attachments = request.attachment_ids.clone();
 
     let message = if replayed {
@@ -195,21 +209,26 @@ pub(super) async fn send_message(
             .find(|message| message.id == request.idempotency_key)
             .ok_or_else(ApiError::internal)?
     } else {
-        state
-            .storage
-            .append_user_message(
-                state.owner_id,
-                chat_id,
-                request.idempotency_key,
-                &request.content,
-                &request.attachment_ids,
-                request.reply_to_message_id,
-                request.mentioned_bot_ids,
-                &applied_skills,
-                &storage_references(&request.references),
-                unix_time_ms(),
-            )
-            .await?
+        release_failed_send_claim(
+            &state,
+            request.idempotency_key,
+            state
+                .storage
+                .append_user_message(
+                    state.owner_id,
+                    chat_id,
+                    request.idempotency_key,
+                    &request.content,
+                    &request.attachment_ids,
+                    request.reply_to_message_id,
+                    request.mentioned_bot_ids,
+                    &applied_skills,
+                    &storage_references(&request.references),
+                    unix_time_ms(),
+                )
+                .await,
+        )
+        .await?
     };
     let message = message_summary(&state, message).await?;
     if !replayed {
@@ -234,6 +253,23 @@ pub(super) async fn send_message(
     Ok(Json(SendMessageResponse::Sent {
         message: Box::new(message),
     }))
+}
+
+async fn release_failed_send_claim<T, E>(
+    state: &AppState,
+    key: Uuid,
+    result: Result<T, E>,
+) -> Result<T, ApiError>
+where
+    E: Into<ApiError>,
+{
+    match result {
+        Ok(value) => Ok(value),
+        Err(error) => {
+            state.storage.release_idempotency(key).await?;
+            Err(error.into())
+        }
+    }
 }
 
 pub(super) async fn steer(

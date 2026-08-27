@@ -3,7 +3,7 @@
 use super::OpenAiApiStyle;
 use crate::{
     ActivityKind, ActivityStatus, ProviderActivity, ProviderError, ProviderErrorCode,
-    ProviderEvent, ProviderUsage,
+    ProviderEvent, ProviderToolCall, ProviderUsage,
 };
 use serde_json::Value;
 use uuid::Uuid;
@@ -39,6 +39,28 @@ fn normalize_responses(value: &Value) -> Vec<ProviderEvent> {
             "Function call".to_owned(),
             ActivityStatus::Updated,
         )],
+        "response.output_item.done"
+            if string(value, &["item", "type"]).as_deref() == Some("function_call") =>
+        {
+            let call_id = string(value, &["item", "call_id"]);
+            let name = string(value, &["item", "name"]);
+            let arguments = string(value, &["item", "arguments"])
+                .and_then(|arguments| serde_json::from_str(&arguments).ok());
+            match (call_id, name, arguments) {
+                (Some(call_id), Some(name), Some(arguments)) => {
+                    vec![ProviderEvent::ToolCall {
+                        call: ProviderToolCall {
+                            call_id,
+                            name,
+                            arguments,
+                        },
+                    }]
+                }
+                _ => vec![ProviderEvent::Failed {
+                    error: protocol_error("Provider function call was malformed"),
+                }],
+            }
+        }
         "response.completed" => {
             let mut events = usage(value);
             events.push(ProviderEvent::Completed);
@@ -48,6 +70,15 @@ fn normalize_responses(value: &Value) -> Vec<ProviderEvent> {
             error: response_error(value),
         }],
         _ => Vec::new(),
+    }
+}
+
+fn protocol_error(message: &str) -> ProviderError {
+    ProviderError {
+        code: ProviderErrorCode::ProtocolViolation,
+        message: message.to_owned(),
+        retryable: false,
+        diagnostic_id: Some(Uuid::now_v7()),
     }
 }
 

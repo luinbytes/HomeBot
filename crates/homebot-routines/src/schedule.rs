@@ -2,6 +2,7 @@
 
 use chrono::{Datelike, LocalResult, TimeZone, Utc};
 use chrono_tz::Tz;
+use croner::parser::{CronParser, Seconds};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -29,6 +30,10 @@ pub enum RoutineSchedule {
         weekday: u8,
         hour: u8,
         minute: u8,
+    },
+    Cron {
+        expression: String,
+        timezone: String,
     },
 }
 
@@ -147,6 +152,10 @@ pub fn next_occurrence(
             hour,
             minute,
         } => next_local(timezone, Some(*weekday), *hour, *minute, after_unix_ms).map(Some),
+        RoutineSchedule::Cron {
+            expression,
+            timezone,
+        } => next_cron(expression, timezone, after_unix_ms).map(Some),
     }
 }
 
@@ -272,6 +281,26 @@ fn next_local(
     Err(ScheduleError::ScanLimit)
 }
 
+fn next_cron(expression: &str, timezone: &str, after_unix_ms: i64) -> Result<i64, ScheduleError> {
+    if expression.is_empty() || expression.len() > 256 || expression.trim() != expression {
+        return Err(ScheduleError::Invalid);
+    }
+    let timezone: Tz = timezone
+        .parse()
+        .map_err(|_| ScheduleError::UnknownTimezone)?;
+    let after = chrono::DateTime::<Utc>::from_timestamp_millis(after_unix_ms)
+        .ok_or(ScheduleError::Invalid)?
+        .with_timezone(&timezone);
+    let cron = CronParser::builder()
+        .seconds(Seconds::Disallowed)
+        .build()
+        .parse(expression)
+        .map_err(|_| ScheduleError::Invalid)?;
+    cron.find_next_occurrence(&after, false)
+        .map(|next| next.with_timezone(&Utc).timestamp_millis())
+        .map_err(|_| ScheduleError::ScanLimit)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -362,5 +391,57 @@ mod tests {
             Some(4_010)
         );
         Ok(())
+    }
+
+    #[test]
+    fn cron_supports_five_fields_aliases_and_iana_timezones()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let weekday = RoutineSchedule::Cron {
+            expression: "0 8 * * MON-FRI".to_owned(),
+            timezone: "Europe/London".to_owned(),
+        };
+        assert_eq!(
+            next_occurrence(&weekday, utc("2026-03-27T08:00:00Z")?)?,
+            Some(utc("2026-03-30T07:00:00Z")?)
+        );
+
+        let hourly = RoutineSchedule::Cron {
+            expression: "@hourly".to_owned(),
+            timezone: "UTC".to_owned(),
+        };
+        assert_eq!(
+            next_occurrence(&hourly, utc("2026-01-01T10:12:34Z")?)?,
+            Some(utc("2026-01-01T11:00:00Z")?)
+        );
+
+        let daily = RoutineSchedule::Cron {
+            expression: "@daily".to_owned(),
+            timezone: "America/New_York".to_owned(),
+        };
+        assert_eq!(
+            next_occurrence(&daily, utc("2026-07-01T04:00:00Z")?)?,
+            Some(utc("2026-07-02T04:00:00Z")?)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn cron_rejects_seconds_unknown_timezones_and_every_alias() {
+        for schedule in [
+            RoutineSchedule::Cron {
+                expression: "*/5 * * * * *".to_owned(),
+                timezone: "UTC".to_owned(),
+            },
+            RoutineSchedule::Cron {
+                expression: "@daily".to_owned(),
+                timezone: "Mars/Olympus".to_owned(),
+            },
+            RoutineSchedule::Cron {
+                expression: "@every 5m".to_owned(),
+                timezone: "UTC".to_owned(),
+            },
+        ] {
+            assert!(next_occurrence(&schedule, 0).is_err());
+        }
     }
 }

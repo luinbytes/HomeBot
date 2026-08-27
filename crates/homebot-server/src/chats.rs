@@ -585,9 +585,11 @@ pub(super) async fn decide_approval(
         .await?,
         IdempotencyClaim::Replayed { .. }
     );
-    if !replayed {
-        crate::provider_turn::resolve_approval(&state, approval_id, request.allow).await?;
-    }
+    let capability_approval = if replayed {
+        false
+    } else {
+        crate::provider_turn::resolve_approval(&state, approval_id, request.allow).await?
+    };
     let approval = if replayed {
         state
             .storage
@@ -599,6 +601,9 @@ pub(super) async fn decide_approval(
             .decide_chat_approval(state.owner_id, approval_id, request.allow, unix_time_ms())
             .await?
     };
+    if capability_approval {
+        crate::provider_turn::resume_capability_approval(&state, approval_id).await;
+    }
     let approval = approval_summary(approval);
     if !replayed {
         publish(
@@ -838,6 +843,7 @@ pub(super) fn activity_summary(activity: DomainActivity) -> ActivitySummary {
             "terminal" => ActivityKind::Terminal,
             "browser" => ActivityKind::Browser,
             "artifact" => ActivityKind::Artifact,
+            "interaction" => ActivityKind::Interaction,
             _ => ActivityKind::Tool,
         },
         presentation,

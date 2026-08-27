@@ -13,6 +13,7 @@ axum.workspace = true
 base64.workspace = true
 futures-util.workspace = true
 getrandom.workspace = true
+hmac.workspace = true
 homebot-protocol.workspace = true
 homebot-domain.workspace = true
 homebot-providers.workspace = true
@@ -23,6 +24,7 @@ homebot-secrets.workspace = true
 homebot-storage = { version = "=1.0.0", path = "../homebot-storage" }
 homebot-tools.workspace = true
 homebot-vcs.workspace = true
+reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sqlx.workspace = true

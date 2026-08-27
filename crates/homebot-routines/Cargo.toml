@@ -10,6 +10,7 @@ rust-version.workspace = true
 async-trait.workspace = true
 chrono.workspace = true
 chrono-tz.workspace = true
+croner.workspace = true
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true

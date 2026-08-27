@@ -15,7 +15,7 @@ use std::{
 use tokio::sync::{Mutex, RwLock};
 use uuid::Uuid;
 
-const MAX_PENDING_APPROVALS: usize = 4_096;
+const MAX_PENDING_APPROVALS_PER_OPERATION: usize = 4;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -257,7 +257,15 @@ impl PolicyEngine {
                         self.approval_ttl.as_millis().try_into().unwrap_or(u64::MAX),
                     ),
                 };
-                if approvals.len() >= MAX_PENDING_APPROVALS {
+                if approvals
+                    .values()
+                    .filter(|record| {
+                        record.ticket.operation_id == request.context.operation_id
+                            && record.decision.is_none()
+                    })
+                    .count()
+                    >= MAX_PENDING_APPROVALS_PER_OPERATION
+                {
                     return Err(ToolError::LimitExceeded);
                 }
                 approvals.insert(
@@ -545,6 +553,35 @@ mod tests {
         assert!(matches!(
             engine.authorize(&request, Some(ticket.approval_id)).await,
             Err(ToolError::InvalidApproval)
+        ));
+    }
+
+    #[tokio::test]
+    async fn pending_approvals_are_bounded_per_operation() {
+        let engine = PolicyEngine::new(
+            Duration::from_secs(60),
+            Arc::new(RecordingActivitySink::default()),
+        );
+        let mut request = request();
+        for index in 0..MAX_PENDING_APPROVALS_PER_OPERATION {
+            request.action = format!("filesystem.write.{index}");
+            request.canonical_resource = format!("/workspace/{index}");
+            assert!(matches!(
+                engine.authorize(&request, None).await,
+                Err(ToolError::ApprovalRequired(_))
+            ));
+        }
+        request.action = "filesystem.write.overflow".to_owned();
+        request.canonical_resource = "/workspace/overflow".to_owned();
+        assert!(matches!(
+            engine.authorize(&request, None).await,
+            Err(ToolError::LimitExceeded)
+        ));
+
+        request.context.operation_id = Uuid::now_v7();
+        assert!(matches!(
+            engine.authorize(&request, None).await,
+            Err(ToolError::ApprovalRequired(_))
         ));
     }
 }

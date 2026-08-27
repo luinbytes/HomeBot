@@ -66,6 +66,40 @@ pub struct BotIdentity<'a> {
     pub attention: Option<AttentionIndicator>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct AvatarPose {
+    scale_x: f32,
+    scale_y: f32,
+    gaze: f32,
+    eye_open: f32,
+}
+
+#[allow(clippy::cast_possible_truncation)]
+fn avatar_pose(time: f64, seed: u32, working: bool, motion_enabled: bool) -> AvatarPose {
+    if !motion_enabled {
+        return AvatarPose {
+            scale_x: 1.0,
+            scale_y: 1.0,
+            gaze: 0.0,
+            eye_open: 1.0,
+        };
+    }
+    let seed_offset = f32::from(u8::try_from(seed % 97).unwrap_or_default()) * 0.071;
+    let time = time as f32 + seed_offset;
+    let morph = if working {
+        (time * TAU / 1.8).sin() * 0.045
+    } else {
+        0.0
+    };
+    let blink_distance = ((time.rem_euclid(5.4) - 5.1).abs() / 0.16).min(1.0);
+    AvatarPose {
+        scale_x: 1.0 + morph,
+        scale_y: 1.0 - morph,
+        gaze: (time * 0.45).sin() * 0.035,
+        eye_open: blink_distance,
+    }
+}
+
 pub fn avatar(ui: &mut Ui, theme: HomeBotTheme, bot: BotIdentity<'_>, small: bool) {
     let size = if small {
         theme.layout.avatar_small
@@ -74,17 +108,37 @@ pub fn avatar(ui: &mut Ui, theme: HomeBotTheme, bot: BotIdentity<'_>, small: boo
     };
     let (rect, _) = ui.allocate_exact_size(Vec2::splat(size), Sense::hover());
     let painter = ui.painter();
+    let seed = bot.name.bytes().fold(0_u32, |value, byte| {
+        value.wrapping_mul(31) + u32::from(byte)
+    });
+    let pose = avatar_pose(
+        ui.input(|input| input.time),
+        seed,
+        bot.attention == Some(AttentionIndicator::Working),
+        theme.motion.standard_ms > 0,
+    );
+    let body = egui::Rect::from_center_size(
+        rect.center(),
+        Vec2::new(size * pose.scale_x, size * pose.scale_y),
+    );
     match bot.shape {
-        AvatarShape::Circle => painter.circle_filled(rect.center(), size / 2.0, bot.color),
+        AvatarShape::Circle => painter.add(Shape::ellipse_filled(
+            body.center(),
+            body.size() / 2.0,
+            bot.color,
+        )),
         AvatarShape::RoundedSquare => {
-            painter.rect_filled(rect, CornerRadius::same(theme.radii.sm), bot.color)
+            painter.rect_filled(body, CornerRadius::same(theme.radii.sm), bot.color)
         }
         AvatarShape::Hexagon => {
-            let radius = size / 2.0;
             let points = (0_i16..6)
                 .map(|index| {
                     let angle = f32::from(index) * TAU / 6.0 - FRAC_PI_2;
-                    rect.center() + Vec2::angled(angle) * radius
+                    rect.center()
+                        + Vec2::new(
+                            angle.cos() * body.width() / 2.0,
+                            angle.sin() * body.height() / 2.0,
+                        )
                 })
                 .collect();
             painter.add(Shape::convex_polygon(points, bot.color, Stroke::NONE))
@@ -93,18 +147,15 @@ pub fn avatar(ui: &mut Ui, theme: HomeBotTheme, bot: BotIdentity<'_>, small: boo
     // HomeBot avatars are deliberately original, procedural characters. Their
     // face geometry is derived from the stable identity instead of relying on
     // generic initial badges or bundled artwork.
-    let seed = bot.name.bytes().fold(0_u32, |value, byte| {
-        value.wrapping_mul(31) + u32::from(byte)
-    });
     let eye_y = rect.center().y - size * if small { 0.07 } else { 0.09 };
     let eye_gap = size * (0.13 + f32::from((seed % 3) as u8) * 0.015);
     let eye_radius = (size * 0.055).max(1.2);
     for x in [rect.center().x - eye_gap, rect.center().x + eye_gap] {
-        painter.circle_filled(
-            egui::pos2(x, eye_y),
-            eye_radius,
+        painter.add(Shape::ellipse_filled(
+            egui::pos2(x + size * pose.gaze, eye_y),
+            Vec2::new(eye_radius, (eye_radius * pose.eye_open).max(0.4)),
             theme.palette.avatar_foreground,
-        );
+        ));
     }
     if !small {
         let mouth_y = rect.center().y + size * 0.14;
@@ -576,4 +627,26 @@ pub fn composer(ui: &mut Ui, theme: HomeBotTheme, placeholder: &str) {
                 );
             });
         });
+}
+
+#[cfg(test)]
+mod avatar_tests {
+    use super::*;
+
+    #[test]
+    fn avatar_motion_is_bounded_and_reduced_motion_is_static() {
+        let still = avatar_pose(12.0, 42, true, false);
+        assert!((still.scale_x - 1.0).abs() < f32::EPSILON);
+        assert!((still.scale_y - 1.0).abs() < f32::EPSILON);
+        assert!(still.gaze.abs() < f32::EPSILON);
+        assert!((still.eye_open - 1.0).abs() < f32::EPSILON);
+
+        for sample in 0..100 {
+            let pose = avatar_pose(f64::from(sample) / 10.0, 42, true, true);
+            assert!((0.955..=1.045).contains(&pose.scale_x));
+            assert!((0.955..=1.045).contains(&pose.scale_y));
+            assert!((-0.035..=0.035).contains(&pose.gaze));
+            assert!((0.0..=1.0).contains(&pose.eye_open));
+        }
+    }
 }

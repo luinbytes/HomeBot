@@ -5,7 +5,9 @@ use axum::{
     body::{Body, to_bytes},
     http::Request,
 };
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use futures_util::{SinkExt, StreamExt};
+use hmac::{Hmac, Mac};
 use homebot_protocol::{
     AddGroupParticipantRequest, AppendRoutineRecordingRequest, ApprovalDecisionRequest,
     ArtifactSummary, AssistantPackCadence, AssistantPackInstallationSummary, AssistantPackSummary,
@@ -25,12 +27,13 @@ use homebot_protocol::{
     DuplicateRoutineRequest, DuplicateSkillRequest, ExchangePairingRequest,
     FinalizeAttachmentRequest, GlobalSearchResponse, GroupBotStatus, GroupTimelineResponse,
     HandoffGroupRequest, ImportSkillRequest, InstallAssistantPackRequest, InteractionMode,
-    MessageReferenceInput, MessageReferenceKind, MissedRunPolicy, OverlapPolicy,
-    PairingEndpointKind, PairingExchangeResponse, PairingOffer, PluginAssignmentRequest,
-    PluginConnectionState, PluginMutationRequest, PluginSummary, PullRequestMetadata,
-    PullRequestMutationResponse, QueuedPromptKind, ReactionMutationRequest, RecordedAction,
-    RecordedActor, RenameGroupChatRequest, RepositoryWorkspaceSummary, RestoreCheckpointRequest,
-    RetryPolicy, RevokeDeviceSessionRequest, RoutineDefinition, RoutineInput, RoutineInputKind,
+    InteractionRequestKind, InteractionResponseRequest, MessageReferenceInput,
+    MessageReferenceKind, MissedRunPolicy, OverlapPolicy, PairingEndpointKind,
+    PairingExchangeResponse, PairingOffer, PluginAssignmentRequest, PluginConnectionState,
+    PluginMutationRequest, PluginSummary, PullRequestMetadata, PullRequestMutationResponse,
+    QueuedPromptKind, ReactionMutationRequest, RecordedAction, RecordedActor,
+    RenameGroupChatRequest, RepositoryWorkspaceSummary, RestoreCheckpointRequest, RetryPolicy,
+    RevokeDeviceSessionRequest, RoutineDefinition, RoutineInput, RoutineInputKind,
     RoutineJobSummary, RoutineRecordingSummary, RoutineRunSummary, RoutineSchedule, RoutineStep,
     RoutineStepStatus, RoutineSummary, RoutineTriggerDefinition, RoutineTriggerSource,
     RunRoutineRequest, SecretSummary, SendGroupMessageRequest, SendMessageRequest,
@@ -56,7 +59,10 @@ use std::os::unix::fs::PermissionsExt;
 use std::{
     collections::HashMap,
     path::PathBuf,
-    sync::{Arc, OnceLock},
+    sync::{
+        Arc, OnceLock,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+    },
     time::{Duration, Instant},
 };
 use tokio::sync::{Mutex, mpsc, watch};
@@ -203,6 +209,7 @@ struct ChatFakeAdapter {
     approvals: Arc<Mutex<HashMap<Uuid, watch::Sender<bool>>>>,
     tool_calls: Arc<Mutex<HashMap<String, watch::Sender<bool>>>>,
     prompts: Arc<Mutex<Vec<String>>>,
+    tools: Arc<Mutex<Vec<Vec<ProviderTool>>>>,
     working_directories: Arc<Mutex<Vec<Option<PathBuf>>>>,
     modes: Arc<Mutex<Vec<homebot_providers::ExecutionMode>>>,
     compactions: Arc<Mutex<Vec<CompactRequest>>>,
@@ -217,6 +224,7 @@ impl ChatFakeAdapter {
             approvals: Arc::new(Mutex::new(HashMap::new())),
             tool_calls: Arc::new(Mutex::new(HashMap::new())),
             prompts: Arc::new(Mutex::new(Vec::new())),
+            tools: Arc::new(Mutex::new(Vec::new())),
             working_directories: Arc::new(Mutex::new(Vec::new())),
             modes: Arc::new(Mutex::new(Vec::new())),
             compactions: Arc::new(Mutex::new(Vec::new())),
@@ -379,6 +387,7 @@ impl ProviderAdapter for ChatFakeAdapter {
 
     async fn start(&self, request: StartRequest) -> Result<ProviderRun, ProviderError> {
         self.prompts.lock().await.push(request.prompt.clone());
+        self.tools.lock().await.push(request.tools.clone());
         self.working_directories
             .lock()
             .await
@@ -396,6 +405,7 @@ impl ProviderAdapter for ChatFakeAdapter {
 
     async fn resume(&self, request: ResumeRequest) -> Result<ProviderRun, ProviderError> {
         self.prompts.lock().await.push(request.prompt.clone());
+        self.tools.lock().await.push(request.tools.clone());
         self.working_directories
             .lock()
             .await
@@ -458,7 +468,109 @@ impl ProviderAdapter for ChatFakeAdapter {
     }
 }
 
+#[allow(clippy::too_many_lines)] // One deterministic fake routes every provider-tool fixture.
 fn fake_handoff_call(prompt: &str, tools: &[ProviderTool]) -> Option<ProviderToolCall> {
+    if prompt.contains("Run the local workspace command") {
+        let tool = tools
+            .iter()
+            .find(|tool| tool.name == "homebot_run_command")?;
+        return Some(ProviderToolCall {
+            call_id: Uuid::now_v7().to_string(),
+            name: tool.name.clone(),
+            arguments: serde_json::json!({
+                "program": "/usr/bin/touch",
+                "arguments": ["terminal-provider-marker"]
+            }),
+        });
+    }
+    if prompt.contains("Write the local workspace file") {
+        let tool = tools
+            .iter()
+            .find(|tool| tool.name == "homebot_write_file")?;
+        return Some(ProviderToolCall {
+            call_id: Uuid::now_v7().to_string(),
+            name: tool.name.clone(),
+            arguments: serde_json::json!({
+                "path": "provider-tool.txt",
+                "content": "HOMEBOT_PROVIDER_FILE_OK"
+            }),
+        });
+    }
+    if prompt.contains("Use the local browser") {
+        let tool = tools
+            .iter()
+            .find(|tool| tool.name == "homebot_browser_navigate")?;
+        return Some(ProviderToolCall {
+            call_id: Uuid::now_v7().to_string(),
+            name: tool.name.clone(),
+            arguments: serde_json::json!({"url": "https://example.test/provider-browser"}),
+        });
+    }
+    if prompt.contains("Request a secure credential") {
+        let tool = tools
+            .iter()
+            .find(|tool| tool.name == "homebot_request_secret")?;
+        return Some(ProviderToolCall {
+            call_id: Uuid::now_v7().to_string(),
+            name: tool.name.clone(),
+            arguments: serde_json::json!({
+                "label": "Service token",
+                "description": "Enter the token needed for this operation."
+            }),
+        });
+    }
+    if prompt.contains("Use remote memory MCP") {
+        let tool = tools.iter().find(|tool| {
+            tool.name.starts_with("homebot_mcp_") && tool.name.ends_with("search_memory")
+        })?;
+        return Some(ProviderToolCall {
+            call_id: Uuid::now_v7().to_string(),
+            name: tool.name.clone(),
+            arguments: serde_json::json!({}),
+        });
+    }
+    if prompt.contains("Remember this in Holographic") {
+        let tool = tools.iter().find(|tool| {
+            tool.name.starts_with("homebot_mcp_") && tool.name.ends_with("fact_store")
+        })?;
+        return Some(ProviderToolCall {
+            call_id: Uuid::now_v7().to_string(),
+            name: tool.name.clone(),
+            arguments: serde_json::json!({
+                "action":"add",
+                "content":"\"Willow\" prefers tea from Doctor Smith.",
+                "category":"user_pref",
+                "tags":"willow,tea"
+            }),
+        });
+    }
+    if prompt.contains("Use the assigned MCP tool") {
+        let tool = tools.iter().find(|tool| {
+            tool.name.starts_with("homebot_mcp_") && tool.name.ends_with("write_marker")
+        })?;
+        return Some(ProviderToolCall {
+            call_id: Uuid::now_v7().to_string(),
+            name: tool.name.clone(),
+            arguments: serde_json::json!({}),
+        });
+    }
+    if prompt.contains("Name: Scout") && prompt.contains("Ask Reviewer through HomeBot") {
+        let tool = tools
+            .iter()
+            .find(|tool| tool.name == "homebot_message_bot")?;
+        let recipient = tool.input_schema["properties"]["to_bot_name"]["enum"]
+            .as_array()?
+            .iter()
+            .find(|choice| choice.as_str() == Some("Reviewer"))?;
+        return Some(ProviderToolCall {
+            call_id: Uuid::now_v7().to_string(),
+            name: tool.name.clone(),
+            arguments: serde_json::json!({
+                "to_bot_name": recipient,
+                "request": "Review Scout's findings and reply in this conversation",
+            }),
+        });
+    }
     if !prompt.contains("Name: Scout") || !prompt.contains("Use HomeBot to hand off to Reviewer") {
         return None;
     }
@@ -477,10 +589,732 @@ fn fake_handoff_call(prompt: &str, tools: &[ProviderTool]) -> Option<ProviderToo
     })
 }
 
+#[cfg(unix)]
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn terminal_executes_through_the_provider_neutral_tool_harness()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let storage = Storage::open(&directory.path().join("homebot.db")).await?;
+    let profile_id = Uuid::now_v7();
+    sqlx::query("INSERT INTO provider_profiles (id, adapter_kind, display_name, configuration_json, created_at_ms, updated_at_ms) VALUES (?, 'chat-fake', 'Fixture', '{}', 1, 1)")
+        .bind(profile_id.to_string()).execute(storage.pool()).await?;
+    let mut domain_bot = homebot_domain::Bot::create("Terminal Bot", "Operator")?;
+    domain_bot.provider_profile_id = Some(profile_id);
+    let bot = storage.create_bot(Uuid::nil(), domain_bot, 1).await?;
+    let chat = storage
+        .create_direct_chat(Uuid::nil(), bot.id.0, Uuid::now_v7(), 2)
+        .await?;
+    let policy = Arc::new(homebot_tools::PolicyEngine::new(
+        Duration::from_secs(60),
+        Arc::new(homebot_tools::NoopActivitySink),
+    ));
+    policy
+        .replace_rules(vec![homebot_tools::PolicyRule::new(
+            homebot_tools::CapabilityClass::ProcessExecute,
+            homebot_tools::PolicyEffect::Allow,
+        )])
+        .await;
+    let runtime = Arc::new(ProviderRuntime::new());
+    runtime.register(Arc::new(ChatFakeAdapter::new()?)).await?;
+    let artifact_root = directory.path().join("artifacts");
+    let app = router(
+        AppState::new(storage, "correct-token")
+            .with_artifact_root(artifact_root.clone())
+            .with_provider_runtime(runtime)
+            .with_policy_engine(policy),
+    );
+    let response = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            &format!("/api/v1/chats/{}/messages", chat.id),
+            &SendMessageRequest {
+                request_id: Uuid::now_v7(),
+                idempotency_key: Uuid::now_v7(),
+                content: "Run the local workspace command now.".to_owned(),
+                attachment_ids: Vec::new(),
+                reply_to_message_id: None,
+                mentioned_bot_ids: Vec::new(),
+                skill_ids: Vec::new(),
+                references: Vec::new(),
+            },
+        ))
+        .await?;
+    assert_eq!(response.status(), StatusCode::OK);
+    let timeline = wait_for_timeline(&app, chat.id, |timeline| {
+        timeline
+            .messages
+            .last()
+            .is_some_and(|message| message.status != homebot_protocol::MessageStatus::Streaming)
+    })
+    .await?;
+    assert_eq!(
+        timeline
+            .messages
+            .last()
+            .map(|message| message.status.clone()),
+        Some(homebot_protocol::MessageStatus::Completed)
+    );
+    assert!(
+        artifact_root
+            .join("bot-workspaces")
+            .join(bot.id.0.to_string())
+            .join("terminal-provider-marker")
+            .is_file()
+    );
+    Ok(())
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn workspace_write_executes_through_the_provider_neutral_tool_harness()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let storage = Storage::open(&directory.path().join("homebot.db")).await?;
+    let profile_id = Uuid::now_v7();
+    sqlx::query("INSERT INTO provider_profiles (id, adapter_kind, display_name, configuration_json, created_at_ms, updated_at_ms) VALUES (?, 'chat-fake', 'Fixture', '{}', 1, 1)")
+        .bind(profile_id.to_string()).execute(storage.pool()).await?;
+    let mut domain_bot = homebot_domain::Bot::create("Workspace Bot", "Operator")?;
+    domain_bot.provider_profile_id = Some(profile_id);
+    let bot = storage.create_bot(Uuid::nil(), domain_bot, 1).await?;
+    let chat = storage
+        .create_direct_chat(Uuid::nil(), bot.id.0, Uuid::now_v7(), 2)
+        .await?;
+    let policy = Arc::new(homebot_tools::PolicyEngine::new(
+        Duration::from_secs(60),
+        Arc::new(homebot_tools::NoopActivitySink),
+    ));
+    policy
+        .replace_rules(vec![homebot_tools::PolicyRule::new(
+            homebot_tools::CapabilityClass::FilesystemWrite,
+            homebot_tools::PolicyEffect::RequireApproval,
+        )])
+        .await;
+    let runtime = Arc::new(ProviderRuntime::new());
+    runtime.register(Arc::new(ChatFakeAdapter::new()?)).await?;
+    let artifact_root = directory.path().join("artifacts");
+    let app = router(
+        AppState::new(storage, "correct-token")
+            .with_artifact_root(artifact_root.clone())
+            .with_provider_runtime(runtime)
+            .with_policy_engine(policy),
+    );
+    let response = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            &format!("/api/v1/chats/{}/messages", chat.id),
+            &SendMessageRequest {
+                request_id: Uuid::now_v7(),
+                idempotency_key: Uuid::now_v7(),
+                content: "Write the local workspace file now.".to_owned(),
+                attachment_ids: Vec::new(),
+                reply_to_message_id: None,
+                mentioned_bot_ids: Vec::new(),
+                skill_ids: Vec::new(),
+                references: Vec::new(),
+            },
+        ))
+        .await?;
+    assert_eq!(response.status(), StatusCode::OK);
+    let pending = wait_for_timeline(&app, chat.id, |timeline| {
+        timeline.approvals.len() == 1
+            && timeline.approvals[0].status == homebot_protocol::ApprovalStatus::Pending
+    })
+    .await?;
+    assert_eq!(pending.approvals[0].title, "Write workspace file");
+    let decision = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            &format!("/api/v1/approvals/{}/decision", pending.approvals[0].id),
+            &ApprovalDecisionRequest {
+                request_id: Uuid::now_v7(),
+                idempotency_key: Uuid::now_v7(),
+                allow: true,
+            },
+        ))
+        .await?;
+    assert_eq!(decision.status(), StatusCode::OK);
+    let timeline = wait_for_timeline(&app, chat.id, |timeline| {
+        timeline
+            .messages
+            .last()
+            .is_some_and(|message| message.status != homebot_protocol::MessageStatus::Streaming)
+    })
+    .await?;
+    assert_eq!(
+        timeline
+            .messages
+            .last()
+            .map(|message| message.status.clone()),
+        Some(homebot_protocol::MessageStatus::Completed)
+    );
+    assert_eq!(
+        std::fs::read_to_string(
+            artifact_root
+                .join("bot-workspaces")
+                .join(bot.id.0.to_string())
+                .join("provider-tool.txt")
+        )?,
+        "HOMEBOT_PROVIDER_FILE_OK"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn secure_interaction_resumes_only_its_provider_turn_without_persisting_the_value()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let database = directory.path().join("homebot.db");
+    let storage = Storage::open(&database).await?;
+    let profile_id = Uuid::now_v7();
+    sqlx::query("INSERT INTO provider_profiles (id, adapter_kind, display_name, configuration_json, created_at_ms, updated_at_ms) VALUES (?, 'chat-fake', 'Fixture', '{}', 1, 1)")
+        .bind(profile_id.to_string()).execute(storage.pool()).await?;
+    let mut domain_bot = homebot_domain::Bot::create("Secret Bot", "Operator")?;
+    domain_bot.provider_profile_id = Some(profile_id);
+    let bot = storage.create_bot(Uuid::nil(), domain_bot, 1).await?;
+    let chat = storage
+        .create_direct_chat(Uuid::nil(), bot.id.0, Uuid::now_v7(), 2)
+        .await?;
+    let runtime = Arc::new(ProviderRuntime::new());
+    runtime.register(Arc::new(ChatFakeAdapter::new()?)).await?;
+    let vault = Arc::new(MemorySecretVault::default());
+    let app = router(
+        AppState::new(storage, "correct-token")
+            .with_provider_runtime(runtime)
+            .with_secret_vault(vault.clone()),
+    );
+    let response = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            &format!("/api/v1/chats/{}/messages", chat.id),
+            &SendMessageRequest {
+                request_id: Uuid::now_v7(),
+                idempotency_key: Uuid::now_v7(),
+                content: "Request a secure credential now.".to_owned(),
+                attachment_ids: Vec::new(),
+                reply_to_message_id: None,
+                mentioned_bot_ids: Vec::new(),
+                skill_ids: Vec::new(),
+                references: Vec::new(),
+            },
+        ))
+        .await?;
+    assert_eq!(response.status(), StatusCode::OK);
+    let pending = wait_for_timeline(&app, chat.id, |timeline| {
+        timeline.activities.iter().any(|activity| {
+            activity.kind == homebot_protocol::ActivityKind::Interaction
+                && activity.status == homebot_protocol::ActivityStatus::Pending
+        })
+    })
+    .await?;
+    let interaction = pending
+        .activities
+        .iter()
+        .find(|activity| activity.kind == homebot_protocol::ActivityKind::Interaction)
+        .ok_or("missing interaction")?;
+    assert!(matches!(
+        interaction.presentation.detail,
+        homebot_protocol::ActivityDetail::Interaction {
+            request_kind: InteractionRequestKind::Secret,
+            ..
+        }
+    ));
+
+    let secret = "HOMEBOT_SECRET_MUST_NOT_PERSIST_9c1b";
+    let request = InteractionResponseRequest {
+        request_id: Uuid::now_v7(),
+        idempotency_key: Uuid::now_v7(),
+        confirmed: None,
+        choice: None,
+        secret: Some(secret.to_owned()),
+    };
+    let path = format!("/api/v1/interactions/{}/response", interaction.id);
+    let submitted = app
+        .clone()
+        .oneshot(json_request("POST", &path, &request))
+        .await?;
+    assert_eq!(submitted.status(), StatusCode::NO_CONTENT);
+    let duplicate = app
+        .clone()
+        .oneshot(json_request("POST", &path, &request))
+        .await?;
+    assert_eq!(duplicate.status(), StatusCode::NO_CONTENT);
+    let second_submission = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            &path,
+            &InteractionResponseRequest {
+                request_id: Uuid::now_v7(),
+                idempotency_key: Uuid::now_v7(),
+                confirmed: None,
+                choice: None,
+                secret: Some("SECOND_VALUE_MUST_NOT_REPLACE_THE_FIRST".to_owned()),
+            },
+        ))
+        .await?;
+    assert_eq!(second_submission.status(), StatusCode::CONFLICT);
+
+    let completed = wait_for_timeline(&app, chat.id, |timeline| {
+        timeline
+            .messages
+            .last()
+            .is_some_and(|message| message.status == homebot_protocol::MessageStatus::Completed)
+    })
+    .await?;
+    let interaction = completed
+        .activities
+        .iter()
+        .find(|activity| activity.kind == homebot_protocol::ActivityKind::Interaction)
+        .ok_or("missing completed interaction")?;
+    assert_eq!(
+        interaction.status,
+        homebot_protocol::ActivityStatus::Succeeded
+    );
+    assert_eq!(
+        interaction.detail,
+        "Secret stored securely; its value is not visible in chat."
+    );
+    assert_eq!(
+        vault
+            .status(&format!("homebot:interaction:{}", interaction.id))
+            .await,
+        SecretStatus::Ready
+    );
+    assert!(!serde_json::to_string(&completed)?.contains(secret));
+    for entry in std::fs::read_dir(directory.path())? {
+        let entry = entry?;
+        if entry.file_type()?.is_file() {
+            assert!(!String::from_utf8_lossy(&std::fs::read(entry.path())?).contains(secret));
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn local_browser_executes_through_the_provider_neutral_tool_harness()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let storage = Storage::open(&directory.path().join("homebot.db")).await?;
+    let profile_id = Uuid::now_v7();
+    sqlx::query("INSERT INTO provider_profiles (id, adapter_kind, display_name, configuration_json, created_at_ms, updated_at_ms) VALUES (?, 'chat-fake', 'Fixture', '{}', 1, 1)")
+        .bind(profile_id.to_string()).execute(storage.pool()).await?;
+    let mut domain_bot = homebot_domain::Bot::create("Browser Bot", "Operator")?;
+    domain_bot.provider_profile_id = Some(profile_id);
+    let bot = storage.create_bot(Uuid::nil(), domain_bot, 1).await?;
+    let chat = storage
+        .create_direct_chat(Uuid::nil(), bot.id.0, Uuid::now_v7(), 2)
+        .await?;
+    let policy = Arc::new(homebot_tools::PolicyEngine::new(
+        Duration::from_secs(60),
+        Arc::new(homebot_tools::NoopActivitySink),
+    ));
+    policy
+        .replace_rules(vec![
+            homebot_tools::PolicyRule::new(
+                homebot_tools::CapabilityClass::BrowserAct,
+                homebot_tools::PolicyEffect::Allow,
+            )
+            .action_prefix("browser.session.create"),
+            homebot_tools::PolicyRule::new(
+                homebot_tools::CapabilityClass::BrowserAct,
+                homebot_tools::PolicyEffect::RequireApproval,
+            )
+            .action_prefix("browser.navigate"),
+        ])
+        .await;
+    let browser = Arc::new(BrowserFakeRuntime {
+        policy: Arc::clone(&policy),
+        sessions: Mutex::new(HashMap::new()),
+        stall_next: AtomicBool::new(false),
+    });
+    let runtime = Arc::new(ProviderRuntime::new());
+    runtime.register(Arc::new(ChatFakeAdapter::new()?)).await?;
+    let app = router(
+        AppState::new(storage.clone(), "correct-token")
+            .with_provider_runtime(runtime)
+            .with_policy_engine(policy)
+            .with_browser_runtime(browser.clone()),
+    );
+    let response = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            &format!("/api/v1/chats/{}/messages", chat.id),
+            &SendMessageRequest {
+                request_id: Uuid::now_v7(),
+                idempotency_key: Uuid::now_v7(),
+                content: "Use the local browser now.".to_owned(),
+                attachment_ids: Vec::new(),
+                reply_to_message_id: None,
+                mentioned_bot_ids: Vec::new(),
+                skill_ids: Vec::new(),
+                references: Vec::new(),
+            },
+        ))
+        .await?;
+    assert_eq!(response.status(), StatusCode::OK);
+    let pending = wait_for_timeline(&app, chat.id, |timeline| {
+        timeline.approvals.len() == 1
+            && timeline.approvals[0].status == homebot_protocol::ApprovalStatus::Pending
+    })
+    .await?;
+    assert_eq!(pending.approvals[0].title, "Navigate shared browser");
+    let decision = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            &format!("/api/v1/approvals/{}/decision", pending.approvals[0].id),
+            &ApprovalDecisionRequest {
+                request_id: Uuid::now_v7(),
+                idempotency_key: Uuid::now_v7(),
+                allow: true,
+            },
+        ))
+        .await?;
+    if decision.status() != StatusCode::OK {
+        return Err(format!(
+            "browser approval failed: {:?}",
+            response_json::<homebot_protocol::ErrorEnvelope>(decision).await?
+        )
+        .into());
+    }
+    let timeline = wait_for_timeline(&app, chat.id, |timeline| {
+        timeline
+            .messages
+            .last()
+            .is_some_and(|message| message.status != homebot_protocol::MessageStatus::Streaming)
+    })
+    .await?;
+    assert_eq!(
+        timeline
+            .messages
+            .last()
+            .map(|message| message.status.clone()),
+        Some(homebot_protocol::MessageStatus::Completed),
+        "provider turn did not complete: {:?}",
+        timeline
+            .messages
+            .last()
+            .and_then(|message| message.error.as_ref())
+    );
+    assert_eq!(
+        timeline.approvals[0].message_id,
+        timeline.messages.last().map(|message| message.id)
+    );
+    let sessions = storage.browser_sessions(Uuid::nil(), Some(chat.id)).await?;
+    assert_eq!(sessions.len(), 1);
+    let runtime_session_id = sessions[0].runtime_session_id.ok_or("runtime session")?;
+    assert_eq!(
+        browser
+            .sessions
+            .lock()
+            .await
+            .get(&runtime_session_id)
+            .map(String::as_str),
+        Some("https://example.test/provider-browser")
+    );
+    Ok(())
+}
+
+#[cfg(unix)]
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn assigned_mcp_tool_executes_through_the_provider_turn()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let marker = directory.path().join("provider-plugin-called");
+    let server = directory.path().join("fixture-mcp");
+    let script = format!(
+        "#!/bin/sh\nwhile IFS= read -r line; do\ncase \"$line\" in\n*\\\"method\\\":\\\"initialize\\\"*) printf '%s\\n' '{{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{{\"protocolVersion\":\"2025-11-25\",\"capabilities\":{{\"tools\":{{}}}},\"serverInfo\":{{\"name\":\"fixture\",\"version\":\"1\"}}}}}}' ;;\n*\\\"method\\\":\\\"tools/call\\\"*) touch '{}'; printf '%s\\n' '{{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{{\"content\":[{{\"type\":\"text\",\"text\":\"done\"}}]}}}}' ;;\nesac\ndone\n",
+        marker.display()
+    );
+    std::fs::write(&server, script)?;
+    let mut permissions = std::fs::metadata(&server)?.permissions();
+    permissions.set_mode(0o700);
+    std::fs::set_permissions(&server, permissions)?;
+
+    let storage = Storage::open(&directory.path().join("homebot.db")).await?;
+    let profile_id = Uuid::now_v7();
+    sqlx::query("INSERT INTO provider_profiles (id, adapter_kind, display_name, configuration_json, created_at_ms, updated_at_ms) VALUES (?, 'chat-fake', 'Fixture', '{}', 1, 1)")
+        .bind(profile_id.to_string()).execute(storage.pool()).await?;
+    let mut domain_bot = homebot_domain::Bot::create("Tool Bot", "Operator")?;
+    domain_bot.provider_profile_id = Some(profile_id);
+    let bot = storage.create_bot(Uuid::nil(), domain_bot, 1).await?;
+    let chat = storage
+        .create_direct_chat(Uuid::nil(), bot.id.0, Uuid::now_v7(), 2)
+        .await?;
+    let plugin_id = Uuid::now_v7();
+    storage
+        .create_plugin(&homebot_storage::PluginRecord {
+            id: plugin_id,
+            owner_id: Uuid::nil(),
+            name: "Marker tools".to_owned(),
+            description: String::new(),
+            kind: "local_mcp".to_owned(),
+            configuration: serde_json::json!({"program":server,"arguments":[]}),
+            enabled: true,
+            connection_id: Uuid::now_v7(),
+            transport: "stdio".to_owned(),
+            status: "connected".to_owned(),
+            auth_status: "not_required".to_owned(),
+            error_message: None,
+            updated_at_ms: 3,
+        })
+        .await?;
+    storage
+        .update_plugin_connection(
+            Uuid::nil(),
+            plugin_id,
+            homebot_storage::PluginConnectionUpdate {
+                enabled: true,
+                status: "connected",
+                auth_status: "not_required",
+                error_message: None,
+                tools: &[homebot_storage::PluginToolRecord {
+                    name: "write_marker".to_owned(),
+                    title: None,
+                    description: Some("Write the fixture marker".to_owned()),
+                    input_schema: serde_json::json!({"type":"object","additionalProperties":false}),
+                }],
+                updated_at_ms: 4,
+            },
+        )
+        .await?;
+    storage
+        .set_plugin_assignment(Uuid::nil(), plugin_id, bot.id.0, true)
+        .await?;
+    let runtime = Arc::new(ProviderRuntime::new());
+    runtime.register(Arc::new(ChatFakeAdapter::new()?)).await?;
+    let app = router(AppState::new(storage, "correct-token").with_provider_runtime(runtime));
+    let response = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            &format!("/api/v1/chats/{}/messages", chat.id),
+            &SendMessageRequest {
+                request_id: Uuid::now_v7(),
+                idempotency_key: Uuid::now_v7(),
+                content: "Use the assigned MCP tool now.".to_owned(),
+                attachment_ids: Vec::new(),
+                reply_to_message_id: None,
+                mentioned_bot_ids: Vec::new(),
+                skill_ids: Vec::new(),
+                references: Vec::new(),
+            },
+        ))
+        .await?;
+    assert_eq!(response.status(), StatusCode::OK);
+    let pending = wait_for_timeline(&app, chat.id, |timeline| {
+        timeline.approvals.len() == 1
+            && timeline.approvals[0].status == homebot_protocol::ApprovalStatus::Pending
+    })
+    .await?;
+    assert!(!marker.exists());
+    assert_eq!(
+        pending.approvals[0].message_id,
+        pending.messages.last().map(|message| message.id)
+    );
+    let response = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            &format!("/api/v1/approvals/{}/decision", pending.approvals[0].id),
+            &ApprovalDecisionRequest {
+                request_id: Uuid::now_v7(),
+                idempotency_key: Uuid::now_v7(),
+                allow: true,
+            },
+        ))
+        .await?;
+    assert_eq!(response.status(), StatusCode::OK);
+    let _ = wait_for_timeline(&app, chat.id, |timeline| {
+        timeline.approvals[0].status == homebot_protocol::ApprovalStatus::Allowed
+            && timeline
+                .messages
+                .last()
+                .is_some_and(|message| message.status == homebot_protocol::MessageStatus::Completed)
+    })
+    .await?;
+    assert!(marker.exists());
+
+    std::fs::remove_file(&marker)?;
+    let response = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            &format!("/api/v1/chats/{}/messages", chat.id),
+            &SendMessageRequest {
+                request_id: Uuid::now_v7(),
+                idempotency_key: Uuid::now_v7(),
+                content: "Use the assigned MCP tool now.".to_owned(),
+                attachment_ids: Vec::new(),
+                reply_to_message_id: None,
+                mentioned_bot_ids: Vec::new(),
+                skill_ids: Vec::new(),
+                references: Vec::new(),
+            },
+        ))
+        .await?;
+    assert_eq!(response.status(), StatusCode::OK);
+    let _ = wait_for_timeline(&app, chat.id, |timeline| {
+        timeline.approvals.len() == 2
+            && timeline.approvals[1].status == homebot_protocol::ApprovalStatus::Pending
+    })
+    .await?;
+    let response = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            &format!("/api/v1/chats/{}/stop", chat.id),
+            &BotMutationRequest {
+                request_id: Uuid::now_v7(),
+                idempotency_key: Uuid::now_v7(),
+            },
+        ))
+        .await?;
+    assert_eq!(response.status(), StatusCode::OK);
+    let _ = wait_for_timeline(&app, chat.id, |timeline| {
+        timeline.approvals[1].status == homebot_protocol::ApprovalStatus::Expired
+            && timeline
+                .messages
+                .last()
+                .is_some_and(|message| message.status == homebot_protocol::MessageStatus::Cancelled)
+    })
+    .await?;
+    assert!(!marker.exists());
+    Ok(())
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn direct_bot_can_message_another_bot_in_the_same_timeline()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let storage = Storage::open(&directory.path().join("homebot.db")).await?;
+    let profile_id = Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO provider_profiles (
+            id, adapter_kind, display_name, configuration_json, created_at_ms, updated_at_ms
+         ) VALUES (?, 'chat-fake', 'Fixture', '{\"model\":\"fixture\"}', 1, 1)",
+    )
+    .bind(profile_id.to_string())
+    .execute(storage.pool())
+    .await?;
+    let runtime = Arc::new(ProviderRuntime::new());
+    let provider = Arc::new(ChatFakeAdapter::new()?);
+    runtime.register(provider.clone()).await?;
+    let app = router(AppState::new(storage, "correct-token").with_provider_runtime(runtime));
+
+    let mut bot_ids = Vec::new();
+    for name in ["Scout", "Reviewer"] {
+        let bot_id = Uuid::now_v7();
+        let response = app
+            .clone()
+            .oneshot(json_request(
+                "POST",
+                "/api/v1/bots",
+                &CreateBotRequest {
+                    request_id: Uuid::now_v7(),
+                    idempotency_key: bot_id,
+                    name: name.to_owned(),
+                    title: "Teammate".to_owned(),
+                    description: String::new(),
+                    shape: BotShape::RoundedSquare,
+                    color: BotColor::Violet,
+                    provider_profile_id: Some(profile_id),
+                    permission_profile: BotPermissionProfile::AskBeforeChanges,
+                },
+            ))
+            .await?;
+        assert_eq!(response.status(), StatusCode::CREATED);
+        bot_ids.push(bot_id);
+    }
+    let chat_id = Uuid::now_v7();
+    let response = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/chats/direct",
+            &CreateDirectChatRequest {
+                request_id: Uuid::now_v7(),
+                idempotency_key: chat_id,
+                bot_id: bot_ids[0],
+            },
+        ))
+        .await?;
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let response = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            &format!("/api/v1/chats/{chat_id}/messages"),
+            &SendMessageRequest {
+                request_id: Uuid::now_v7(),
+                idempotency_key: Uuid::now_v7(),
+                content: "Ask Reviewer through HomeBot to review your findings.".to_owned(),
+                attachment_ids: Vec::new(),
+                reply_to_message_id: None,
+                mentioned_bot_ids: Vec::new(),
+                skill_ids: Vec::new(),
+                references: Vec::new(),
+            },
+        ))
+        .await?;
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let timeline = wait_for_timeline(&app, chat_id, |timeline| {
+        timeline.messages.iter().any(|message| {
+            message.author_bot_id == Some(bot_ids[0])
+                && message.status == homebot_protocol::MessageStatus::Completed
+        }) && timeline.messages.iter().any(|message| {
+            message.author_bot_id == Some(bot_ids[1])
+                && message.status == homebot_protocol::MessageStatus::Streaming
+        })
+    })
+    .await?;
+    assert!(timeline.chat.running);
+    assert!(timeline.messages.iter().any(|message| {
+        message.author_bot_id == Some(bot_ids[0])
+            && matches!(&message.parts[0], homebot_protocol::MessagePart::Text { text, .. } if text == "Hello from the Bot")
+    }));
+    assert!(timeline.messages.iter().any(|message| {
+        message.author_bot_id == Some(bot_ids[1])
+            && matches!(&message.parts[0], homebot_protocol::MessagePart::Text { text, .. } if text == "Hello from the Bot")
+    }));
+    let prompts = provider.prompts.lock().await;
+    let recipient_prompt = prompts
+        .iter()
+        .find(|prompt| prompt.contains("Name: Reviewer"))
+        .ok_or("recipient Bot was not started")?;
+    assert!(recipient_prompt.contains("HomeBot owns Bot identity, conversations, memory"));
+    assert!(recipient_prompt.contains("From: Scout"));
+    assert!(recipient_prompt.contains("Review Scout's findings"));
+    let reviewer_turn = prompts
+        .iter()
+        .position(|prompt| prompt.contains("Name: Reviewer"))
+        .ok_or("recipient prompt index missing")?;
+    let tools = provider.tools.lock().await;
+    assert!(
+        tools[reviewer_turn]
+            .iter()
+            .all(|tool| tool.name != "homebot_message_bot"),
+        "a Bot that already contributed must not be offered as a cycle target"
+    );
+    Ok(())
+}
+
 #[derive(Debug)]
 struct BrowserFakeRuntime {
     policy: Arc<homebot_tools::PolicyEngine>,
     sessions: Mutex<HashMap<Uuid, String>>,
+    stall_next: AtomicBool,
 }
 
 #[async_trait::async_trait]
@@ -539,6 +1373,9 @@ impl browser_sessions::BrowserRuntime for BrowserFakeRuntime {
             destructive: capability == homebot_tools::CapabilityClass::BrowserAct,
         };
         let _authorization = self.policy.authorize(&request, approval_id).await?;
+        if self.stall_next.swap(false, Ordering::AcqRel) {
+            std::future::pending::<()>().await;
+        }
         let mut sessions = self.sessions.lock().await;
         let url = sessions
             .get_mut(&session_id)
@@ -691,13 +1528,14 @@ async fn global_search_is_owner_scoped_and_returns_exact_targets()
         )
         .await?;
 
-    let app = router(AppState::new(storage, "correct-token"));
+    let app = router(AppState::new(storage.clone(), "correct-token"));
     let unauthorized = app
         .clone()
         .oneshot(Request::get("/api/v1/search?q=launch").body(Body::empty())?)
         .await?;
     assert_eq!(unauthorized.status(), StatusCode::UNAUTHORIZED);
     let response = app
+        .clone()
         .oneshot(
             Request::get("/api/v1/search?q=launch")
                 .header("authorization", "Bearer correct-token")
@@ -705,6 +1543,7 @@ async fn global_search_is_owner_scoped_and_returns_exact_targets()
         )
         .await?;
     let response = response_json::<GlobalSearchResponse>(response).await?;
+    assert_eq!(response.status, homebot_protocol::SearchStatus::Ready);
     assert!(response.results.iter().any(|result| {
         result.message_id == Some(message_id)
             && result.deep_link == format!("homebot://chat/{}?message={message_id}", chat.id)
@@ -725,6 +1564,49 @@ async fn global_search_is_owner_scoped_and_returns_exact_targets()
             .iter()
             .all(|result| result.chat_id != Some(foreign_chat.id))
     );
+    let prefix = app
+        .clone()
+        .oneshot(
+            Request::get("/api/v1/search?q=la")
+                .header("authorization", "Bearer correct-token")
+                .body(Body::empty())?,
+        )
+        .await?;
+    assert_eq!(prefix.status(), StatusCode::OK);
+    assert!(
+        !response_json::<GlobalSearchResponse>(prefix)
+            .await?
+            .results
+            .is_empty()
+    );
+    for invalid_query in ["l", "aa%20bb%20cc%20dd%20ee%20ff%20gg%20hh%20ii"] {
+        let invalid = app
+            .clone()
+            .oneshot(
+                Request::get(format!("/api/v1/search?q={invalid_query}"))
+                    .header("authorization", "Bearer correct-token")
+                    .body(Body::empty())?,
+            )
+            .await?;
+        assert_eq!(invalid.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    }
+    sqlx::query("DROP TABLE search_documents")
+        .execute(storage.pool())
+        .await?;
+    let unavailable = app
+        .oneshot(
+            Request::get("/api/v1/search?q=launch")
+                .header("authorization", "Bearer correct-token")
+                .body(Body::empty())?,
+        )
+        .await?;
+    assert_eq!(unavailable.status(), StatusCode::OK);
+    let unavailable = response_json::<GlobalSearchResponse>(unavailable).await?;
+    assert_eq!(
+        unavailable.status,
+        homebot_protocol::SearchStatus::Unavailable
+    );
+    assert!(unavailable.results.is_empty());
     Ok(())
 }
 
@@ -926,6 +1808,19 @@ async fn plugin_registry_connects_local_mcp_and_persists_error_recovery_states()
     let storage = Storage::open(&directory.path().join("homebot.db")).await?;
     let app = router(AppState::new(storage.clone(), "correct-token"));
     let plugin_id = Uuid::now_v7();
+    let invalid = CreateLocalMcpPluginRequest {
+        request_id: Uuid::now_v7(),
+        idempotency_key: plugin_id,
+        name: "Repository tools".to_owned(),
+        description: "Local fixture".to_owned(),
+        program: "relative-program".to_owned(),
+        arguments: Vec::new(),
+    };
+    let response = app
+        .clone()
+        .oneshot(json_request("POST", "/api/v1/plugins", &invalid))
+        .await?;
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
     let create = CreateLocalMcpPluginRequest {
         request_id: Uuid::now_v7(),
         idempotency_key: plugin_id,
@@ -991,6 +1886,696 @@ async fn plugin_registry_connects_local_mcp_and_persists_error_recovery_states()
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn remote_mcp_uses_secret_headers_and_discovers_tools()
+-> Result<(), Box<dyn std::error::Error>> {
+    let tool_calls = Arc::new(AtomicUsize::new(0));
+    let mcp_tool_calls = Arc::clone(&tool_calls);
+    let mcp = Router::new().route(
+        "/mcp",
+        post(move |headers: HeaderMap, Json(body): Json<Value>| {
+            let tool_calls = Arc::clone(&mcp_tool_calls);
+            async move {
+                if headers
+                    .get("x-consumer-api-key")
+                    .and_then(|value| value.to_str().ok())
+                    != Some("fixture-secret")
+                {
+                    return StatusCode::UNAUTHORIZED.into_response();
+                }
+                match body.get("method").and_then(Value::as_str) {
+                    Some("initialize") => Response::builder()
+                        .status(StatusCode::OK)
+                        .header("mcp-session-id", "fixture-session")
+                        .header("content-type", "application/json")
+                        .body(Body::from(
+                            serde_json::json!({
+                                "jsonrpc":"2.0", "id":1,
+                                "result": {
+                                    "protocolVersion":"2025-11-25",
+                                    "capabilities":{"tools":{}},
+                                    "serverInfo":{"name":"remote-fixture","version":"1"}
+                                }
+                            })
+                            .to_string(),
+                        ))
+                        .unwrap_or_else(|_| Response::new(Body::empty())),
+                    Some("notifications/initialized") => Response::builder()
+                        .status(StatusCode::ACCEPTED)
+                        .body(Body::empty())
+                        .unwrap_or_else(|_| Response::new(Body::empty())),
+                    Some("tools/list") => Response::builder()
+                        .status(StatusCode::OK)
+                        .header("content-type", "application/json")
+                        .body(Body::from(
+                            serde_json::json!({
+                                "jsonrpc":"2.0", "id":2,
+                                "result":{"tools":[{
+                                    "name":"search_memory",
+                                    "description":"Search durable memory",
+                                    "inputSchema":{"type":"object","additionalProperties":false}
+                                }]}
+                            })
+                            .to_string(),
+                        ))
+                        .unwrap_or_else(|_| Response::new(Body::empty())),
+                    Some("tools/call") => {
+                        tool_calls.fetch_add(1, Ordering::SeqCst);
+                        Response::builder()
+                            .status(StatusCode::OK)
+                            .header("content-type", "application/json")
+                            .body(Body::from(
+                                serde_json::json!({
+                                    "jsonrpc":"2.0", "id":2,
+                                    "result":{"content":[{
+                                        "type":"text",
+                                        "text":"fixture memory result"
+                                    }]}
+                                })
+                                .to_string(),
+                            ))
+                            .unwrap_or_else(|_| Response::new(Body::empty()))
+                    }
+                    _ => Response::builder()
+                        .status(StatusCode::BAD_REQUEST)
+                        .body(Body::empty())
+                        .unwrap_or_else(|_| Response::new(Body::empty())),
+                }
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let address = listener.local_addr()?;
+    let server = tokio::spawn(async move { axum::serve(listener, mcp).await });
+
+    let directory = tempfile::tempdir()?;
+    let storage = Storage::open(&directory.path().join("homebot.db")).await?;
+    let profile_id = Uuid::now_v7();
+    sqlx::query("INSERT INTO provider_profiles (id, adapter_kind, display_name, configuration_json, created_at_ms, updated_at_ms) VALUES (?, 'chat-fake', 'Fixture', '{}', 1, 1)")
+        .bind(profile_id.to_string()).execute(storage.pool()).await?;
+    let mut domain_bot = homebot_domain::Bot::create("Memory Bot", "Researcher")?;
+    domain_bot.provider_profile_id = Some(profile_id);
+    let bot = storage.create_bot(Uuid::nil(), domain_bot, 1).await?;
+    let chat = storage
+        .create_direct_chat(Uuid::nil(), bot.id.0, Uuid::now_v7(), 2)
+        .await?;
+    let vault = Arc::new(MemorySecretVault::default());
+    let runtime = Arc::new(ProviderRuntime::new());
+    runtime.register(Arc::new(ChatFakeAdapter::new()?)).await?;
+    let app = router(
+        AppState::new(storage.clone(), "correct-token")
+            .with_secret_vault(vault.clone())
+            .with_provider_runtime(runtime),
+    );
+    let secret_id = Uuid::now_v7();
+    let response = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/secrets",
+            &serde_json::json!({
+                "request_id": Uuid::now_v7(),
+                "idempotency_key": secret_id,
+                "label": "Remote MCP fixture",
+                "value": "fixture-secret"
+            }),
+        ))
+        .await?;
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let plugin_id = Uuid::now_v7();
+    let response = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/plugins/remote",
+            &serde_json::json!({
+                "request_id": Uuid::now_v7(),
+                "idempotency_key": plugin_id,
+                "name": "Remote memory",
+                "description": "Hosted memory fixture",
+                "url": format!("http://{address}/mcp"),
+                "secret_headers": [{
+                    "name": "x-consumer-api-key",
+                    "secret_id": secret_id,
+                    "prefix": ""
+                }]
+            }),
+        ))
+        .await?;
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let response = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            &format!("/api/v1/plugins/{plugin_id}/connect"),
+            &PluginMutationRequest {
+                request_id: Uuid::now_v7(),
+                idempotency_key: Uuid::now_v7(),
+            },
+        ))
+        .await?;
+    assert_eq!(response.status(), StatusCode::OK);
+    let connected: PluginSummary = response_json(response).await?;
+    assert_eq!(connected.connection_state, PluginConnectionState::Connected);
+    assert_eq!(
+        connected.auth_state,
+        homebot_protocol::PluginAuthState::Connected
+    );
+    assert_eq!(connected.tools[0].name, "search_memory");
+    storage
+        .set_plugin_assignment(Uuid::nil(), plugin_id, bot.id.0, true)
+        .await?;
+    storage
+        .upsert_capability_rule(&homebot_storage::CapabilityRuleRecord {
+            id: Uuid::now_v7(),
+            owner_id: Uuid::nil(),
+            capability: "plugin_write".to_owned(),
+            effect: "allow".to_owned(),
+            device_id: None,
+            bot_id: Some(bot.id.0),
+            chat_id: Some(chat.id),
+            workspace_id: None,
+            action_prefix: Some("plugin.tool.call.search_memory".to_owned()),
+            created_at_ms: 3,
+            updated_at_ms: 3,
+        })
+        .await?;
+    let response = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            &format!("/api/v1/chats/{}/messages", chat.id),
+            &SendMessageRequest {
+                request_id: Uuid::now_v7(),
+                idempotency_key: Uuid::now_v7(),
+                content: "Use remote memory MCP now.".to_owned(),
+                attachment_ids: Vec::new(),
+                reply_to_message_id: None,
+                mentioned_bot_ids: Vec::new(),
+                skill_ids: Vec::new(),
+                references: Vec::new(),
+            },
+        ))
+        .await?;
+    assert_eq!(response.status(), StatusCode::OK);
+    let _ = wait_for_timeline(&app, chat.id, |timeline| {
+        timeline
+            .messages
+            .last()
+            .is_some_and(|message| message.status == homebot_protocol::MessageStatus::Completed)
+    })
+    .await?;
+    assert_eq!(tool_calls.load(Ordering::SeqCst), 1);
+    let response = app
+        .clone()
+        .oneshot(json_request(
+            "PUT",
+            &format!("/api/v1/secrets/{secret_id}"),
+            &serde_json::json!({
+                "request_id": Uuid::now_v7(),
+                "label": null,
+                "value":"expired-secret"
+            }),
+        ))
+        .await?;
+    assert_eq!(response.status(), StatusCode::OK);
+    let response = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            &format!("/api/v1/plugins/{plugin_id}/connect"),
+            &PluginMutationRequest {
+                request_id: Uuid::now_v7(),
+                idempotency_key: Uuid::now_v7(),
+            },
+        ))
+        .await?;
+    assert_eq!(response.status(), StatusCode::OK);
+    let needs_auth: PluginSummary = response_json(response).await?;
+    assert_eq!(needs_auth.connection_state, PluginConnectionState::Reopen);
+    assert_eq!(
+        needs_auth.auth_state,
+        homebot_protocol::PluginAuthState::Required
+    );
+    assert!(!needs_auth.enabled);
+    assert!(needs_auth.error_message.is_none());
+    vault.delete(&locator_for(secret_id)).await?;
+    let response = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            &format!("/api/v1/plugins/{plugin_id}/connect"),
+            &PluginMutationRequest {
+                request_id: Uuid::now_v7(),
+                idempotency_key: Uuid::now_v7(),
+            },
+        ))
+        .await?;
+    assert_eq!(response.status(), StatusCode::OK);
+    let missing_secret: PluginSummary = response_json(response).await?;
+    assert_eq!(
+        missing_secret.connection_state,
+        PluginConnectionState::Reopen
+    );
+    assert_eq!(
+        missing_secret.auth_state,
+        homebot_protocol::PluginAuthState::Required
+    );
+    assert!(missing_secret.error_message.is_none());
+    server.abort();
+    Ok(())
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)] // One end-to-end contract covers catalog, auth, assignment, recall, and retain.
+async fn memory_provider_catalog_creates_a_first_party_hindsight_connector()
+-> Result<(), Box<dyn std::error::Error>> {
+    let recall_calls = Arc::new(AtomicUsize::new(0));
+    let retain_calls = Arc::new(AtomicUsize::new(0));
+    let fixture_recall_calls = Arc::clone(&recall_calls);
+    let fixture_retain_calls = Arc::clone(&retain_calls);
+    let mcp = Router::new().route(
+        "/mcp/my-bank/",
+        post(move |headers: HeaderMap, Json(body): Json<Value>| {
+            let recall_calls = Arc::clone(&fixture_recall_calls);
+            let retain_calls = Arc::clone(&fixture_retain_calls);
+            async move {
+                if headers
+                    .get("authorization")
+                    .and_then(|value| value.to_str().ok())
+                    != Some("Bearer hindsight-fixture")
+                {
+                    return StatusCode::UNAUTHORIZED.into_response();
+                }
+                match body.get("method").and_then(Value::as_str) {
+                    Some("initialize") => Json(serde_json::json!({
+                        "jsonrpc":"2.0", "id":1,
+                        "result": {
+                            "protocolVersion":"2025-11-25",
+                            "capabilities":{"tools":{}},
+                            "serverInfo":{"name":"hindsight-fixture","version":"1"}
+                        }
+                    }))
+                    .into_response(),
+                    Some("notifications/initialized") => StatusCode::ACCEPTED.into_response(),
+                    Some("tools/list") => Json(serde_json::json!({
+                        "jsonrpc":"2.0", "id":2,
+                        "result":{"tools":[
+                            {"name":"recall","inputSchema":{"type":"object"}},
+                            {"name":"sync_retain","inputSchema":{"type":"object"}}
+                        ]}
+                    }))
+                    .into_response(),
+                    Some("tools/call") => {
+                        let name = body
+                            .pointer("/params/name")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default();
+                        let text = match name {
+                            "recall" => {
+                                recall_calls.fetch_add(1, Ordering::SeqCst);
+                                "The user prefers tea."
+                            }
+                            "sync_retain" => {
+                                retain_calls.fetch_add(1, Ordering::SeqCst);
+                                "Stored"
+                            }
+                            _ => return StatusCode::BAD_REQUEST.into_response(),
+                        };
+                        Json(serde_json::json!({
+                            "jsonrpc":"2.0", "id":2,
+                            "result":{"content":[{"type":"text","text":text}]}
+                        }))
+                        .into_response()
+                    }
+                    _ => StatusCode::BAD_REQUEST.into_response(),
+                }
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let address = listener.local_addr()?;
+    let server = tokio::spawn(async move { axum::serve(listener, mcp).await });
+
+    let directory = tempfile::tempdir()?;
+    let storage = Storage::open(&directory.path().join("homebot.db")).await?;
+    let profile_id = Uuid::now_v7();
+    sqlx::query("INSERT INTO provider_profiles (id, adapter_kind, display_name, configuration_json, created_at_ms, updated_at_ms) VALUES (?, 'chat-fake', 'Fixture', '{}', 1, 1)")
+        .bind(profile_id.to_string()).execute(storage.pool()).await?;
+    let mut domain_bot = homebot_domain::Bot::create("Memory Bot", "Companion")?;
+    domain_bot.provider_profile_id = Some(profile_id);
+    let bot = storage.create_bot(Uuid::nil(), domain_bot, 1).await?;
+    let chat = storage
+        .create_direct_chat(Uuid::nil(), bot.id.0, Uuid::now_v7(), 2)
+        .await?;
+    let vault = Arc::new(MemorySecretVault::default());
+    let runtime = Arc::new(ProviderRuntime::new());
+    let provider = Arc::new(ChatFakeAdapter::new()?);
+    runtime.register(provider.clone()).await?;
+    let app = router(
+        AppState::new(storage.clone(), "correct-token")
+            .with_secret_vault(vault)
+            .with_provider_runtime(runtime),
+    );
+    let catalog = app
+        .clone()
+        .oneshot(
+            Request::get("/api/v1/memory-providers")
+                .header("authorization", "Bearer correct-token")
+                .body(Body::empty())?,
+        )
+        .await?;
+    assert_eq!(catalog.status(), StatusCode::OK);
+    let catalog: Value = response_json(catalog).await?;
+    for provider in [
+        "supermemory",
+        "supermemory_self_hosted",
+        "honcho",
+        "hindsight",
+        "holographic",
+        "mem0",
+        "openmemory",
+        "zep_cloud",
+        "graphiti",
+        "cognee",
+        "letta",
+        "langmem",
+    ] {
+        assert!(catalog.as_array().is_some_and(|entries| {
+            entries
+                .iter()
+                .any(|entry| entry.get("id").and_then(Value::as_str) == Some(provider))
+        }));
+    }
+
+    let secret_id = Uuid::now_v7();
+    let response = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/secrets",
+            &serde_json::json!({
+                "request_id": Uuid::now_v7(),
+                "idempotency_key": secret_id,
+                "label": "Hindsight fixture",
+                "value": "hindsight-fixture"
+            }),
+        ))
+        .await?;
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let plugin_id = Uuid::now_v7();
+    let response = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/memory-providers/hindsight",
+            &serde_json::json!({
+                "request_id": Uuid::now_v7(),
+                "idempotency_key": plugin_id,
+                "name": "Personal Hindsight",
+                "endpoint": format!("http://{address}/mcp/my-bank/"),
+                "secret_id": secret_id
+            }),
+        ))
+        .await?;
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let created: PluginSummary = response_json(response).await?;
+    assert_eq!(created.kind, "memory_mcp");
+    let response = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            &format!("/api/v1/plugins/{plugin_id}/connect"),
+            &PluginMutationRequest {
+                request_id: Uuid::now_v7(),
+                idempotency_key: Uuid::now_v7(),
+            },
+        ))
+        .await?;
+    let connected: PluginSummary = response_json(response).await?;
+    assert_eq!(connected.connection_state, PluginConnectionState::Connected);
+    assert_eq!(
+        connected
+            .tools
+            .iter()
+            .map(|tool| tool.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["recall", "sync_retain"]
+    );
+    storage
+        .set_plugin_assignment(Uuid::nil(), plugin_id, bot.id.0, true)
+        .await?;
+    let response = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            &format!("/api/v1/chats/{}/messages", chat.id),
+            &SendMessageRequest {
+                request_id: Uuid::now_v7(),
+                idempotency_key: Uuid::now_v7(),
+                content: "What do I prefer?".to_owned(),
+                attachment_ids: Vec::new(),
+                reply_to_message_id: None,
+                mentioned_bot_ids: Vec::new(),
+                skill_ids: Vec::new(),
+                references: Vec::new(),
+            },
+        ))
+        .await?;
+    assert_eq!(response.status(), StatusCode::OK);
+    let pending =
+        wait_for_timeline(&app, chat.id, |timeline| timeline.approvals.len() == 1).await?;
+    let response = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            &format!("/api/v1/approvals/{}/decision", pending.approvals[0].id),
+            &ApprovalDecisionRequest {
+                request_id: Uuid::now_v7(),
+                idempotency_key: Uuid::now_v7(),
+                allow: true,
+            },
+        ))
+        .await?;
+    assert_eq!(response.status(), StatusCode::OK);
+    let _ = wait_for_timeline(&app, chat.id, |timeline| {
+        timeline
+            .messages
+            .last()
+            .is_some_and(|message| message.status == homebot_protocol::MessageStatus::Completed)
+    })
+    .await?;
+    assert_eq!(recall_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(retain_calls.load(Ordering::SeqCst), 1);
+    assert!(
+        provider
+            .prompts
+            .lock()
+            .await
+            .last()
+            .is_some_and(|prompt| prompt.contains("The user prefers tea."))
+    );
+    server.abort();
+    Ok(())
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn holographic_memory_is_builtin_scoped_tool_driven_and_recalled_after_restart()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let database = directory.path().join("homebot.db");
+    let storage = Storage::open(&database).await?;
+    let profile_id = Uuid::now_v7();
+    sqlx::query("INSERT INTO provider_profiles (id, adapter_kind, display_name, configuration_json, created_at_ms, updated_at_ms) VALUES (?, 'chat-fake', 'Fixture', '{}', 1, 1)")
+        .bind(profile_id.to_string())
+        .execute(storage.pool())
+        .await?;
+    let mut domain_bot = homebot_domain::Bot::create("Memory Bot", "Companion")?;
+    domain_bot.provider_profile_id = Some(profile_id);
+    let bot = storage.create_bot(Uuid::nil(), domain_bot, 1).await?;
+    let chat = storage
+        .create_direct_chat(Uuid::nil(), bot.id.0, Uuid::now_v7(), 2)
+        .await?;
+    let runtime = Arc::new(ProviderRuntime::new());
+    let provider = Arc::new(ChatFakeAdapter::new()?);
+    runtime.register(provider.clone()).await?;
+    let app =
+        router(AppState::new(storage.clone(), "correct-token").with_provider_runtime(runtime));
+    let plugin_id = Uuid::now_v7();
+    let response = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/memory-providers/holographic",
+            &serde_json::json!({
+                "request_id":Uuid::now_v7(),
+                "idempotency_key":plugin_id,
+                "name":"Local Holographic",
+                "endpoint":null,
+                "secret_id":null
+            }),
+        ))
+        .await?;
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let created: PluginSummary = response_json(response).await?;
+    assert_eq!(created.kind, "builtin_memory");
+    assert!(created.enabled);
+    assert_eq!(created.connection_state, PluginConnectionState::Connected);
+    assert_eq!(
+        created
+            .tools
+            .iter()
+            .map(|tool| tool.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["fact_feedback", "fact_store"]
+    );
+    let response = app
+        .clone()
+        .oneshot(json_request(
+            "PUT",
+            &format!("/api/v1/plugins/{plugin_id}/assignment"),
+            &PluginAssignmentRequest {
+                request_id: Uuid::now_v7(),
+                idempotency_key: Uuid::now_v7(),
+                bot_id: bot.id.0,
+                enabled: true,
+            },
+        ))
+        .await?;
+    assert_eq!(response.status(), StatusCode::OK);
+    let response = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            &format!("/api/v1/chats/{}/messages", chat.id),
+            &SendMessageRequest {
+                request_id: Uuid::now_v7(),
+                idempotency_key: Uuid::now_v7(),
+                content: "Remember this in Holographic".to_owned(),
+                attachment_ids: Vec::new(),
+                reply_to_message_id: None,
+                mentioned_bot_ids: Vec::new(),
+                skill_ids: Vec::new(),
+                references: Vec::new(),
+            },
+        ))
+        .await?;
+    assert_eq!(response.status(), StatusCode::OK);
+    let pending = wait_for_timeline(&app, chat.id, |timeline| {
+        timeline
+            .approvals
+            .iter()
+            .any(|approval| approval.status == homebot_protocol::ApprovalStatus::Pending)
+    })
+    .await?;
+    let approval = pending
+        .approvals
+        .iter()
+        .find(|approval| approval.status == homebot_protocol::ApprovalStatus::Pending)
+        .ok_or("missing holographic approval")?;
+    let response = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            &format!("/api/v1/approvals/{}/decision", approval.id),
+            &ApprovalDecisionRequest {
+                request_id: Uuid::now_v7(),
+                idempotency_key: Uuid::now_v7(),
+                allow: true,
+            },
+        ))
+        .await?;
+    assert_eq!(response.status(), StatusCode::OK);
+    let _ = wait_for_timeline(&app, chat.id, |timeline| {
+        timeline
+            .messages
+            .last()
+            .is_some_and(|message| message.status == homebot_protocol::MessageStatus::Completed)
+    })
+    .await?;
+    let facts = storage
+        .list_holographic_facts(Uuid::nil(), bot.id.0, None, 0.0, 10)
+        .await?;
+    assert_eq!(facts.len(), 1);
+    assert_eq!(facts[0].category, "user_pref");
+    let response = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            &format!("/api/v1/chats/{}/messages", chat.id),
+            &SendMessageRequest {
+                request_id: Uuid::now_v7(),
+                idempotency_key: Uuid::now_v7(),
+                content: "What does Willow prefer?".to_owned(),
+                attachment_ids: Vec::new(),
+                reply_to_message_id: None,
+                mentioned_bot_ids: Vec::new(),
+                skill_ids: Vec::new(),
+                references: Vec::new(),
+            },
+        ))
+        .await?;
+    assert_eq!(response.status(), StatusCode::OK);
+    let pending = wait_for_timeline(&app, chat.id, |timeline| {
+        timeline
+            .approvals
+            .iter()
+            .any(|approval| approval.status == homebot_protocol::ApprovalStatus::Pending)
+    })
+    .await?;
+    let approval = pending
+        .approvals
+        .iter()
+        .find(|approval| approval.status == homebot_protocol::ApprovalStatus::Pending)
+        .ok_or("missing provider approval")?;
+    let response = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            &format!("/api/v1/approvals/{}/decision", approval.id),
+            &ApprovalDecisionRequest {
+                request_id: Uuid::now_v7(),
+                idempotency_key: Uuid::now_v7(),
+                allow: true,
+            },
+        ))
+        .await?;
+    assert_eq!(response.status(), StatusCode::OK);
+    let _ = wait_for_timeline(&app, chat.id, |timeline| {
+        timeline
+            .messages
+            .last()
+            .is_some_and(|message| message.status == homebot_protocol::MessageStatus::Completed)
+    })
+    .await?;
+    assert!(provider.prompts.lock().await.last().is_some_and(|prompt| {
+        prompt.contains("source=\"holographic\"")
+            && prompt.contains("Willow")
+            && prompt.contains("Doctor Smith")
+    }));
+    assert_eq!(
+        storage
+            .list_holographic_facts(Uuid::nil(), bot.id.0, None, 0.0, 10)
+            .await?
+            .len(),
+        1,
+        "ordinary transcript sync must not invent Holographic facts"
+    );
+    drop(app);
+    drop(storage);
+    let reopened = Storage::open(&database).await?;
+    assert_eq!(
+        reopened
+            .list_holographic_facts(Uuid::nil(), bot.id.0, None, 0.0, 10)
+            .await?
+            .len(),
+        1
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn paired_devices_cannot_register_local_plugin_executables()
 -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;
@@ -1006,6 +2591,7 @@ async fn paired_devices_cannot_register_local_plugin_executables()
     let app = router(AppState::new(storage.clone(), "correct-token"));
     let plugin_id = Uuid::now_v7();
     let response = app
+        .clone()
         .oneshot(
             Request::post("/api/v1/plugins")
                 .header("authorization", format!("Bearer {device_token}"))
@@ -1029,6 +2615,26 @@ async fn paired_devices_cannot_register_local_plugin_executables()
             .await?
             .into_iter()
             .all(|plugin| plugin.id != plugin_id)
+    );
+    let remote_id = Uuid::now_v7();
+    let response = app
+        .oneshot(
+            Request::post("/api/v1/memory-providers/hindsight")
+                .header("authorization", format!("Bearer {device_token}"))
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&serde_json::json!({
+                    "request_id": Uuid::now_v7(),
+                    "idempotency_key": remote_id,
+                    "name": "Phone-configured Hindsight",
+                    "endpoint": "http://127.0.0.1:9/mcp/homebot/",
+                    "secret_id": null
+                }))?))?,
+        )
+        .await?;
+    assert_eq!(response.status(), StatusCode::CREATED);
+    assert_eq!(
+        storage.plugin(Uuid::nil(), remote_id).await?.kind,
+        "memory_mcp"
     );
     Ok(())
 }
@@ -1614,13 +3220,31 @@ async fn headless_scheduler_survives_restart_deduplicates_and_redacts_history()
     storage
         .append_event(Uuid::nil(), "fixture_event", &json!({}), unix_time_ms())
         .await?;
+    storage
+        .append_event(
+            Uuid::nil(),
+            "fixture_event",
+            &json!({"second":true}),
+            unix_time_ms(),
+        )
+        .await?;
     drop(app);
 
-    let final_state = AppState::new(storage.clone(), "correct-token");
+    let webhook_vault = Arc::new(MemorySecretVault::default());
+    let final_state =
+        AppState::new(storage.clone(), "correct-token").with_secret_vault(webhook_vault.clone());
     let app = router(final_state.clone());
     let event_job =
         wait_for_trigger_job(&app, routine_id, event_trigger_id, Duration::from_secs(2)).await?;
     assert_eq!(event_job.status, "succeeded");
+    assert_eq!(
+        event_job
+            .trigger
+            .get("event_ids")
+            .and_then(Value::as_array)
+            .map(Vec::len),
+        Some(2)
+    );
 
     let plugin_id = Uuid::now_v7();
     let response = app
@@ -1685,6 +3309,194 @@ async fn headless_scheduler_survives_restart_deduplicates_and_redacts_history()
         1
     );
 
+    let composio_plugin_id = Uuid::now_v7();
+    let signing_reference = Uuid::new_v5(&composio_plugin_id, b"homebot-composio-webhook-secret");
+    webhook_vault
+        .put(
+            &locator_for(signing_reference),
+            homebot_secrets::SecretInput::new("fixture-signing-secret"),
+        )
+        .await?;
+    storage
+        .create_plugin(&homebot_storage::PluginRecord {
+            id: composio_plugin_id,
+            owner_id: Uuid::nil(),
+            name: "Composio events fixture".to_owned(),
+            description: String::new(),
+            kind: "connector_mcp".to_owned(),
+            configuration: json!({
+                "url":"https://app.composio.dev/tool_router/v3/trs_fixture/mcp",
+                "secret_headers":[],
+                "preset":"composio",
+                "external_id":"trs_fixture",
+                "allowed_toolkits":["googlesuper"],
+                "oauth":null,
+                "event_ingress":{
+                    "subscription_id":"whsub_fixture",
+                    "webhook_url":format!("https://homebot.example/api/v1/webhooks/composio/{composio_plugin_id}"),
+                    "secret_reference_id":signing_reference
+                }
+            }),
+            enabled: true,
+            connection_id: Uuid::now_v7(),
+            transport: "streamable_http".to_owned(),
+            status: "connected".to_owned(),
+            auth_status: "connected".to_owned(),
+            error_message: None,
+            updated_at_ms: unix_time_ms(),
+        })
+        .await?;
+    let composio_trigger_id = Uuid::now_v7();
+    let response = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            &format!("/api/v1/routines/{routine_id}/triggers"),
+            &CreateRoutineTriggerRequest {
+                request_id: Uuid::now_v7(),
+                idempotency_key: composio_trigger_id,
+                definition: trigger_definition(RoutineTriggerSource::Plugin {
+                    plugin_id: composio_plugin_id,
+                    event_kind: "GMAIL_NEW_GMAIL_MESSAGE".to_owned(),
+                }),
+                enabled: true,
+            },
+        ))
+        .await?;
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let webhook_id = "msg_fixture_1";
+    let timestamp = unix_time_ms().div_euclid(1_000);
+    let sensitive_payload = "must-not-enter-history";
+    let body = json!({
+        "id":webhook_id,
+        "type":"composio.trigger.message",
+        "metadata":{
+            "trigger_slug":"GMAIL_NEW_GMAIL_MESSAGE",
+            "trigger_id":"ti_fixture",
+            "connected_account_id":"ca_fixture",
+            "auth_config_id":"ac_fixture",
+            "user_id":format!("homebot_owner_{}", Uuid::nil())
+        },
+        "data":{"subject":sensitive_payload},
+        "timestamp":timestamp.to_string()
+    })
+    .to_string();
+    let first = app
+        .clone()
+        .oneshot(composio_request(
+            composio_plugin_id,
+            webhook_id,
+            timestamp,
+            &body,
+            "fixture-signing-secret",
+        )?)
+        .await?;
+    assert_eq!(first.status(), StatusCode::ACCEPTED);
+    let duplicate = app
+        .clone()
+        .oneshot(composio_request(
+            composio_plugin_id,
+            webhook_id,
+            timestamp,
+            &body,
+            "fixture-signing-secret",
+        )?)
+        .await?;
+    assert_eq!(duplicate.status(), StatusCode::OK);
+    let composio_job = wait_for_trigger_job(
+        &app,
+        routine_id,
+        composio_trigger_id,
+        Duration::from_secs(2),
+    )
+    .await?;
+    assert_eq!(composio_job.status, "succeeded");
+    assert_eq!(
+        routine_jobs(&app, routine_id)
+            .await?
+            .iter()
+            .filter(|job| job.trigger_id == composio_trigger_id)
+            .count(),
+        1
+    );
+    let rejected = app
+        .clone()
+        .oneshot(composio_request(
+            composio_plugin_id,
+            "msg_tampered",
+            timestamp,
+            &body,
+            "wrong-secret",
+        )?)
+        .await?;
+    assert_eq!(rejected.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let stale_timestamp = timestamp.saturating_sub(301);
+    let rejected = app
+        .clone()
+        .oneshot(composio_request(
+            composio_plugin_id,
+            webhook_id,
+            stale_timestamp,
+            &body,
+            "fixture-signing-secret",
+        )?)
+        .await?;
+    assert_eq!(rejected.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let disabled_trigger_id = Uuid::now_v7();
+    let response = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            &format!("/api/v1/routines/{routine_id}/triggers"),
+            &CreateRoutineTriggerRequest {
+                request_id: Uuid::now_v7(),
+                idempotency_key: disabled_trigger_id,
+                definition: trigger_definition(RoutineTriggerSource::Plugin {
+                    plugin_id: composio_plugin_id,
+                    event_kind: "DISABLED_FIXTURE_EVENT".to_owned(),
+                }),
+                enabled: false,
+            },
+        ))
+        .await?;
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let disabled_webhook_id = "msg_fixture_disabled";
+    let disabled_body = json!({
+        "id":disabled_webhook_id,
+        "type":"composio.trigger.message",
+        "metadata":{
+            "trigger_slug":"DISABLED_FIXTURE_EVENT",
+            "user_id":format!("homebot_owner_{}", Uuid::nil())
+        },
+        "data":{},
+        "timestamp":timestamp.to_string()
+    })
+    .to_string();
+    let response = app
+        .clone()
+        .oneshot(composio_request(
+            composio_plugin_id,
+            disabled_webhook_id,
+            timestamp,
+            &disabled_body,
+            "fixture-signing-secret",
+        )?)
+        .await?;
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(
+        routine_jobs(&app, routine_id)
+            .await?
+            .iter()
+            .all(|job| job.trigger_id != disabled_trigger_id)
+    );
+    let events = storage.events_after(Uuid::nil(), 0, 1_000).await?;
+    assert!(
+        events
+            .iter()
+            .all(|event| !event.payload.to_string().contains(sensitive_payload))
+    );
+
     let webhook_trigger_id = Uuid::now_v7();
     let response = app
         .clone()
@@ -1746,7 +3558,7 @@ async fn headless_scheduler_survives_restart_deduplicates_and_redacts_history()
         )
         .await?;
     let runs: Vec<RoutineRunSummary> = response_json(runs_response).await?;
-    assert_eq!(runs.len(), 4);
+    assert_eq!(runs.len(), 5);
     assert!(runs.iter().all(|run| run.bot_id == bot.id.0));
     assert!(runs.iter().all(|run| run.scheduled_for_unix_ms.is_some()));
     let webhook_run = runs
@@ -1760,6 +3572,30 @@ async fn headless_scheduler_survives_restart_deduplicates_and_redacts_history()
     assert!(!serde_json::to_string(&runs)?.contains(&sensitive_reference));
     let _ = final_state.server_shutdown.send(true);
     Ok(())
+}
+
+fn composio_request(
+    plugin_id: Uuid,
+    webhook_id: &str,
+    timestamp: i64,
+    body: &str,
+    secret: &str,
+) -> Result<Request<Body>, axum::http::Error> {
+    let timestamp = timestamp.to_string();
+    let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes())
+        .unwrap_or_else(|_| panic!("HMAC accepts arbitrary key lengths"));
+    mac.update(webhook_id.as_bytes());
+    mac.update(b".");
+    mac.update(timestamp.as_bytes());
+    mac.update(b".");
+    mac.update(body.as_bytes());
+    let signature = BASE64.encode(mac.finalize().into_bytes());
+    Request::post(format!("/api/v1/webhooks/composio/{plugin_id}"))
+        .header("webhook-id", webhook_id)
+        .header("webhook-timestamp", timestamp)
+        .header("webhook-signature", format!("v1,{signature}"))
+        .header("content-type", "application/json")
+        .body(Body::from(body.to_owned()))
 }
 
 fn trigger_definition(source: RoutineTriggerSource) -> RoutineTriggerDefinition {
@@ -1915,7 +3751,17 @@ async fn bot_lifecycle_validates_persists_streams_and_reports_provider_health()
     let directory = tempfile::tempdir()?;
     let database = directory.path().join("homebot.db");
     let storage = Storage::open(&database).await?;
-    let state = AppState::new(storage.clone(), "correct-token");
+    let provider_profile_id = Uuid::now_v7();
+    sqlx::query("INSERT INTO provider_profiles (id, adapter_kind, display_name, configuration_json, created_at_ms, updated_at_ms) VALUES (?, 'chat-fake', 'Fixture', '{}', 1, 1)")
+        .bind(provider_profile_id.to_string())
+        .execute(storage.pool())
+        .await?;
+    let provider_runtime = Arc::new(ProviderRuntime::new());
+    provider_runtime
+        .register(Arc::new(ChatFakeAdapter::new()?))
+        .await?;
+    let state =
+        AppState::new(storage.clone(), "correct-token").with_provider_runtime(provider_runtime);
     let app = router(state.clone());
     let key = Uuid::now_v7();
     let create = CreateBotRequest {
@@ -1966,7 +3812,7 @@ async fn bot_lifecycle_validates_persists_streams_and_reports_provider_health()
         description: "Updated".to_owned(),
         shape: BotShape::Circle,
         color: BotColor::Green,
-        provider_profile_id: None,
+        provider_profile_id: Some(provider_profile_id),
         permission_profile: BotPermissionProfile::ReadOnly,
     };
     let response = app
@@ -1974,10 +3820,9 @@ async fn bot_lifecycle_validates_persists_streams_and_reports_provider_health()
         .oneshot(json_request("PUT", &format!("/api/v1/bots/{key}"), &update))
         .await?;
     assert_eq!(response.status(), StatusCode::OK);
-    assert_eq!(
-        response_json::<BotResponse>(response).await?.bot.title,
-        "Lead researcher"
-    );
+    let updated = response_json::<BotResponse>(response).await?.bot;
+    assert_eq!(updated.title, "Lead researcher");
+    assert_eq!(updated.provider, BotProviderStatus::Ready);
 
     let archive = BotMutationRequest {
         request_id: Uuid::now_v7(),
@@ -6750,11 +8595,13 @@ async fn browser_session_watch_takeover_approval_return_and_restart_are_server_o
     let browser = Arc::new(BrowserFakeRuntime {
         policy: Arc::clone(&policy),
         sessions: Mutex::new(HashMap::new()),
+        stall_next: AtomicBool::new(false),
     });
     let app = router(
         AppState::new(storage.clone(), "correct-token")
             .with_policy_engine(policy)
-            .with_browser_runtime(browser.clone()),
+            .with_browser_runtime(browser.clone())
+            .with_browser_runtime_timeout(Duration::from_millis(20)),
     );
     let create = CreateBrowserSessionRequest {
         request_id: Uuid::now_v7(),
@@ -6779,6 +8626,40 @@ async fn browser_session_watch_takeover_approval_return_and_restart_are_server_o
         .await?;
     assert_eq!(replay.status(), StatusCode::OK);
     assert_eq!(browser.sessions.lock().await.len(), 1);
+    browser.stall_next.store(true, Ordering::Release);
+    let stalled = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            &format!("/api/v1/browser-sessions/{session_id}/actions"),
+            &BrowserActionRequest {
+                request_id: Uuid::now_v7(),
+                idempotency_key: Uuid::now_v7(),
+                command: BrowserCommand::CurrentUrl,
+                approval_id: None,
+            },
+        ))
+        .await?;
+    assert_eq!(stalled.status(), StatusCode::CONFLICT);
+    let failed = storage.browser_session(Uuid::nil(), session_id).await?;
+    assert_eq!(failed.status, "failed");
+    assert_eq!(failed.runtime_session_id, None);
+    let mut retry_create = create.clone();
+    retry_create.request_id = Uuid::now_v7();
+    retry_create.idempotency_key = Uuid::now_v7();
+    let recovered = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/browser-sessions",
+            &retry_create,
+        ))
+        .await?;
+    assert_eq!(recovered.status(), StatusCode::CREATED);
+    let session_id = response_json::<BrowserActionResponse>(recovered)
+        .await?
+        .session
+        .id;
     storage
         .handoff_group_ownership(
             Uuid::nil(),
@@ -6960,6 +8841,11 @@ async fn browser_session_watch_takeover_approval_return_and_restart_are_server_o
     let leased = storage.browser_session(Uuid::nil(), session_id).await?;
     assert_eq!(leased.controlling_device_id, Some(controlling_device_id));
     assert!(leased.takeover_expires_at_ms.is_some());
+    assert!(
+        storage
+            .browser_takeover_active(Uuid::nil(), chat.id)
+            .await?
+    );
 
     let blocked_bot_action = app
         .clone()
@@ -7080,6 +8966,11 @@ async fn browser_session_watch_takeover_approval_return_and_restart_are_server_o
             .controller,
         BrowserController::Bot
     );
+    assert!(
+        !storage
+            .browser_takeover_active(Uuid::nil(), chat.id)
+            .await?
+    );
 
     let race_time = unix_time_ms();
     let first = storage.claim_browser_takeover(
@@ -7119,6 +9010,16 @@ async fn browser_session_watch_takeover_approval_return_and_restart_are_server_o
     );
     assert_eq!(durable.controlling_device_id, None);
     assert_eq!(durable.takeover_expires_at_ms, None);
+    assert_eq!(
+        reopened
+            .recover_interrupted_browser_sessions(Uuid::nil(), unix_time_ms())
+            .await?,
+        1
+    );
+    let recovered = reopened.browser_session(Uuid::nil(), session_id).await?;
+    assert_eq!(recovered.status, "failed");
+    assert_eq!(recovered.runtime_session_id, None);
+    assert_eq!(recovered.controller, "bot");
     let persisted: Vec<String> =
         sqlx::query_scalar("SELECT display_name || directory_ref FROM browser_profiles")
             .fetch_all(reopened.pool())

@@ -11,7 +11,6 @@ use axum::{
     extract::{Path, State},
     http::StatusCode,
 };
-use homebot_plugins::PluginAdapter;
 use homebot_protocol::{
     AppendRoutineRecordingRequest, BotMutationRequest, CreateRoutineRequest,
     DuplicateRoutineRequest, PluginMutationRequest, RoutineRecordingSummary, RoutineRunSummary,
@@ -721,8 +720,9 @@ impl RoutineActionExecutor for ServerExecutor<'_> {
                     .plugin(self.state.owner_id, *plugin_id)
                     .await
                     .map_err(|_| RoutineError::StepFailed)?;
-                let adapter =
-                    super::plugins::adapter_for(&plugin).map_err(|_| RoutineError::StepFailed)?;
+                let adapter = super::plugins::adapter_for(self.state, &plugin)
+                    .await
+                    .map_err(|_| RoutineError::StepFailed)?;
                 let rendered_arguments = render_value_templates(arguments, inputs);
                 let _untrusted = adapter
                     .call_tool(*plugin_id, tool_name, &rendered_arguments)

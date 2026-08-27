@@ -712,7 +712,15 @@ pub struct SearchResultSummary {
 #[serde(deny_unknown_fields)]
 pub struct GlobalSearchResponse {
     pub query: String,
+    pub status: SearchStatus,
     pub results: Vec<SearchResultSummary>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SearchStatus {
+    Ready,
+    Unavailable,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
@@ -735,6 +743,7 @@ pub enum ActivityKind {
     Terminal,
     Browser,
     Artifact,
+    Interaction,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
@@ -776,6 +785,19 @@ pub enum ActivityDetail {
         media_type: String,
         size_bytes: u64,
     },
+    Interaction {
+        request_kind: InteractionRequestKind,
+        prompt: String,
+        choices: Vec<String>,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InteractionRequestKind {
+    Confirm,
+    PickOne,
+    Secret,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
@@ -800,7 +822,8 @@ impl ActivityPresentation {
             } => normalized_workspace_path(working_directory),
             ActivityDetail::Generic { .. }
             | ActivityDetail::Browser { .. }
-            | ActivityDetail::Artifact { .. } => true,
+            | ActivityDetail::Artifact { .. }
+            | ActivityDetail::Interaction { .. } => true,
         }
     }
 }
@@ -873,6 +896,16 @@ pub struct ApprovalDecisionRequest {
     pub request_id: Uuid,
     pub idempotency_key: Uuid,
     pub allow: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct InteractionResponseRequest {
+    pub request_id: Uuid,
+    pub idempotency_key: Uuid,
+    pub confirmed: Option<bool>,
+    pub choice: Option<String>,
+    pub secret: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
@@ -1278,7 +1311,22 @@ pub struct PluginSummary {
     pub error_message: Option<String>,
     pub tools: Vec<PluginToolSummary>,
     pub bot_ids: Vec<Uuid>,
+    #[serde(default)]
+    pub managed_services: Vec<String>,
+    #[serde(default)]
+    pub oauth_authorization_available: bool,
+    #[serde(default)]
+    pub event_ingress_state: PluginEventIngressState,
     pub updated_at_unix_ms: u64,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PluginEventIngressState {
+    #[default]
+    NotConfigured,
+    Ready,
+    Error,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
@@ -1292,6 +1340,94 @@ pub struct CreateLocalMcpPluginRequest {
     pub program: String,
     #[serde(default)]
     pub arguments: Vec<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct McpSecretHeaderReference {
+    pub name: String,
+    pub secret_id: Uuid,
+    #[serde(default)]
+    pub prefix: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CreateRemoteMcpPluginRequest {
+    pub request_id: Uuid,
+    pub idempotency_key: Uuid,
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    pub url: String,
+    #[serde(default)]
+    pub secret_headers: Vec<McpSecretHeaderReference>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AuthorizeRemoteMcpRequest {
+    pub request_id: Uuid,
+    pub idempotency_key: Uuid,
+    pub redirect_uri: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CreateComposioConnectorRequest {
+    pub request_id: Uuid,
+    pub idempotency_key: Uuid,
+    pub name: String,
+    pub secret_id: Uuid,
+    pub toolkits: Vec<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ConfigureComposioEventIngressRequest {
+    pub request_id: Uuid,
+    pub idempotency_key: Uuid,
+    pub public_base_url: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AuthorizeComposioToolkitRequest {
+    pub request_id: Uuid,
+    pub idempotency_key: Uuid,
+    pub toolkit: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExternalAuthorizationSummary {
+    pub toolkit: String,
+    pub authorization_url: String,
+}
+
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct MemoryProviderPresetSummary {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    pub hosted: bool,
+    pub self_hosted: bool,
+    pub connection_kind: String,
+    pub hosted_endpoint: Option<String>,
+    pub credential_kind: String,
+    pub documentation_url: String,
+    pub automatic_recall: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CreateMemoryProviderRequest {
+    pub request_id: Uuid,
+    pub idempotency_key: Uuid,
+    pub name: String,
+    pub endpoint: Option<String>,
+    pub secret_id: Option<Uuid>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
@@ -1848,6 +1984,14 @@ pub struct ProtocolV1Schema {
     pub update_secret_request: UpdateSecretRequest,
     pub secret: SecretSummary,
     pub create_local_mcp_plugin_request: CreateLocalMcpPluginRequest,
+    pub create_remote_mcp_plugin_request: CreateRemoteMcpPluginRequest,
+    pub authorize_remote_mcp_request: AuthorizeRemoteMcpRequest,
+    pub create_composio_connector_request: CreateComposioConnectorRequest,
+    pub configure_composio_event_ingress_request: ConfigureComposioEventIngressRequest,
+    pub authorize_composio_toolkit_request: AuthorizeComposioToolkitRequest,
+    pub external_authorization: ExternalAuthorizationSummary,
+    pub create_memory_provider_request: CreateMemoryProviderRequest,
+    pub memory_provider_preset: MemoryProviderPresetSummary,
     pub plugin_mutation_request: PluginMutationRequest,
     pub plugin_assignment_request: PluginAssignmentRequest,
     pub plugin: PluginSummary,
@@ -1924,6 +2068,7 @@ pub struct ProtocolV1Schema {
     pub set_interaction_mode_request: SetInteractionModeRequest,
     pub compact_working_context_request: CompactWorkingContextRequest,
     pub approval_decision_request: ApprovalDecisionRequest,
+    pub interaction_response_request: InteractionResponseRequest,
     pub capability_rule: CapabilityRuleSummary,
     pub upsert_capability_rule_request: UpsertCapabilityRuleRequest,
     pub capability_rule_audit: CapabilityRuleAuditSummary,

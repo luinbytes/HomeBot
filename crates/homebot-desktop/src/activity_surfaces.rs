@@ -170,6 +170,14 @@ fn render_detail(ui: &mut Ui, theme: HomeBotTheme, detail: &ActivityDetail) {
             format!("{name} · {media_type}"),
             format!("{size_bytes} bytes"),
         ],
+        ActivityDetail::Interaction {
+            request_kind,
+            prompt,
+            choices,
+        } => std::iter::once(prompt.clone())
+            .chain(choices.iter().map(|choice| format!("• {choice}")))
+            .chain(std::iter::once(format!("Response type: {request_kind:?}")))
+            .collect(),
     };
     for line in lines {
         ui.label(

@@ -30,6 +30,11 @@ class NotificationEventMapperTest {
         val activity = map("activity_changed", ACTIVITY_FAILED)
         assertEquals(ACTIVITY_ID, activity?.activityId)
         assertEquals(CHAT_ID, activity?.chatId)
+
+        val input = map("activity_changed", INTERACTION_PENDING)
+        assertEquals(ClientAlertKind.NEEDS_INPUT, input?.kind)
+        assertEquals("Input needed", input?.title)
+        assertEquals("homebot://chat/$CHAT_ID?activity=$ACTIVITY_ID", input?.deepLink())
     }
 
     @Test
@@ -58,5 +63,6 @@ class NotificationEventMapperTest {
         const val ROUTINE_FAILED = """{$PREFIX,"run":{"id":"$RUN_ID","routine_id":"$ROUTINE_ID","routine_version_id":"00000000-0000-0000-0000-000000000107","bot_id":"$BOT_ID","status":"failed","trigger":{},"input_metadata":{},"dry_run":false,"results":[],"error_message":"Provider unavailable","attempt_count":1,"started_at_unix_ms":1,"finished_at_unix_ms":2}}"""
         const val ROUTINE_RUNNING = """{$PREFIX,"run":{"id":"$RUN_ID","routine_id":"$ROUTINE_ID","routine_version_id":"00000000-0000-0000-0000-000000000107","bot_id":"$BOT_ID","status":"running","trigger":{},"input_metadata":{},"dry_run":false,"results":[],"attempt_count":1,"started_at_unix_ms":1}}"""
         const val ACTIVITY_FAILED = """{$PREFIX,"activity":{"id":"$ACTIVITY_ID","chat_id":"$CHAT_ID","title":"Command failed","detail":"Exit 1","kind":"terminal","presentation":{"risk":"low","detail":{}},"status":"failed","requires_attention":true,"started_at_ms":1,"finished_at_ms":2}}"""
+        const val INTERACTION_PENDING = """{$PREFIX,"activity":{"id":"$ACTIVITY_ID","chat_id":"$CHAT_ID","title":"Choose an account","detail":"Pick one","kind":"interaction","presentation":{"risk":"low","detail":{}},"status":"pending","requires_attention":true,"started_at_ms":1}}"""
     }
 }

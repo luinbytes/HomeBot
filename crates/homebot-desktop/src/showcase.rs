@@ -200,10 +200,14 @@ fn plugin_settings_state(ui: &mut egui::Ui, theme: HomeBotTheme) {
             plugins: vec![
                 PluginSettingsItem {
                     id: None,
-                    name: "Repository tools".to_owned(),
-                    detail: String::new(),
+                    name: "Google Workspace".to_owned(),
+                    detail: "Gmail, Drive, Calendar, Docs, Sheets, Slides, Meet, and Tasks"
+                        .to_owned(),
                     state: PluginViewState::Connected,
                     enabled: true,
+                    managed_services: vec!["googlesuper".to_owned()],
+                    oauth_authorization_available: false,
+                    event_ingress_state: homebot_protocol::PluginEventIngressState::NotConfigured,
                 },
                 PluginSettingsItem {
                     id: None,
@@ -211,6 +215,9 @@ fn plugin_settings_state(ui: &mut egui::Ui, theme: HomeBotTheme) {
                     detail: "Connection error".to_owned(),
                     state: PluginViewState::Error,
                     enabled: false,
+                    managed_services: Vec::new(),
+                    oauth_authorization_available: false,
+                    event_ingress_state: homebot_protocol::PluginEventIngressState::NotConfigured,
                 },
             ],
             ..DesktopSettings::default()

@@ -42,9 +42,9 @@ class AndroidNotificationCoordinator(
 
     private fun createChannels() {
         listOf(
-            NotificationChannel(WORK_CHANNEL, "Bot work", NotificationManager.IMPORTANCE_DEFAULT),
+            NotificationChannel(WORK_CHANNEL, "Bot work", NotificationManager.IMPORTANCE_LOW),
             NotificationChannel(APPROVAL_CHANNEL, "Approvals", NotificationManager.IMPORTANCE_HIGH),
-            NotificationChannel(ROUTINE_CHANNEL, "Routines", NotificationManager.IMPORTANCE_DEFAULT),
+            NotificationChannel(ROUTINE_CHANNEL, "Routines", NotificationManager.IMPORTANCE_LOW),
             NotificationChannel(ERROR_CHANNEL, "HomeBot errors", NotificationManager.IMPORTANCE_HIGH),
         ).forEach(manager::createNotificationChannel)
     }
@@ -67,7 +67,7 @@ class AndroidNotificationCoordinator(
             .setStyle(Notification.BigTextStyle().bigText(alert.detail))
             .setContentIntent(pending)
             .setAutoCancel(true)
-            .setCategory(if (alert.kind == ClientAlertKind.APPROVAL_REQUIRED) Notification.CATEGORY_RECOMMENDATION else Notification.CATEGORY_STATUS)
+            .setCategory(if (alert.kind in setOf(ClientAlertKind.NEEDS_INPUT, ClientAlertKind.APPROVAL_REQUIRED)) Notification.CATEGORY_RECOMMENDATION else Notification.CATEGORY_STATUS)
             .build()
         manager.notify(alert.eventId.hashCode(), notification)
     }
@@ -82,6 +82,7 @@ class AndroidNotificationCoordinator(
 
     private fun ClientAlert.channel(): String = when (kind) {
         ClientAlertKind.BOT_FINISHED -> WORK_CHANNEL
+        ClientAlertKind.NEEDS_INPUT -> APPROVAL_CHANNEL
         ClientAlertKind.APPROVAL_REQUIRED -> APPROVAL_CHANNEL
         ClientAlertKind.ROUTINE_RESULT -> ROUTINE_CHANNEL
         ClientAlertKind.ERROR -> ERROR_CHANNEL

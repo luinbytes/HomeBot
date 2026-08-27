@@ -24,6 +24,36 @@ fn snapshot(name: &str, theme: HomeBotTheme, state: ProductionFixtureState) {
 }
 
 #[test]
+fn production_composio_event_setup_is_visible() {
+    let theme = HomeBotTheme::light();
+    let mut harness = Harness::builder()
+        .with_size(Vec2::new(
+            theme.layout.reference_width,
+            homebot_desktop::tokens::Layout::REFERENCE_HEIGHT,
+        ))
+        .with_pixels_per_point(1.0)
+        .renderer(support::CpuRenderer::default())
+        .build(|context| {
+            render_production_fixture(context, theme, ProductionFixtureState::SettingsPlugins);
+        });
+    harness.run_steps(2);
+    for _ in 0..8 {
+        harness.get_by_label("Integrations").scroll_down();
+        harness.step();
+    }
+    let event_row = harness.get_by_label("Scheduled account events").rect();
+    assert!(
+        event_row.min.y >= 0.0
+            && event_row.max.y <= homebot_desktop::tokens::Layout::REFERENCE_HEIGHT,
+        "Composio event setup row is outside the production viewport: {event_row:?}"
+    );
+    let image = harness
+        .render()
+        .unwrap_or_else(|error| panic!("visual render failed: {error}"));
+    egui_kittest::image_snapshot(&image, "production_composio_events_light");
+}
+
+#[test]
 fn production_devices_settings_exposes_pairing_action() {
     let theme = HomeBotTheme::light();
     let mut harness = Harness::builder()
@@ -77,6 +107,35 @@ fn production_shell_exposes_working_navigation_and_send_states() {
 }
 
 #[test]
+fn interaction_cards_expose_native_accessible_controls() {
+    let theme = HomeBotTheme::dark();
+    let mut harness = Harness::builder()
+        .with_size(Vec2::new(
+            theme.layout.reference_width,
+            homebot_desktop::tokens::Layout::REFERENCE_HEIGHT,
+        ))
+        .build(|context| {
+            render_production_fixture(context, theme, ProductionFixtureState::Interaction);
+        });
+    harness.run_steps(2);
+
+    for label in ["Review first", "Publish now", "Secret value"] {
+        assert!(
+            harness.get_by_label(label).rect().max.y
+                <= homebot_desktop::tokens::Layout::REFERENCE_HEIGHT,
+            "{label} is clipped outside the interaction card"
+        );
+    }
+    assert!(
+        harness
+            .get_by_label("Store securely")
+            .accesskit_node()
+            .is_disabled(),
+        "an empty secret field must not submit"
+    );
+}
+
+#[test]
 fn compact_modal_actions_remain_inside_the_viewport() {
     const COMPACT_SIZE: Vec2 = Vec2::new(800.0, 600.0);
     for (state, action) in [
@@ -120,6 +179,11 @@ fn production_desktop_visual_goldens() {
         ProductionFixtureState::Approval,
     );
     snapshot(
+        "production_interaction_dark",
+        HomeBotTheme::dark(),
+        ProductionFixtureState::Interaction,
+    );
+    snapshot(
         "production_group_chat_dark",
         HomeBotTheme::dark(),
         ProductionFixtureState::GroupChat,
@@ -158,6 +222,16 @@ fn production_desktop_visual_goldens() {
         "production_settings_light",
         HomeBotTheme::light(),
         ProductionFixtureState::Settings,
+    );
+    snapshot(
+        "production_plugins_light",
+        HomeBotTheme::light(),
+        ProductionFixtureState::SettingsPlugins,
+    );
+    snapshot(
+        "production_memory_provider_activate_light",
+        HomeBotTheme::light(),
+        ProductionFixtureState::MemoryProviderActivate,
     );
     snapshot(
         "production_devices_light",

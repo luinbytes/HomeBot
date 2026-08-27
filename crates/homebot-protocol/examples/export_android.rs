@@ -254,7 +254,10 @@ enum class SearchResultKind { @SerialName("message") MESSAGE, @SerialName("file"
 data class SearchResultSummary(val kind: SearchResultKind, val title: String, val snippet: String, val deep_link: String, val chat_id: String? = null, val message_id: String? = null, val artifact_id: String? = null, val routine_id: String? = null, val created_at_ms: Long)
 
 @Serializable
-data class GlobalSearchResponse(val query: String, val results: List<SearchResultSummary>)
+enum class SearchStatus { @SerialName("ready") READY, @SerialName("unavailable") UNAVAILABLE }
+
+@Serializable
+data class GlobalSearchResponse(val query: String, val status: SearchStatus, val results: List<SearchResultSummary>)
 
 @Serializable
 data class ReactionMutationRequest(val request_id: String, val idempotency_key: String, val emoji: String)
@@ -273,6 +276,9 @@ data class ApprovalSummary(val id: String, val chat_id: String, val message_id: 
 
 @Serializable
 data class ApprovalDecisionRequest(val request_id: String, val idempotency_key: String, val allow: Boolean)
+
+@Serializable
+data class InteractionResponseRequest(val request_id: String, val idempotency_key: String, val confirmed: Boolean? = null, val choice: String? = null, val secret: String? = null)
 
 @Serializable
 enum class CapabilityClass { @SerialName("filesystem_read") FILESYSTEM_READ, @SerialName("filesystem_write") FILESYSTEM_WRITE, @SerialName("process_execute") PROCESS_EXECUTE, @SerialName("browser_observe") BROWSER_OBSERVE, @SerialName("browser_act") BROWSER_ACT, @SerialName("git_read") GIT_READ, @SerialName("git_write") GIT_WRITE, @SerialName("git_remote") GIT_REMOTE, @SerialName("plugin_read") PLUGIN_READ, @SerialName("plugin_write") PLUGIN_WRITE, @SerialName("external_communication") EXTERNAL_COMMUNICATION, @SerialName("external_mutation") EXTERNAL_MUTATION, @SerialName("secret_use") SECRET_USE, @SerialName("device_administration") DEVICE_ADMINISTRATION }
@@ -348,10 +354,37 @@ data class SecretSummary(val id: String, val label: String, val status: String, 
 data class PluginToolSummary(val name: String, val title: String? = null, val description: String? = null, val input_schema: JsonElement)
 
 @Serializable
-data class PluginSummary(val id: String, val name: String, val description: String, val kind: String, val enabled: Boolean, val connection_state: String, val auth_state: String, val error_message: String? = null, val tools: List<PluginToolSummary>, val bot_ids: List<String>, val updated_at_unix_ms: Long)
+data class PluginSummary(val id: String, val name: String, val description: String, val kind: String, val enabled: Boolean, val connection_state: String, val auth_state: String, val error_message: String? = null, val tools: List<PluginToolSummary>, val bot_ids: List<String>, val managed_services: List<String> = emptyList(), val oauth_authorization_available: Boolean = false, val event_ingress_state: String = "not_configured", val updated_at_unix_ms: Long)
 
 @Serializable
 data class CreateLocalMcpPluginRequest(val request_id: String, val idempotency_key: String, val name: String, val description: String = "", val program: String, val arguments: List<String> = emptyList())
+
+@Serializable
+data class McpSecretHeaderReference(val name: String, val secret_id: String, val prefix: String = "")
+
+@Serializable
+data class CreateRemoteMcpPluginRequest(val request_id: String, val idempotency_key: String, val name: String, val description: String = "", val url: String, val secret_headers: List<McpSecretHeaderReference> = emptyList())
+
+@Serializable
+data class AuthorizeRemoteMcpRequest(val request_id: String, val idempotency_key: String, val redirect_uri: String)
+
+@Serializable
+data class CreateComposioConnectorRequest(val request_id: String, val idempotency_key: String, val name: String, val secret_id: String, val toolkits: List<String>)
+
+@Serializable
+data class ConfigureComposioEventIngressRequest(val request_id: String, val idempotency_key: String, val public_base_url: String)
+
+@Serializable
+data class AuthorizeComposioToolkitRequest(val request_id: String, val idempotency_key: String, val toolkit: String)
+
+@Serializable
+data class ExternalAuthorizationSummary(val toolkit: String, val authorization_url: String)
+
+@Serializable
+data class MemoryProviderPresetSummary(val id: String, val name: String, val description: String, val hosted: Boolean, val self_hosted: Boolean, val connection_kind: String, val hosted_endpoint: String? = null, val credential_kind: String, val documentation_url: String, val automatic_recall: Boolean)
+
+@Serializable
+data class CreateMemoryProviderRequest(val request_id: String, val idempotency_key: String, val name: String, val endpoint: String? = null, val secret_id: String? = null)
 
 @Serializable
 data class PluginMutationRequest(val request_id: String, val idempotency_key: String)

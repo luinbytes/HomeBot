@@ -31,6 +31,12 @@
     "attachment": {
       "$ref": "#/$defs/Attachment"
     },
+    "authorize_composio_toolkit_request": {
+      "$ref": "#/$defs/AuthorizeComposioToolkitRequest"
+    },
+    "authorize_remote_mcp_request": {
+      "$ref": "#/$defs/AuthorizeRemoteMcpRequest"
+    },
     "bot_mutation_request": {
       "$ref": "#/$defs/BotMutationRequest"
     },
@@ -73,6 +79,9 @@
     "compact_working_context_request": {
       "$ref": "#/$defs/CompactWorkingContextRequest"
     },
+    "configure_composio_event_ingress_request": {
+      "$ref": "#/$defs/ConfigureComposioEventIngressRequest"
+    },
     "create_attachment_request": {
       "$ref": "#/$defs/CreateAttachmentRequest"
     },
@@ -84,6 +93,9 @@
     },
     "create_browser_session_request": {
       "$ref": "#/$defs/CreateBrowserSessionRequest"
+    },
+    "create_composio_connector_request": {
+      "$ref": "#/$defs/CreateComposioConnectorRequest"
     },
     "create_direct_chat_request": {
       "$ref": "#/$defs/CreateDirectChatRequest"
@@ -100,11 +112,17 @@
     "create_local_mcp_plugin_request": {
       "$ref": "#/$defs/CreateLocalMcpPluginRequest"
     },
+    "create_memory_provider_request": {
+      "$ref": "#/$defs/CreateMemoryProviderRequest"
+    },
     "create_pairing_request": {
       "$ref": "#/$defs/CreatePairingRequest"
     },
     "create_pull_request_request": {
       "$ref": "#/$defs/CreatePullRequestRequest"
+    },
+    "create_remote_mcp_plugin_request": {
+      "$ref": "#/$defs/CreateRemoteMcpPluginRequest"
     },
     "create_repository_workspace_request": {
       "$ref": "#/$defs/CreateRepositoryWorkspaceRequest"
@@ -142,6 +160,9 @@
     "exchange_pairing_request": {
       "$ref": "#/$defs/ExchangePairingRequest"
     },
+    "external_authorization": {
+      "$ref": "#/$defs/ExternalAuthorizationSummary"
+    },
     "finalize_attachment_request": {
       "$ref": "#/$defs/FinalizeAttachmentRequest"
     },
@@ -159,6 +180,12 @@
     },
     "install_assistant_pack_request": {
       "$ref": "#/$defs/InstallAssistantPackRequest"
+    },
+    "interaction_response_request": {
+      "$ref": "#/$defs/InteractionResponseRequest"
+    },
+    "memory_provider_preset": {
+      "$ref": "#/$defs/MemoryProviderPresetSummary"
     },
     "message_mutation_request": {
       "$ref": "#/$defs/MessageMutationRequest"
@@ -310,6 +337,14 @@
     "update_secret_request",
     "secret",
     "create_local_mcp_plugin_request",
+    "create_remote_mcp_plugin_request",
+    "authorize_remote_mcp_request",
+    "create_composio_connector_request",
+    "configure_composio_event_ingress_request",
+    "authorize_composio_toolkit_request",
+    "external_authorization",
+    "create_memory_provider_request",
+    "memory_provider_preset",
     "plugin_mutation_request",
     "plugin_assignment_request",
     "plugin",
@@ -386,6 +421,7 @@
     "set_interaction_mode_request",
     "compact_working_context_request",
     "approval_decision_request",
+    "interaction_response_request",
     "capability_rule",
     "upsert_capability_rule_request",
     "capability_rule_audit",
@@ -546,6 +582,33 @@
             "media_type",
             "size_bytes"
           ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "choices": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "kind": {
+              "type": "string",
+              "const": "interaction"
+            },
+            "prompt": {
+              "type": "string"
+            },
+            "request_kind": {
+              "$ref": "#/$defs/InteractionRequestKind"
+            }
+          },
+          "required": [
+            "kind",
+            "request_kind",
+            "prompt",
+            "choices"
+          ]
         }
       ]
     },
@@ -558,7 +621,8 @@
         "filesystem",
         "terminal",
         "browser",
-        "artifact"
+        "artifact",
+        "interaction"
       ]
     },
     "ActivityPresentation": {
@@ -1039,6 +1103,50 @@
         "media_type",
         "size_bytes",
         "sha256"
+      ]
+    },
+    "AuthorizeComposioToolkitRequest": {
+      "type": "object",
+      "properties": {
+        "idempotency_key": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "request_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "toolkit": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "request_id",
+        "idempotency_key",
+        "toolkit"
+      ]
+    },
+    "AuthorizeRemoteMcpRequest": {
+      "type": "object",
+      "properties": {
+        "idempotency_key": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "redirect_uri": {
+          "type": "string"
+        },
+        "request_id": {
+          "type": "string",
+          "format": "uuid"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "request_id",
+        "idempotency_key",
+        "redirect_uri"
       ]
     },
     "BotAdvancedSettings": {
@@ -1940,6 +2048,28 @@
         "strategy"
       ]
     },
+    "ConfigureComposioEventIngressRequest": {
+      "type": "object",
+      "properties": {
+        "idempotency_key": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "public_base_url": {
+          "type": "string"
+        },
+        "request_id": {
+          "type": "string",
+          "format": "uuid"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "request_id",
+        "idempotency_key",
+        "public_base_url"
+      ]
+    },
     "ContextCompactionStatus": {
       "type": "string",
       "enum": [
@@ -2115,6 +2245,40 @@
         "profile_name"
       ]
     },
+    "CreateComposioConnectorRequest": {
+      "type": "object",
+      "properties": {
+        "idempotency_key": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "name": {
+          "type": "string"
+        },
+        "request_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "secret_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "toolkits": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "request_id",
+        "idempotency_key",
+        "name",
+        "secret_id",
+        "toolkits"
+      ]
+    },
     "CreateDirectChatRequest": {
       "type": "object",
       "properties": {
@@ -2253,6 +2417,41 @@
         "program"
       ]
     },
+    "CreateMemoryProviderRequest": {
+      "type": "object",
+      "properties": {
+        "endpoint": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "idempotency_key": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "name": {
+          "type": "string"
+        },
+        "request_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "secret_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "request_id",
+        "idempotency_key",
+        "name"
+      ]
+    },
     "CreatePairingRequest": {
       "type": "object",
       "properties": {
@@ -2321,6 +2520,43 @@
         "title",
         "body",
         "draft"
+      ]
+    },
+    "CreateRemoteMcpPluginRequest": {
+      "type": "object",
+      "properties": {
+        "description": {
+          "type": "string",
+          "default": ""
+        },
+        "idempotency_key": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "name": {
+          "type": "string"
+        },
+        "request_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "secret_headers": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/McpSecretHeaderReference"
+          }
+        },
+        "url": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "request_id",
+        "idempotency_key",
+        "name",
+        "url"
       ]
     },
     "CreateRepositoryWorkspaceRequest": {
@@ -2707,6 +2943,22 @@
         "required"
       ]
     },
+    "ExternalAuthorizationSummary": {
+      "type": "object",
+      "properties": {
+        "authorization_url": {
+          "type": "string"
+        },
+        "toolkit": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "toolkit",
+        "authorization_url"
+      ]
+    },
     "FileChange": {
       "type": "object",
       "properties": {
@@ -2779,11 +3031,15 @@
           "items": {
             "$ref": "#/$defs/SearchResultSummary"
           }
+        },
+        "status": {
+          "$ref": "#/$defs/SearchStatus"
         }
       },
       "additionalProperties": false,
       "required": [
         "query",
+        "status",
         "results"
       ]
     },
@@ -3037,6 +3293,121 @@
       "enum": [
         "default",
         "plan"
+      ]
+    },
+    "InteractionRequestKind": {
+      "type": "string",
+      "enum": [
+        "confirm",
+        "pick_one",
+        "secret"
+      ]
+    },
+    "InteractionResponseRequest": {
+      "type": "object",
+      "properties": {
+        "choice": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "confirmed": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "idempotency_key": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "request_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "secret": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "request_id",
+        "idempotency_key"
+      ]
+    },
+    "McpSecretHeaderReference": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "prefix": {
+          "type": "string",
+          "default": ""
+        },
+        "secret_id": {
+          "type": "string",
+          "format": "uuid"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "secret_id"
+      ]
+    },
+    "MemoryProviderPresetSummary": {
+      "type": "object",
+      "properties": {
+        "automatic_recall": {
+          "type": "boolean"
+        },
+        "connection_kind": {
+          "type": "string"
+        },
+        "credential_kind": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "documentation_url": {
+          "type": "string"
+        },
+        "hosted": {
+          "type": "boolean"
+        },
+        "hosted_endpoint": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "self_hosted": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "name",
+        "description",
+        "hosted",
+        "self_hosted",
+        "connection_kind",
+        "credential_kind",
+        "documentation_url",
+        "automatic_recall"
       ]
     },
     "MessageAuthor": {
@@ -3535,6 +3906,14 @@
         "error"
       ]
     },
+    "PluginEventIngressState": {
+      "type": "string",
+      "enum": [
+        "not_configured",
+        "ready",
+        "error"
+      ]
+    },
     "PluginMutationRequest": {
       "type": "object",
       "properties": {
@@ -3581,6 +3960,10 @@
             "null"
           ]
         },
+        "event_ingress_state": {
+          "$ref": "#/$defs/PluginEventIngressState",
+          "default": "not_configured"
+        },
         "id": {
           "type": "string",
           "format": "uuid"
@@ -3588,8 +3971,19 @@
         "kind": {
           "type": "string"
         },
+        "managed_services": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
         "name": {
           "type": "string"
+        },
+        "oauth_authorization_available": {
+          "type": "boolean",
+          "default": false
         },
         "tools": {
           "type": "array",
@@ -4489,6 +4883,27 @@
             "hour",
             "minute"
           ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "expression": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "const": "cron"
+            },
+            "timezone": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "expression",
+            "timezone"
+          ]
         }
       ]
     },
@@ -4888,6 +5303,13 @@
         "snippet",
         "deep_link",
         "created_at_ms"
+      ]
+    },
+    "SearchStatus": {
+      "type": "string",
+      "enum": [
+        "ready",
+        "unavailable"
       ]
     },
     "SecretStatus": {

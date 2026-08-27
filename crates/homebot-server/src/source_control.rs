@@ -215,6 +215,7 @@ pub(super) async fn push(
             let approval = persist_approval(
                 &state,
                 chat_id,
+                None,
                 &ticket,
                 "homebot.git.remote",
                 "Approve Git push",
@@ -348,6 +349,7 @@ pub(super) async fn create_pull_request(
             let approval = persist_approval(
                 &state,
                 chat_id,
+                None,
                 &ticket,
                 "homebot.git.pull_request",
                 "Approve pull request creation",
@@ -406,6 +408,7 @@ pub(super) async fn create_pull_request(
 pub(super) async fn persist_approval(
     state: &AppState,
     chat_id: Uuid,
+    message_id: Option<Uuid>,
     ticket: &homebot_tools::ApprovalTicket,
     capability: &str,
     title: &str,
@@ -423,7 +426,7 @@ pub(super) async fn persist_approval(
         id: ticket.approval_id,
         owner_id: state.owner_id,
         chat_id,
-        message_id: None,
+        message_id,
         operation_id: ticket.operation_id,
         capability: capability.to_owned(),
         title: title.to_owned(),

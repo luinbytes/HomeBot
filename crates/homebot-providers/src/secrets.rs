@@ -31,6 +31,14 @@ impl ResolvedSecret {
     pub(crate) fn expose(&self) -> &str {
         self.0.as_str()
     }
+
+    /// Borrows the secret only for a credential transport boundary.
+    ///
+    /// The callback shape keeps callers from obtaining an owned value by accident;
+    /// transports must still avoid logging or persisting anything derived from it.
+    pub fn with_exposed<T>(&self, callback: impl FnOnce(&str) -> T) -> T {
+        callback(self.0.as_str())
+    }
 }
 
 impl std::fmt::Debug for ResolvedSecret {

@@ -2,12 +2,15 @@
 
 #[path = "claude/protocol.rs"]
 mod protocol;
+#[path = "claude/tool_bridge.rs"]
+mod tool_bridge;
 
 use crate::{
     ApprovalDecision, CompactRequest, ExecutionMode, ProcessSpec, ProviderAdapter,
     ProviderAdapterId, ProviderAvailability, ProviderCapabilities, ProviderCapability,
     ProviderDescriptor, ProviderError, ProviderErrorCode, ProviderEvent, ProviderHealth,
-    ProviderModel, ProviderRun, ResumeRequest, StartRequest, SupervisedProcess,
+    ProviderModel, ProviderRun, ProviderTool, ProviderToolResult, ResumeRequest, StartRequest,
+    SupervisedProcess,
     supervisor::{BoundedLine, read_bounded_line},
 };
 use serde_json::{Value, json};
@@ -26,6 +29,7 @@ use tokio::{
 use uuid::Uuid;
 
 use protocol::normalize_message;
+use tool_bridge::{ToolBridge, ToolCallRegistry};
 
 const EVENT_BUFFER: usize = 128;
 const MAX_LINE_BYTES: usize = 4 * 1024 * 1024;
@@ -66,6 +70,7 @@ impl ClaudeProfile {
 pub struct ClaudeAdapter {
     profile: ClaudeProfile,
     operations: Arc<Mutex<HashMap<Uuid, watch::Sender<bool>>>>,
+    tool_calls: Arc<ToolCallRegistry>,
 }
 
 impl std::fmt::Debug for ClaudeAdapter {
@@ -86,9 +91,11 @@ impl ClaudeAdapter {
         Self {
             profile,
             operations: Arc::new(Mutex::new(HashMap::new())),
+            tool_calls: Arc::new(ToolCallRegistry::default()),
         }
     }
 
+    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
     async fn run(
         &self,
         operation_id: Uuid,
@@ -97,6 +104,7 @@ impl ClaudeAdapter {
         model: Option<String>,
         working_directory: Option<PathBuf>,
         mode: ExecutionMode,
+        tools: Vec<ProviderTool>,
     ) -> Result<ProviderRun, ProviderError> {
         let binary = resolve_binary(&self.profile).ok_or_else(not_installed)?;
         let (events_tx, events_rx) = mpsc::channel(EVENT_BUFFER);
@@ -106,7 +114,22 @@ impl ClaudeAdapter {
             return Err(invalid_request("Claude Code operation is already active"));
         }
         drop(operations);
+        let tool_calls = Arc::clone(&self.tool_calls);
         let setup = async {
+            let bridge = if tools.is_empty() {
+                None
+            } else {
+                Some(
+                    tool_bridge::start(
+                        operation_id,
+                        tools.clone(),
+                        events_tx.clone(),
+                        Arc::clone(&tool_calls),
+                    )
+                    .await
+                    .map_err(io_error)?,
+                )
+            };
             let mut spec = ProcessSpec::new(binary)
                 .arg("-p")
                 .arg("--input-format")
@@ -116,6 +139,14 @@ impl ClaudeAdapter {
                 .arg("--verbose")
                 .arg("--include-partial-messages")
                 .arg("--replay-user-messages");
+            if let Some(bridge) = &bridge {
+                spec = spec.arg("--mcp-config").arg(bridge.config());
+                for tool in &tools {
+                    spec = spec
+                        .arg("--allowedTools")
+                        .arg(format!("mcp__homebot__{}", tool.name));
+                }
+            }
             if let Some(conversation_id) = &conversation_id {
                 spec = spec.arg("--resume").arg(conversation_id);
             }
@@ -151,10 +182,10 @@ impl ClaudeAdapter {
             encoded.push(b'\n');
             stdin.write_all(&encoded).await.map_err(io_error)?;
             stdin.flush().await.map_err(io_error)?;
-            Ok::<_, ProviderError>((process, stdin, stdout))
+            Ok::<_, ProviderError>((process, stdin, stdout, bridge))
         }
         .await;
-        let (process, stdin, stdout) = match setup {
+        let (process, stdin, stdout, bridge) = match setup {
             Ok(setup) => setup,
             Err(error) => {
                 self.operations.lock().await.remove(&operation_id);
@@ -170,6 +201,9 @@ impl ClaudeAdapter {
                 stdout,
                 cancel_rx,
                 events_tx,
+                bridge,
+                tool_calls,
+                operation_id,
             )
             .await;
             active.lock().await.remove(&operation_id);
@@ -200,6 +234,7 @@ impl ProviderAdapter for ClaudeAdapter {
                     ProviderCapability::Cancellation,
                     ProviderCapability::Usage,
                     ProviderCapability::PlanMode,
+                    ProviderCapability::DynamicTools,
                 ]
                 .into_iter()
                 .collect(),
@@ -275,6 +310,7 @@ impl ProviderAdapter for ClaudeAdapter {
             request.model,
             request.working_directory,
             request.mode,
+            request.tools,
         )
         .await
     }
@@ -288,6 +324,7 @@ impl ProviderAdapter for ClaudeAdapter {
             request.model,
             request.working_directory,
             request.mode,
+            request.tools,
         )
         .await
     }
@@ -312,6 +349,17 @@ impl ProviderAdapter for ClaudeAdapter {
         ))
     }
 
+    async fn resolve_tool_call(
+        &self,
+        call_id: String,
+        result: ProviderToolResult,
+    ) -> Result<(), ProviderError> {
+        self.tool_calls
+            .resolve(call_id, result)
+            .await
+            .map_err(|()| invalid_request("Claude Code tool call is no longer pending"))
+    }
+
     async fn compact(&self, _request: CompactRequest) -> Result<(), ProviderError> {
         Err(invalid_request(
             "Claude Code does not expose manual compaction through this CLI surface",
@@ -330,6 +378,7 @@ enum ProcessOutcome {
     Failed(ProviderError),
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_process(
     expected_conversation_id: Option<String>,
     process: SupervisedProcess,
@@ -337,6 +386,9 @@ async fn run_process(
     stdout: ChildStdout,
     mut cancel: watch::Receiver<bool>,
     events: mpsc::Sender<ProviderEvent>,
+    bridge: Option<ToolBridge>,
+    tool_calls: Arc<ToolCallRegistry>,
+    operation_id: Uuid,
 ) {
     let mut reader = BufReader::new(stdout);
     let outcome = loop {
@@ -406,6 +458,10 @@ async fn run_process(
             let _ = events.send(ProviderEvent::Failed { error }).await;
         }
     }
+    if let Some(bridge) = bridge {
+        bridge.shutdown().await;
+    }
+    tool_calls.clear_operation(operation_id).await;
 }
 
 fn is_terminal(event: &ProviderEvent) -> bool {

@@ -12,6 +12,12 @@ import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.isSystemInDarkTheme
@@ -26,7 +32,11 @@ import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.Role
@@ -38,6 +48,7 @@ import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.homebot.android.connection.ConnectionState
@@ -45,7 +56,12 @@ import dev.homebot.protocol.*
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonPrimitive
+import kotlin.math.PI
+import kotlin.math.absoluteValue
+import kotlin.math.cos
+import kotlin.math.sin
 
 class MainActivity : ComponentActivity() {
     private val viewModel by viewModels<MainViewModel>()
@@ -131,7 +147,12 @@ private fun SearchScreen(viewModel: MainViewModel, state: AndroidProductState) {
             OutlinedTextField(query, { query = it }, label = { Text("Messages, files, links and routines") }, modifier = Modifier.weight(1f))
             Button(onClick = { viewModel.search(query) }, enabled = query.isNotBlank()) { Text("Search") }
         }
-        if (state.searchQuery.isNotBlank() && state.searchResults.isEmpty() && !state.loading) {
+        if (state.searchUnavailable) {
+            Text(
+                "Search is temporarily unavailable on the HomeBot server.",
+                color = MaterialTheme.colorScheme.error,
+            )
+        } else if (state.searchQuery.isNotBlank() && state.searchResults.isEmpty() && !state.loading) {
             Text("No results for “${state.searchQuery}”.", color = Muted)
         }
         LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -280,7 +301,7 @@ private fun PinnedBot(
             },
         ) {
             Box(contentAlignment = Alignment.Center) {
-                Text(bot.name.take(1).uppercase(), color = botColor(bot.color), fontSize = 26.sp, fontWeight = FontWeight.Black)
+                BotAvatar(bot, 52.dp, conversation.chat?.running == true || bot.attention == "working")
             }
         }
         Text(bot.name, maxLines = 1, fontSize = 13.sp, fontWeight = FontWeight.Medium)
@@ -342,9 +363,7 @@ private fun BotRow(
     Card(shape = CardShape) {
         Column(Modifier.fillMaxWidth().padding(15.dp)) {
             Row(Modifier.fillMaxWidth().clickable(onClick = onOpen), verticalAlignment = Alignment.CenterVertically) {
-                Box(Modifier.background(Violet.copy(alpha = .14f), CircleShape).padding(12.dp)) {
-                    Text(bot.name.take(1).uppercase(), color = Violet, fontWeight = FontWeight.Black)
-                }
+                BotAvatar(bot, 46.dp, bot.attention == "working")
                 Column(Modifier.weight(1f).padding(start = 12.dp)) {
                     Text(bot.name + if (bot.unread_count > 0) "  ${bot.unread_count}" else "", fontWeight = FontWeight.Bold)
                     Text(detail, color = Muted, maxLines = 1)
@@ -416,6 +435,77 @@ private fun BotRow(
 }
 
 @Composable
+private fun BotAvatar(bot: BotSummary, size: androidx.compose.ui.unit.Dp, working: Boolean) {
+    val context = LocalContext.current
+    val motionEnabled = remember {
+        Settings.Global.getFloat(
+            context.contentResolver,
+            Settings.Global.ANIMATOR_DURATION_SCALE,
+            1f,
+        ) > 0f
+    }
+    val phase = if (motionEnabled) {
+        val transition = rememberInfiniteTransition(label = "${bot.id}-avatar")
+        val value by transition.animateFloat(
+            initialValue = 0f,
+            targetValue = 1f,
+            animationSpec = infiniteRepeatable(
+                animation = tween(if (working) 1_800 else 5_400),
+                repeatMode = RepeatMode.Restart,
+            ),
+            label = "avatar phase",
+        )
+        value
+    } else {
+        0f
+    }
+    val angle = phase * 2f * PI.toFloat()
+    val morph = if (working) sin(angle) * .045f else 0f
+    val gaze = sin(angle) * .035f
+    val eyeOpen = if (!working && phase > .93f) ((phase - .965f).absoluteValue / .035f).coerceAtMost(1f) else 1f
+    val color = botColor(bot.color)
+
+    Canvas(Modifier.size(size)) {
+        val bodyWidth = this.size.width * (1f + morph)
+        val bodyHeight = this.size.height * (1f - morph)
+        val topLeft = Offset((this.size.width - bodyWidth) / 2f, (this.size.height - bodyHeight) / 2f)
+        when (bot.shape) {
+            "rounded_square" -> drawRoundRect(color, topLeft, Size(bodyWidth, bodyHeight), CornerRadius(this.size.width * .22f))
+            "hexagon" -> {
+                val path = Path()
+                repeat(6) { index ->
+                    val pointAngle = index * PI.toFloat() / 3f - PI.toFloat() / 2f
+                    val point = Offset(
+                        center.x + cos(pointAngle) * bodyWidth / 2f,
+                        center.y + sin(pointAngle) * bodyHeight / 2f,
+                    )
+                    if (index == 0) path.moveTo(point.x, point.y) else path.lineTo(point.x, point.y)
+                }
+                path.close()
+                drawPath(path, color)
+            }
+            else -> drawOval(color, topLeft, Size(bodyWidth, bodyHeight))
+        }
+        val eyeY = center.y - this.size.height * .09f
+        val eyeGap = this.size.width * .145f
+        val eyeRadius = this.size.width * .055f
+        listOf(center.x - eyeGap, center.x + eyeGap).forEach { eyeX ->
+            drawOval(
+                Color.White,
+                Offset(eyeX + this.size.width * gaze - eyeRadius, eyeY - eyeRadius * eyeOpen),
+                Size(eyeRadius * 2f, (eyeRadius * 2f * eyeOpen).coerceAtLeast(1f)),
+            )
+        }
+        drawLine(
+            Color.White,
+            Offset(center.x - this.size.width * .09f, center.y + this.size.height * .14f),
+            Offset(center.x + this.size.width * .09f, center.y + this.size.height * .14f),
+            strokeWidth = (this.size.width * .035f).coerceAtLeast(1f),
+        )
+    }
+}
+
+@Composable
 private fun DirectChatScreen(
     viewModel: MainViewModel,
     timeline: ChatTimelineResponse?,
@@ -436,6 +526,7 @@ private fun DirectChatScreen(
             onStop = viewModel::stopWorking,
             onRetry = viewModel::retry,
             onDecision = viewModel::decide,
+            onInteraction = viewModel::respondInteraction,
             onAttachment = viewModel::sendAttachment,
             onReaction = viewModel::setReaction,
             extras = {
@@ -577,6 +668,7 @@ private fun GroupChatScreen(viewModel: MainViewModel, timeline: GroupTimelineRes
         highlightedActivityId = null,
         onSend = { text, _, reply -> viewModel.send(text, mentions = mentions, replyToMessageId = reply) },
         onStop = viewModel::stopWorking, onRetry = {}, onDecision = { _, _ -> },
+        onInteraction = { _, _, _, _ -> },
         onAttachment = {},
         onReaction = viewModel::setReaction,
         extras = {
@@ -620,6 +712,7 @@ private fun ChatLayout(
     onStop: () -> Unit,
     onRetry: (MessageSummary) -> Unit,
     onDecision: (ApprovalSummary, Boolean) -> Unit,
+    onInteraction: (String, Boolean?, String?, String?) -> Unit,
     onAttachment: (android.net.Uri) -> Unit,
     onReaction: (String, String, Boolean) -> Unit,
     extras: @Composable () -> Unit,
@@ -643,7 +736,11 @@ private fun ChatLayout(
                 MessageCard(it, onRetry, onReaction, onReply = { replyToMessageId = it })
             }
             items(activities, key = { it.id }) {
-                HomeBotCard(it.title, "${it.detail}\n${it.status}", if (it.id == highlightedActivityId) Violet else Color.Unspecified)
+                if (it.kind == "interaction" && it.status == "pending") {
+                    InteractionCard(it, onInteraction)
+                } else {
+                    HomeBotCard(it.title, "${it.detail}\n${it.status}", if (it.id == highlightedActivityId) Violet else Color.Unspecified)
+                }
             }
             items(approvals.filter { it.status == "pending" }, key = { it.id }) { ApprovalCard(it, onDecision) }
             items(queue) { HomeBotCard("Queued", it) }
@@ -740,6 +837,56 @@ private fun ApprovalCard(approval: ApprovalSummary, onDecision: (ApprovalSummary
 }
 
 @Composable
+private fun InteractionCard(
+    activity: ActivitySummary,
+    onResponse: (String, Boolean?, String?, String?) -> Unit,
+) {
+    val detail = activity.presentation.detail.jsonObject
+    val requestKind = detail["request_kind"]?.jsonPrimitive?.contentOrNull.orEmpty()
+    val prompt = detail["prompt"]?.jsonPrimitive?.contentOrNull ?: activity.detail
+    val choices = detail["choices"]?.jsonArray?.mapNotNull { it.jsonPrimitive.contentOrNull }.orEmpty()
+    var secret by rememberSaveable(activity.id) { mutableStateOf("") }
+    Card(shape = CardShape) {
+        Column(Modifier.padding(14.dp).semantics { liveRegion = LiveRegionMode.Polite }) {
+            Text(activity.title, color = Violet, fontWeight = FontWeight.Bold)
+            Text(prompt, modifier = Modifier.padding(vertical = 6.dp))
+            when (requestKind) {
+                "confirm" -> Row {
+                    Button(onClick = { onResponse(activity.id, true, null, null) }) { Text("Confirm") }
+                    OutlinedButton(
+                        onClick = { onResponse(activity.id, false, null, null) },
+                        modifier = Modifier.padding(start = 8.dp),
+                    ) { Text("Cancel") }
+                }
+                "pick_one" -> Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    choices.forEach { choice ->
+                        OutlinedButton(
+                            onClick = { onResponse(activity.id, null, choice, null) },
+                            modifier = Modifier.fillMaxWidth(),
+                        ) { Text(choice) }
+                    }
+                }
+                "secret" -> {
+                    OutlinedTextField(
+                        secret,
+                        { secret = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("Enter securely") },
+                        visualTransformation = PasswordVisualTransformation(),
+                        singleLine = true,
+                    )
+                    Button(
+                        onClick = { val value = secret; secret = ""; onResponse(activity.id, null, null, value) },
+                        enabled = secret.isNotEmpty(),
+                    ) { Text("Store securely") }
+                    Text("The value goes to the HomeBot server vault and is never added to chat.", color = Muted, fontSize = 12.sp)
+                }
+            }
+        }
+    }
+}
+
+@Composable
 private fun ConnectedSettings(viewModel: MainViewModel, live: ConnectionState.Live, state: AndroidProductState) {
     val context = LocalContext.current
     val endpointSettings by viewModel.settings.collectAsState()
@@ -762,7 +909,21 @@ private fun ConnectedSettings(viewModel: MainViewModel, live: ConnectionState.Li
     var packTimezone by rememberSaveable { mutableStateOf("UTC") }
     var packHour by rememberSaveable { mutableStateOf("8") }
     var packMinute by rememberSaveable { mutableStateOf("0") }
+    var memoryProviderId by rememberSaveable { mutableStateOf<String?>(null) }
+    var memoryName by rememberSaveable { mutableStateOf("") }
+    var memoryEndpoint by rememberSaveable { mutableStateOf("") }
+    var memoryCredential by remember { mutableStateOf("") }
+    var remoteMcpOpen by rememberSaveable { mutableStateOf(false) }
+    var remoteMcpName by rememberSaveable { mutableStateOf("") }
+    var remoteMcpEndpoint by rememberSaveable { mutableStateOf("") }
+    var remoteMcpToken by remember { mutableStateOf("") }
+    var composioOpen by rememberSaveable { mutableStateOf(false) }
+    var composioGooglePreset by rememberSaveable { mutableStateOf(false) }
+    var composioName by rememberSaveable { mutableStateOf("") }
+    var composioToolkit by rememberSaveable { mutableStateOf("") }
+    var composioApiKey by remember { mutableStateOf("") }
     val selectedRoutine = state.routines.firstOrNull { it.id == state.selectedRoutineId }
+    val selectedMemoryProvider = state.memoryProviders.firstOrNull { it.id == memoryProviderId }
     LazyColumn(Modifier.fillMaxSize().padding(horizontal = 20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         item {
             Text("Settings & automations", fontSize = 28.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 18.dp))
@@ -1051,6 +1212,285 @@ private fun ConnectedSettings(viewModel: MainViewModel, live: ConnectionState.Li
         state.skillTestPreview?.let { preview ->
             item { HomeBotCard("Skill test preview", preview) }
         }
+        item {
+            SectionTitle("Memory providers")
+            Text("Connect memory once on the HomeBot server, then assign its isolated scope to each Bot.", color = Muted)
+        }
+        items(state.memoryProviders, key = { "memory-provider-${it.id}" }) { provider ->
+            val available = provider.connection_kind in setOf("streamable_http", "streamable_http_bridge", "custom_mcp", "memory_rest", "oauth_mcp", "builtin_memory")
+            Card(shape = CardShape) {
+                Column(Modifier.fillMaxWidth().padding(14.dp)) {
+                    Text(provider.name, fontWeight = FontWeight.Bold)
+                    Text(provider.description, color = Muted)
+                    Text(
+                        listOfNotNull(
+                            "${if (provider.hosted) "hosted" else ""}${if (provider.hosted && provider.self_hosted) " + " else ""}${if (provider.self_hosted) "self-hosted" else ""}",
+                            provider.credential_kind.replace('_', ' '),
+                            if (provider.automatic_recall) "automatic scoped recall" else null,
+                        ).filter(String::isNotBlank).joinToString(" • "),
+                        color = Muted,
+                        fontSize = 12.sp,
+                    )
+                    Row {
+                        TextButton(
+                            enabled = available,
+                            onClick = {
+                                memoryProviderId = provider.id
+                                memoryName = provider.name
+                                memoryEndpoint = provider.hosted_endpoint.orEmpty()
+                                memoryCredential = ""
+                            },
+                        ) { Text(if (available) "Configure" else "Adapter planned") }
+                        TextButton(onClick = {
+                            context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(provider.documentation_url)))
+                        }) { Text("Docs") }
+                    }
+                }
+            }
+        }
+        selectedMemoryProvider?.let { provider ->
+            item {
+                val builtin = provider.connection_kind == "builtin_memory"
+                Card(shape = CardShape) {
+                    Column(
+                        Modifier.fillMaxWidth().padding(14.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        Text("${if (builtin) "Activate" else "Connect"} ${provider.name}", fontWeight = FontWeight.Bold)
+                        OutlinedTextField(
+                            memoryName,
+                            { memoryName = it },
+                            Modifier.fillMaxWidth(),
+                            label = { Text("Connection name") },
+                            singleLine = true,
+                        )
+                        if (builtin) {
+                            Text("Runs locally inside HomeBot. No endpoint or credential is required.", color = Muted, fontSize = 12.sp)
+                        } else {
+                            OutlinedTextField(
+                                memoryEndpoint,
+                                { memoryEndpoint = it },
+                                Modifier.fillMaxWidth(),
+                                label = { Text("Provider endpoint") },
+                                supportingText = { Text("HTTPS, or HTTP on the HomeBot Mac itself") },
+                                singleLine = true,
+                            )
+                            OutlinedTextField(
+                                memoryCredential,
+                                { memoryCredential = it },
+                                Modifier.fillMaxWidth(),
+                                label = {
+                                    Text(
+                                        if (provider.credential_kind == "bearer" || provider.hosted_endpoint != null) {
+                                            "API key or bearer token"
+                                        } else {
+                                            "API key or bearer token (optional)"
+                                        },
+                                    )
+                                },
+                                visualTransformation = PasswordVisualTransformation(),
+                                singleLine = true,
+                            )
+                            Text("The credential is sent once to the Mac keychain and is never stored in Android.", color = Muted, fontSize = 12.sp)
+                        }
+                        Row {
+                            Button(
+                                enabled = memoryName.isNotBlank() && (builtin ||
+                                    (memoryEndpoint.isNotBlank() &&
+                                        (provider.credential_kind != "bearer" || memoryCredential.isNotBlank()))),
+                                onClick = {
+                                    viewModel.createMemoryProvider(
+                                        provider.id,
+                                        memoryName,
+                                        memoryEndpoint,
+                                        memoryCredential,
+                                    )
+                                    memoryCredential = ""
+                                },
+                            ) { Text(if (builtin) "Activate" else "Connect") }
+                            TextButton(onClick = {
+                                memoryProviderId = null
+                                memoryCredential = ""
+                            }) { Text("Cancel") }
+                        }
+                    }
+                }
+            }
+        }
+        item {
+            SectionTitle("Integrations")
+            Text("Composio sessions and OAuth are created by the HomeBot server. Android never stores the API key.", color = Muted)
+        }
+        item {
+            Card(shape = CardShape) {
+                Column(Modifier.fillMaxWidth().padding(14.dp)) {
+                    Text("Remote MCP server", fontWeight = FontWeight.Bold)
+                    Text("Connect a public, bearer-authenticated, or OAuth MCP endpoint through the HomeBot Mac.", color = Muted)
+                    TextButton(onClick = {
+                        remoteMcpOpen = true
+                        remoteMcpName = ""
+                        remoteMcpEndpoint = ""
+                        remoteMcpToken = ""
+                    }) { Text("Configure") }
+                }
+            }
+        }
+        if (remoteMcpOpen) {
+            item {
+                Card(shape = CardShape) {
+                    Column(
+                        Modifier.fillMaxWidth().padding(14.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        Text("Connect a remote MCP server", fontWeight = FontWeight.Bold)
+                        OutlinedTextField(
+                            remoteMcpName,
+                            { remoteMcpName = it },
+                            Modifier.fillMaxWidth(),
+                            label = { Text("Connection name") },
+                            singleLine = true,
+                        )
+                        OutlinedTextField(
+                            remoteMcpEndpoint,
+                            { remoteMcpEndpoint = it },
+                            Modifier.fillMaxWidth(),
+                            label = { Text("MCP endpoint") },
+                            supportingText = { Text("HTTPS, or loopback HTTP on the Mac") },
+                            singleLine = true,
+                        )
+                        OutlinedTextField(
+                            remoteMcpToken,
+                            { remoteMcpToken = it },
+                            Modifier.fillMaxWidth(),
+                            label = { Text("Bearer token (optional)") },
+                            supportingText = { Text("Leave empty for a public or OAuth endpoint") },
+                            visualTransformation = PasswordVisualTransformation(),
+                            singleLine = true,
+                        )
+                        Text("The token is sent once to the Mac keychain. OAuth sign-in appears only after the server verifies it is required.", color = Muted, fontSize = 12.sp)
+                        Row {
+                            Button(
+                                enabled = remoteMcpName.isNotBlank() && remoteMcpEndpoint.isNotBlank(),
+                                onClick = {
+                                    viewModel.createRemoteMcp(
+                                        remoteMcpName.trim(),
+                                        remoteMcpEndpoint.trim(),
+                                        remoteMcpToken,
+                                    )
+                                    remoteMcpToken = ""
+                                    remoteMcpOpen = false
+                                },
+                            ) { Text("Connect") }
+                            TextButton(onClick = {
+                                remoteMcpOpen = false
+                                remoteMcpToken = ""
+                            }) { Text("Cancel") }
+                        }
+                    }
+                }
+            }
+        }
+        item {
+            Card(shape = CardShape) {
+                Column(Modifier.fillMaxWidth().padding(14.dp)) {
+                    Text("Google Workspace", fontWeight = FontWeight.Bold)
+                    Text("One Google connection for Gmail, Drive, Calendar, Docs, Sheets, Slides, Meet, and Tasks through Composio.", color = Muted)
+                    TextButton(onClick = {
+                        composioOpen = true
+                        composioGooglePreset = true
+                        composioName = "Google Workspace"
+                        composioToolkit = "googlesuper"
+                        composioApiKey = ""
+                    }) { Text("Connect Google") }
+                }
+            }
+        }
+        item {
+            Card(shape = CardShape) {
+                Column(Modifier.fillMaxWidth().padding(14.dp)) {
+                    Text("Composio toolkit", fontWeight = FontWeight.Bold)
+                    Text("Connect one allowlisted Composio toolkit. Add another connector when a Bot needs another service.", color = Muted)
+                    TextButton(onClick = {
+                        composioOpen = true
+                        composioGooglePreset = false
+                        composioName = "Composio"
+                        composioToolkit = ""
+                        composioApiKey = ""
+                    }) { Text("Configure") }
+                }
+            }
+        }
+        if (composioOpen) {
+            item {
+                Card(shape = CardShape) {
+                    Column(
+                        Modifier.fillMaxWidth().padding(14.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        Text("Connect ${if (composioGooglePreset) "Google" else "Composio"}", fontWeight = FontWeight.Bold)
+                        OutlinedTextField(
+                            composioName,
+                            { composioName = it },
+                            Modifier.fillMaxWidth(),
+                            label = { Text("Connection name") },
+                            singleLine = true,
+                        )
+                        OutlinedTextField(
+                            composioToolkit,
+                            { if (!composioGooglePreset) composioToolkit = it },
+                            Modifier.fillMaxWidth(),
+                            label = { Text("Toolkit slug") },
+                            readOnly = composioGooglePreset,
+                            supportingText = { Text(if (composioGooglePreset) "Google Super uses one OAuth connection" else "For example: github, notion, or slack") },
+                            singleLine = true,
+                        )
+                        OutlinedTextField(
+                            composioApiKey,
+                            { composioApiKey = it },
+                            Modifier.fillMaxWidth(),
+                            label = { Text("Composio project API key") },
+                            visualTransformation = PasswordVisualTransformation(),
+                            singleLine = true,
+                        )
+                        Text("The key is sent once to the Mac keychain. Composio's hosted workbench is disabled for HomeBot sessions.", color = Muted, fontSize = 12.sp)
+                        Row {
+                            Button(
+                                enabled = composioName.isNotBlank() && composioToolkit.isNotBlank() && composioApiKey.isNotBlank(),
+                                onClick = {
+                                    viewModel.createComposioConnector(
+                                        composioName,
+                                        composioToolkit.trim(),
+                                        composioApiKey,
+                                    )
+                                    composioApiKey = ""
+                                    composioOpen = false
+                                },
+                            ) { Text("Create connection") }
+                            TextButton(onClick = {
+                                composioOpen = false
+                                composioApiKey = ""
+                            }) { Text("Cancel") }
+                        }
+                    }
+                }
+            }
+        }
+        state.externalAuthorization?.let { authorization ->
+            item {
+                Card(shape = CardShape) {
+                    Column(Modifier.fillMaxWidth().padding(14.dp)) {
+                        Text("Finish ${authorization.toolkit} sign-in", fontWeight = FontWeight.Bold)
+                        Text("Complete the provider's OAuth flow, then return to HomeBot.", color = Muted)
+                        Row {
+                            Button(onClick = {
+                                context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(authorization.authorization_url)))
+                            }) { Text("Open secure sign-in") }
+                            TextButton(onClick = viewModel::clearExternalAuthorization) { Text("Done") }
+                        }
+                    }
+                }
+            }
+        }
         item { SectionTitle("Plugins & MCP") }
         items(state.plugins, key = { it.id }) { plugin ->
             Card(shape = CardShape) {
@@ -1060,8 +1500,49 @@ private fun ConnectedSettings(viewModel: MainViewModel, live: ConnectionState.Li
                     plugin.error_message?.let { Text(it, color = Danger) }
                     Row {
                         TextButton(onClick = { viewModel.mutatePlugin(plugin.id, "health") }) { Text("Check") }
-                        TextButton(onClick = { viewModel.mutatePlugin(plugin.id, if (plugin.enabled) "disable" else "enable") }) {
+                        if (plugin.oauth_authorization_available && plugin.auth_state == "required") {
+                            TextButton(onClick = { viewModel.authorizeRemoteMcp(plugin.id) }) { Text("Sign in") }
+                        } else TextButton(onClick = { viewModel.mutatePlugin(plugin.id, if (plugin.enabled) "disable" else "enable") }) {
                             Text(if (plugin.enabled) "Disable" else "Enable")
+                        }
+                    }
+                    plugin.managed_services.forEach { toolkit ->
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text("$toolkit account", modifier = Modifier.weight(1f), color = Muted)
+                            TextButton(onClick = {
+                                viewModel.revokeComposioAccount(plugin.id, toolkit, true)
+                            }) { Text("Switch") }
+                            TextButton(onClick = {
+                                viewModel.revokeComposioAccount(plugin.id, toolkit, false)
+                            }) { Text("Revoke") }
+                        }
+                    }
+                    if (plugin.managed_services.isNotEmpty()) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                when (plugin.event_ingress_state) {
+                                    "ready" -> "Account events ready"
+                                    "error" -> "Account event secret unavailable"
+                                    else -> "Account events need public HTTPS"
+                                },
+                                modifier = Modifier.weight(1f),
+                                color = if (plugin.event_ingress_state == "error") Danger else Muted,
+                            )
+                            if (plugin.event_ingress_state != "ready") {
+                                TextButton(onClick = { viewModel.configureComposioEvents(plugin.id) }) {
+                                    Text(if (plugin.event_ingress_state == "error") "Repair" else "Configure")
+                                }
+                            }
+                        }
+                    }
+                    LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        items(live.snapshot.bots, key = { "${plugin.id}-${it.id}" }) { bot ->
+                            val assigned = bot.id in plugin.bot_ids
+                            FilterChip(
+                                selected = assigned,
+                                onClick = { viewModel.togglePlugin(plugin.id, bot.id, !assigned) },
+                                label = { Text(bot.name) },
+                            )
                         }
                     }
                 }

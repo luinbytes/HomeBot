@@ -1045,7 +1045,7 @@ mod tests {
                 }
                 requests.push(String::from_utf8_lossy(&bytes).into_owned());
                 stream.write_all(
-                    b"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: 12\r\n\r\n{\"ok\":true}\n",
+                    b"HTTP/1.1 200 OK\r\nconnection: close\r\ncontent-type: application/json\r\ncontent-length: 12\r\n\r\n{\"ok\":true}\n",
                 )?;
             }
             Ok(requests)
@@ -1129,7 +1129,7 @@ mod tests {
                 }
                 requests.push(String::from_utf8_lossy(&bytes).into_owned());
                 stream.write_all(
-                    b"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: 12\r\n\r\n{\"ok\":true}\n",
+                    b"HTTP/1.1 200 OK\r\nconnection: close\r\ncontent-type: application/json\r\ncontent-length: 12\r\n\r\n{\"ok\":true}\n",
                 )?;
             }
             Ok(requests)

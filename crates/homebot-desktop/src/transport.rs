@@ -18,8 +18,9 @@ use homebot_protocol::{
     CreateAttachmentRequest, CreateAttachmentResponse, CreateBotRequest, CreateDirectChatRequest,
     CreateDirectChatResponse, CreateGroupChatResponse, CreatePairingRequest,
     CreatePullRequestRequest, CreateRepositoryWorkspaceRequest, DeleteBotRequest,
-    DetachChatWorkspaceRequest, DeviceSessionSummary, ErrorEnvelope, FinalizeAttachmentRequest,
-    GlobalSearchResponse, GroupChatSummary, GroupTimelineResponse, MIN_COMPATIBLE_PROTOCOL_VERSION,
+    DetachChatWorkspaceRequest, DeviceSessionSummary, ErrorEnvelope, ExternalAuthorizationSummary,
+    FinalizeAttachmentRequest, GlobalSearchResponse, GroupChatSummary, GroupTimelineResponse,
+    InteractionResponseRequest, MIN_COMPATIBLE_PROTOCOL_VERSION, MemoryProviderPresetSummary,
     MessageMutationRequest, PROTOCOL_VERSION, PairingOffer, PluginSummary, ProtocolRange,
     PullRequestMetadata, PullRequestMutationResponse, ReactionMutationRequest, RecordedAction,
     RepositoryWorkspaceSummary, RestoreCheckpointRequest, RevokeDeviceSessionRequest,
@@ -42,6 +43,7 @@ use tokio_tungstenite::{
     },
 };
 use uuid::Uuid;
+use zeroize::Zeroizing;
 
 use crate::{
     bot_roster::{BotClientCommand, BotEditorDraft},
@@ -171,7 +173,9 @@ pub enum DesktopEvent {
     WorkingContext(WorkingContextSummary),
     Devices(Vec<DeviceSessionSummary>),
     Plugins(Vec<PluginSummary>),
+    MemoryProviders(Vec<MemoryProviderPresetSummary>),
     PluginMutation(PluginSummary),
+    ExternalAuthorization(ExternalAuthorizationSummary),
     PairingOffer(PairingOffer),
     DeviceRevoked(DeviceSessionSummary),
     BrowserAction(BrowserActionResponse),
@@ -190,7 +194,6 @@ pub enum DesktopEvent {
     MutationFailed(TransportFailure),
 }
 
-#[derive(Clone, Debug)]
 pub enum DesktopCommand {
     Bot(BotClientCommand),
     LoadTimeline(Uuid),
@@ -217,6 +220,35 @@ pub enum DesktopCommand {
     Workspace(WorkspaceCommand),
     LoadDevices,
     LoadPlugins,
+    LoadMemoryProviders,
+    AuthorizeRemoteMcp {
+        plugin_id: Uuid,
+    },
+    CreateRemoteMcp {
+        name: String,
+        endpoint: String,
+        bearer_token: Zeroizing<String>,
+    },
+    CreateMemoryProvider {
+        provider_id: String,
+        name: String,
+        endpoint: String,
+        credential: Zeroizing<String>,
+    },
+    CreateComposioConnector {
+        name: String,
+        toolkit: String,
+        api_key: Zeroizing<String>,
+    },
+    RevokeComposioAccount {
+        plugin_id: Uuid,
+        toolkit: String,
+        reauthorize: bool,
+    },
+    ConfigureComposioEvents {
+        plugin_id: Uuid,
+        public_base_url: String,
+    },
     MutatePlugin {
         plugin_id: Uuid,
         action: &'static str,

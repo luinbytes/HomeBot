@@ -3,9 +3,9 @@ use super::{
     Client, ComposerDraft, CreateAttachmentRequest, CreateAttachmentResponse, CreateBotRequest,
     CreateDirectChatRequest, CreateDirectChatResponse, DeleteBotRequest, DesktopCommand,
     DesktopEvent, Digest, ErrorEnvelope, FinalizeAttachmentRequest, GroupTimelineCommand,
-    MessageMutationRequest, Method, ReactionMutationRequest, RuntimeConfig, SendMessageRequest,
-    Sender, Sha256, StatusCode, TimelineCommand, TransportFailure, UpdateBotRequest, Uuid,
-    WorkspaceCommand, protocol_error, request_error,
+    InteractionResponseRequest, MessageMutationRequest, Method, ReactionMutationRequest,
+    RuntimeConfig, SendMessageRequest, Sender, Sha256, StatusCode, TimelineCommand,
+    TransportFailure, UpdateBotRequest, Uuid, WorkspaceCommand, protocol_error, request_error,
 };
 
 #[allow(clippy::too_many_lines)] // Exhaustive command routing is intentionally auditable here.
@@ -102,6 +102,306 @@ pub(super) async fn execute_command(
             )
             .await?;
             let _ = events.send(DesktopEvent::Plugins(plugins));
+            Ok(())
+        }
+        DesktopCommand::LoadMemoryProviders => {
+            let providers = get_json(client, config, "/api/v1/memory-providers").await?;
+            let _ = events.send(DesktopEvent::MemoryProviders(providers));
+            Ok(())
+        }
+        DesktopCommand::AuthorizeRemoteMcp { plugin_id } => {
+            let redirect_uri = format!(
+                "{}/api/v1/oauth/mcp/callback",
+                config.endpoint.trim_end_matches('/')
+            );
+            let authorization = post_json(
+                client,
+                config,
+                &format!("/api/v1/plugins/{plugin_id}/authorize"),
+                &homebot_protocol::AuthorizeRemoteMcpRequest {
+                    request_id: Uuid::now_v7(),
+                    idempotency_key: Uuid::now_v7(),
+                    redirect_uri,
+                },
+            )
+            .await?;
+            let _ = events.send(DesktopEvent::ExternalAuthorization(authorization));
+            Ok(())
+        }
+        DesktopCommand::CreateRemoteMcp {
+            name,
+            endpoint,
+            bearer_token,
+        } => {
+            let secret_id = if bearer_token.trim().is_empty() {
+                None
+            } else {
+                let id = Uuid::now_v7();
+                let _: homebot_protocol::SecretSummary = post_json(
+                    client,
+                    config,
+                    "/api/v1/secrets",
+                    &serde_json::json!({
+                        "request_id": Uuid::now_v7(),
+                        "idempotency_key": id,
+                        "label": format!("{name} bearer token"),
+                        "value": bearer_token.as_str(),
+                    }),
+                )
+                .await?;
+                Some(id)
+            };
+            let headers = secret_id.map_or_else(Vec::new, |secret_id| {
+                vec![homebot_protocol::McpSecretHeaderReference {
+                    name: "authorization".to_owned(),
+                    secret_id,
+                    prefix: "Bearer ".to_owned(),
+                }]
+            });
+            let plugin_result: Result<homebot_protocol::PluginSummary, TransportFailure> =
+                post_json(
+                    client,
+                    config,
+                    "/api/v1/plugins/remote",
+                    &homebot_protocol::CreateRemoteMcpPluginRequest {
+                        request_id: Uuid::now_v7(),
+                        idempotency_key: Uuid::now_v7(),
+                        name,
+                        description: "Remote MCP server".to_owned(),
+                        url: endpoint,
+                        secret_headers: headers,
+                    },
+                )
+                .await;
+            let plugin = match plugin_result {
+                Ok(plugin) => plugin,
+                Err(error) => {
+                    if let Some(secret_id) = secret_id
+                        && let Ok(response) = authenticated(
+                            client,
+                            config,
+                            Method::DELETE,
+                            &format!("/api/v1/secrets/{secret_id}"),
+                        )
+                        .send()
+                        .await
+                    {
+                        let _ = ensure_success(response).await;
+                    }
+                    return Err(error);
+                }
+            };
+            let plugin = post_json(
+                client,
+                config,
+                &format!("/api/v1/plugins/{}/connect", plugin.id),
+                &homebot_protocol::PluginMutationRequest {
+                    request_id: Uuid::now_v7(),
+                    idempotency_key: Uuid::now_v7(),
+                },
+            )
+            .await?;
+            let _ = events.send(DesktopEvent::PluginMutation(plugin));
+            Ok(())
+        }
+        DesktopCommand::CreateMemoryProvider {
+            provider_id,
+            name,
+            endpoint,
+            credential,
+        } => {
+            let secret_id = if credential.trim().is_empty() {
+                None
+            } else {
+                let id = Uuid::now_v7();
+                let secret: homebot_protocol::SecretSummary = post_json(
+                    client,
+                    config,
+                    "/api/v1/secrets",
+                    &serde_json::json!({
+                        "request_id": Uuid::now_v7(),
+                        "idempotency_key": id,
+                        "label": format!("{name} credential"),
+                        "value": credential.as_str(),
+                    }),
+                )
+                .await?;
+                Some(secret.id)
+            };
+            let plugin_result: Result<homebot_protocol::PluginSummary, TransportFailure> =
+                post_json(
+                    client,
+                    config,
+                    &format!("/api/v1/memory-providers/{provider_id}"),
+                    &homebot_protocol::CreateMemoryProviderRequest {
+                        request_id: Uuid::now_v7(),
+                        idempotency_key: Uuid::now_v7(),
+                        name,
+                        endpoint: (!endpoint.trim().is_empty()).then_some(endpoint),
+                        secret_id,
+                    },
+                )
+                .await;
+            let plugin = match plugin_result {
+                Ok(plugin) => plugin,
+                Err(error) => {
+                    if let Some(secret_id) = secret_id {
+                        if let Ok(response) = authenticated(
+                            client,
+                            config,
+                            Method::DELETE,
+                            &format!("/api/v1/secrets/{secret_id}"),
+                        )
+                        .send()
+                        .await
+                        {
+                            let _ = ensure_success(response).await;
+                        }
+                    }
+                    return Err(error);
+                }
+            };
+            let plugin = if plugin.kind == "builtin_memory" {
+                plugin
+            } else {
+                post_json(
+                    client,
+                    config,
+                    &format!("/api/v1/plugins/{}/connect", plugin.id),
+                    &homebot_protocol::PluginMutationRequest {
+                        request_id: Uuid::now_v7(),
+                        idempotency_key: Uuid::now_v7(),
+                    },
+                )
+                .await?
+            };
+            let _ = events.send(DesktopEvent::PluginMutation(plugin));
+            Ok(())
+        }
+        DesktopCommand::CreateComposioConnector {
+            name,
+            toolkit,
+            api_key,
+        } => {
+            let secret_id = Uuid::now_v7();
+            let _: homebot_protocol::SecretSummary = post_json(
+                client,
+                config,
+                "/api/v1/secrets",
+                &serde_json::json!({
+                    "request_id": Uuid::now_v7(),
+                    "idempotency_key": secret_id,
+                    "label": format!("{name} Composio API key"),
+                    "value": api_key.as_str(),
+                }),
+            )
+            .await?;
+            let plugin_result: Result<homebot_protocol::PluginSummary, TransportFailure> =
+                post_json(
+                    client,
+                    config,
+                    "/api/v1/connectors/composio",
+                    &homebot_protocol::CreateComposioConnectorRequest {
+                        request_id: Uuid::now_v7(),
+                        idempotency_key: Uuid::now_v7(),
+                        name,
+                        secret_id,
+                        toolkits: vec![toolkit.clone()],
+                    },
+                )
+                .await;
+            let plugin = match plugin_result {
+                Ok(plugin) => plugin,
+                Err(error) => {
+                    if let Ok(response) = authenticated(
+                        client,
+                        config,
+                        Method::DELETE,
+                        &format!("/api/v1/secrets/{secret_id}"),
+                    )
+                    .send()
+                    .await
+                    {
+                        let _ = ensure_success(response).await;
+                    }
+                    return Err(error);
+                }
+            };
+            let plugin: homebot_protocol::PluginSummary = post_json(
+                client,
+                config,
+                &format!("/api/v1/plugins/{}/connect", plugin.id),
+                &homebot_protocol::PluginMutationRequest {
+                    request_id: Uuid::now_v7(),
+                    idempotency_key: Uuid::now_v7(),
+                },
+            )
+            .await?;
+            let authorization = post_json(
+                client,
+                config,
+                &format!("/api/v1/connectors/composio/{}/authorize", plugin.id),
+                &homebot_protocol::AuthorizeComposioToolkitRequest {
+                    request_id: Uuid::now_v7(),
+                    idempotency_key: Uuid::now_v7(),
+                    toolkit,
+                },
+            )
+            .await?;
+            let _ = events.send(DesktopEvent::PluginMutation(plugin));
+            let _ = events.send(DesktopEvent::ExternalAuthorization(authorization));
+            Ok(())
+        }
+        DesktopCommand::RevokeComposioAccount {
+            plugin_id,
+            toolkit,
+            reauthorize,
+        } => {
+            let request = homebot_protocol::AuthorizeComposioToolkitRequest {
+                request_id: Uuid::now_v7(),
+                idempotency_key: Uuid::now_v7(),
+                toolkit: toolkit.clone(),
+            };
+            let plugin = post_json(
+                client,
+                config,
+                &format!("/api/v1/connectors/composio/{plugin_id}/revoke"),
+                &request,
+            )
+            .await?;
+            let _ = events.send(DesktopEvent::PluginMutation(plugin));
+            if reauthorize {
+                let authorization = post_json(
+                    client,
+                    config,
+                    &format!("/api/v1/connectors/composio/{plugin_id}/authorize"),
+                    &homebot_protocol::AuthorizeComposioToolkitRequest {
+                        request_id: Uuid::now_v7(),
+                        idempotency_key: Uuid::now_v7(),
+                        toolkit,
+                    },
+                )
+                .await?;
+                let _ = events.send(DesktopEvent::ExternalAuthorization(authorization));
+            }
+            Ok(())
+        }
+        DesktopCommand::ConfigureComposioEvents {
+            plugin_id,
+            public_base_url,
+        } => {
+            let plugin = post_json(
+                client,
+                config,
+                &format!("/api/v1/connectors/composio/{plugin_id}/events"),
+                &homebot_protocol::ConfigureComposioEventIngressRequest {
+                    request_id: Uuid::now_v7(),
+                    idempotency_key: Uuid::now_v7(),
+                    public_base_url,
+                },
+            )
+            .await?;
+            let _ = events.send(DesktopEvent::PluginMutation(plugin));
             Ok(())
         }
         DesktopCommand::MutatePlugin { plugin_id, action } => {
@@ -1122,6 +1422,7 @@ fn update_bot(draft: BotEditorDraft) -> UpdateBotRequest {
     }
 }
 
+#[allow(clippy::too_many_lines)] // Exhaustive command routing is intentionally auditable here.
 async fn execute_timeline(
     client: &Client,
     config: &RuntimeConfig,
@@ -1176,6 +1477,12 @@ async fn execute_timeline(
             )
             .await
         }
+        TimelineCommand::RespondInteraction {
+            interaction_id,
+            confirmed,
+            choice,
+            secret,
+        } => respond_interaction(client, config, interaction_id, confirmed, choice, secret).await,
         TimelineCommand::LoadCheckpointDiff {
             from_checkpoint_id,
             to_checkpoint_id,
@@ -1223,6 +1530,36 @@ async fn execute_timeline(
             execute_context_command(client, config, chat_id, command, events).await
         }
     }
+}
+
+async fn respond_interaction(
+    client: &Client,
+    config: &RuntimeConfig,
+    interaction_id: Uuid,
+    confirmed: Option<bool>,
+    choice: Option<String>,
+    secret: Option<String>,
+) -> Result<(), TransportFailure> {
+    let body = InteractionResponseRequest {
+        request_id: Uuid::now_v7(),
+        idempotency_key: Uuid::now_v7(),
+        confirmed,
+        choice,
+        secret,
+    };
+    ensure_success(
+        authenticated(
+            client,
+            config,
+            Method::POST,
+            &format!("/api/v1/interactions/{interaction_id}/response"),
+        )
+        .json(&body)
+        .send()
+        .await
+        .map_err(request_error)?,
+    )
+    .await
 }
 
 async fn set_reaction(

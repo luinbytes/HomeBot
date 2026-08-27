@@ -24,6 +24,8 @@ use crate::{
 };
 
 const POLL_INTERVAL: Duration = Duration::from_millis(250);
+const EVENT_DEBOUNCE: Duration = Duration::from_millis(750);
+const EVENT_BATCH_LIMIT: usize = 25;
 const MISSED_GRACE_MS: u64 = 30_000;
 
 pub(super) fn start(state: AppState) {
@@ -36,19 +38,21 @@ pub(super) fn start(state: AppState) {
             let mut shutdown = state.server_shutdown.subscribe();
             let mut trigger_events = state.trigger_events.subscribe();
             let mut poll = tokio::time::interval(POLL_INTERVAL);
+            let mut event_poll = tokio::time::interval(EVENT_DEBOUNCE);
+            event_poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             loop {
                 tokio::select! {
                     changed = shutdown.changed() => {
                         if changed.is_err() || *shutdown.borrow() { break; }
                     }
                     event = trigger_events.recv() => {
-                        if let Ok((kind, event_id)) = event {
-                            dispatch_event(&state, &kind, event_id).await;
+                        if event.is_ok() {
+                            event_poll.reset_after(EVENT_DEBOUNCE);
                         }
                     }
+                    _ = event_poll.tick() => evaluate_event_triggers(&state).await,
                     _ = poll.tick() => {
                         evaluate_schedules(&state, unix_time_ms()).await;
-                        evaluate_event_triggers(&state).await;
                         run_due_jobs(&state).await;
                     }
                 }
@@ -432,33 +436,6 @@ async fn execute_claimed_job(state: AppState, job: RoutineJobRecord, cancel: Arc
     }
 }
 
-pub(super) async fn dispatch_event(state: &AppState, kind: &str, event_id: Uuid) {
-    if kind.starts_with("routine_") {
-        return;
-    }
-    let Ok(triggers) = state.storage.routine_triggers(state.owner_id, None).await else {
-        return;
-    };
-    for trigger in triggers.into_iter().filter(|trigger| trigger.enabled) {
-        let RoutineTriggerSource::Event { event_kind } = &trigger.definition.source else {
-            continue;
-        };
-        if event_kind != kind {
-            continue;
-        }
-        let delivery = format!("event:{event_id}");
-        let _ = enqueue_delivery(
-            state,
-            &trigger,
-            &delivery,
-            json!({"kind":"event", "trigger_id":trigger.id, "event_kind":kind, "event_id":event_id}),
-            json!({}),
-            unix_time_ms(),
-        )
-        .await;
-    }
-}
-
 async fn evaluate_event_triggers(state: &AppState) {
     let Ok(triggers) = state.storage.routine_triggers(state.owner_id, None).await else {
         return;
@@ -471,41 +448,64 @@ async fn evaluate_event_triggers(state: &AppState) {
         };
         let Ok(events) = state
             .storage
-            .events_after(state.owner_id, trigger.last_event_sequence, 1_000)
+            .events_after(state.owner_id, trigger.last_event_sequence, 501)
             .await
         else {
             continue;
         };
+        let backlog_limited = events.len() > 500;
         let mut cursor = trigger.last_event_sequence;
-        for event in events {
+        let mut matched = Vec::with_capacity(EVENT_BATCH_LIMIT);
+        for event in events.into_iter().take(500) {
             if !event.event_kind.starts_with("routine_")
                 && &event.event_kind == event_kind
                 && event_matches_trigger(&trigger, &event)
             {
-                let kind = if matches!(
-                    trigger.definition.source,
-                    RoutineTriggerSource::Plugin { .. }
-                ) {
-                    "plugin"
-                } else {
-                    "event"
-                };
-                let delivery = format!("{kind}:{}", event.event_id);
-                if enqueue_delivery(
-                    state,
-                    &trigger,
-                    &delivery,
-                    json!({"kind":kind, "trigger_id":trigger.id, "event_kind":event.event_kind, "event_id":event.event_id}),
-                    json!({}),
-                    event.created_at_ms,
-                )
-                .await
-                .is_err()
-                {
-                    break;
-                }
+                matched.push(event.clone());
             }
             cursor = event.sequence;
+            if matched.len() == EVENT_BATCH_LIMIT {
+                break;
+            }
+        }
+        if let (Some(first), Some(last)) = (matched.first(), matched.last()) {
+            let kind = if matches!(
+                trigger.definition.source,
+                RoutineTriggerSource::Plugin { .. }
+            ) {
+                "plugin"
+            } else {
+                "event"
+            };
+            let delivery = format!("{kind}:{}:{}", first.event_id, last.event_id);
+            let event_ids = matched
+                .iter()
+                .map(|event| event.event_id)
+                .collect::<Vec<_>>();
+            let events = matched
+                .iter()
+                .map(|event| &event.payload)
+                .collect::<Vec<_>>();
+            if enqueue_delivery(
+                state,
+                &trigger,
+                &delivery,
+                json!({
+                    "kind":kind,
+                    "trigger_id":trigger.id,
+                    "event_kind":event_kind,
+                    "event_ids":event_ids,
+                    "events":events,
+                    "backlog_limited":backlog_limited,
+                }),
+                json!({}),
+                first.created_at_ms,
+            )
+            .await
+            .is_err()
+            {
+                continue;
+            }
         }
         if cursor > trigger.last_event_sequence {
             let _ = state

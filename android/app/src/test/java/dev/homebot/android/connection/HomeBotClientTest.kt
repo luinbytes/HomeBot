@@ -265,6 +265,28 @@ class HomeBotClientTest {
     }
 
     @Test
+    fun interactionResponseUsesTheServerOwnedCardEndpoint() = runBlocking {
+        server.enqueue(MockResponse().setResponseCode(204))
+        server.start()
+        sessions.save(credentials())
+
+        client().respondInteraction(
+            interactionId = "00000000-0000-0000-0000-000000000099",
+            choice = "Review first",
+        ).getOrThrow()
+
+        val request = server.takeRequest()
+        assertEquals(
+            "/api/v1/interactions/00000000-0000-0000-0000-000000000099/response",
+            request.path,
+        )
+        assertEquals("Bearer hbds_fixture_session", request.getHeader("Authorization"))
+        val body = request.body.readUtf8()
+        assertTrue(body.contains("\"choice\":\"Review first\""))
+        assertFalse(body.contains("\"secret\""))
+    }
+
+    @Test
     fun attachmentUsesAuthenticatedCreateUploadFinalizeTransport() = runBlocking {
         server.enqueue(jsonResponse(ATTACHMENT_OFFER))
         server.enqueue(MockResponse().setResponseCode(204))
@@ -307,6 +329,105 @@ class HomeBotClientTest {
         repeat(3) {
             assertEquals("Bearer hbds_fixture_session", server.takeRequest().getHeader("Authorization"))
         }
+    }
+
+    @Test
+    fun memoryProviderSetupKeepsCredentialsAndLifecycleOnTheServer() = runBlocking {
+        server.enqueue(jsonResponse(MEMORY_PROVIDERS_RESPONSE))
+        server.enqueue(jsonResponse(CREATED_SECRET_RESPONSE))
+        server.enqueue(jsonResponse(MEMORY_PLUGIN_RESPONSE))
+        server.start()
+        sessions.save(credentials())
+        val client = client()
+
+        val providers = client.memoryProviders().getOrThrow()
+        val secret = client.createSecret("Supermemory", "sm_fixture").getOrThrow()
+        val plugin = client.createMemoryProvider(
+            providerId = "supermemory",
+            name = "Personal Supermemory",
+            endpoint = null,
+            secretId = secret.id,
+        ).getOrThrow()
+
+        assertEquals("Supermemory", providers.single().name)
+        assertEquals("memory_mcp", plugin.kind)
+        val requests = List(3) { server.takeRequest() }
+        assertEquals(
+            listOf("/api/v1/memory-providers", "/api/v1/secrets", "/api/v1/memory-providers/supermemory"),
+            requests.map { it.path },
+        )
+        assertTrue(requests[1].body.readUtf8().contains("sm_fixture"))
+        assertTrue(requests[2].body.readUtf8().contains(secret.id))
+        requests.forEach { assertEquals("Bearer hbds_fixture_session", it.getHeader("Authorization")) }
+    }
+
+    @Test
+    fun composioAccountSwitchUsesExplicitServerRevokeThenAuthorization() = runBlocking {
+        server.enqueue(jsonResponse(COMPOSIO_PLUGIN_RESPONSE))
+        server.enqueue(jsonResponse(COMPOSIO_AUTHORIZATION_RESPONSE))
+        server.start()
+        sessions.save(credentials())
+        val client = client()
+
+        val plugin = client.revokeComposioToolkit(COMPOSIO_PLUGIN_ID, "googlesuper").getOrThrow()
+        val authorization = client.authorizeComposioToolkit(plugin.id, "googlesuper").getOrThrow()
+
+        assertEquals(listOf("googlesuper"), plugin.managed_services)
+        assertEquals("https://app.composio.dev/link/lt_fixture", authorization.authorization_url)
+        val requests = List(2) { server.takeRequest() }
+        assertEquals(
+            listOf(
+                "/api/v1/connectors/composio/$COMPOSIO_PLUGIN_ID/revoke",
+                "/api/v1/connectors/composio/$COMPOSIO_PLUGIN_ID/authorize",
+            ),
+            requests.map { it.path },
+        )
+        assertTrue(requests.all { it.body.readUtf8().contains("googlesuper") })
+    }
+
+    @Test
+    fun composioEventSetupUsesOnlyThePairedServerPublicContract() = runBlocking {
+        server.enqueue(jsonResponse(COMPOSIO_PLUGIN_RESPONSE))
+        server.start()
+        sessions.save(credentials())
+
+        client().configureComposioEvents(COMPOSIO_PLUGIN_ID).getOrThrow()
+
+        val request = server.takeRequest()
+        assertEquals("/api/v1/connectors/composio/$COMPOSIO_PLUGIN_ID/events", request.path)
+        assertEquals("Bearer hbds_fixture_session", request.getHeader("Authorization"))
+        val body = request.body.readUtf8()
+        assertTrue(body.contains("public_base_url"))
+        assertTrue(body.contains(server.url("/").toString().trimEnd('/')))
+        assertFalse(body.contains("fixture-signing-secret"))
+    }
+
+    @Test
+    fun remoteMcpOAuthUsesTheAuthoritativeServerCallback() = runBlocking {
+        server.enqueue(jsonResponse(REMOTE_PLUGIN_RESPONSE))
+        server.enqueue(jsonResponse(REMOTE_AUTHORIZATION_RESPONSE))
+        server.start()
+        sessions.save(credentials())
+        val client = client()
+
+        val plugin = client.createRemoteMcp(
+            name = "Research MCP",
+            endpoint = "https://mcp.example.test/mcp",
+            secretId = null,
+        ).getOrThrow()
+        val authorization = client.authorizeRemoteMcp(plugin.id).getOrThrow()
+
+        assertEquals("https://auth.example.test/authorize", authorization.authorization_url)
+        val create = server.takeRequest()
+        val authorize = server.takeRequest()
+        assertEquals("/api/v1/plugins/remote", create.path)
+        assertTrue(create.body.readUtf8().contains("https://mcp.example.test/mcp"))
+        assertEquals("/api/v1/plugins/${plugin.id}/authorize", authorize.path)
+        assertTrue(
+            authorize.body.readUtf8().contains(
+                server.url("/api/v1/oauth/mcp/callback").toString(),
+            ),
+        )
     }
 
     @Test
@@ -503,6 +624,7 @@ class HomeBotClientTest {
         const val CHAT_ID = "00000000-0000-0000-0000-000000000030"
         const val ATTACHMENT_ID = "00000000-0000-0000-0000-000000000050"
         const val BOT_ID = "00000000-0000-0000-0000-000000000010"
+        const val COMPOSIO_PLUGIN_ID = "00000000-0000-0000-0000-000000000073"
         const val ROUTINE_ID = "00000000-0000-0000-0000-000000000080"
         const val ROUTINE_VERSION_ID = "00000000-0000-0000-0000-000000000081"
         const val RECORDING_ID = "00000000-0000-0000-0000-000000000082"
@@ -515,6 +637,13 @@ class HomeBotClientTest {
         const val ATTACHMENT_RESPONSE = """{"id":"$ATTACHMENT_ID","filename":"notes.txt","media_type":"text/plain","size_bytes":4,"sha256":"4740ae6347b0172c98f8364c3e4b3e45a69e2afc6f6f6f24913a24f2c8472a8"}"""
         const val PLUGINS_RESPONSE = """[{"id":"00000000-0000-0000-0000-000000000060","name":"Repository MCP","description":"Repository tools","kind":"local_mcp","enabled":true,"connection_state":"connected","auth_state":"ready","tools":[],"bot_ids":[],"updated_at_unix_ms":1}]"""
         const val SECRETS_RESPONSE = """[{"id":"00000000-0000-0000-0000-000000000070","label":"OpenAI work","status":"ready","created_at_unix_ms":1,"updated_at_unix_ms":1}]"""
+        const val MEMORY_PROVIDERS_RESPONSE = """[{"id":"supermemory","name":"Supermemory","description":"Portable memory","hosted":true,"self_hosted":true,"connection_kind":"streamable_http","hosted_endpoint":"https://mcp.supermemory.ai/mcp","credential_kind":"bearer_or_oauth","documentation_url":"https://supermemory.ai/docs/supermemory-mcp/mcp","automatic_recall":true}]"""
+        const val CREATED_SECRET_RESPONSE = """{"id":"00000000-0000-0000-0000-000000000071","label":"Supermemory","status":"ready","created_at_unix_ms":1,"updated_at_unix_ms":1}"""
+        const val MEMORY_PLUGIN_RESPONSE = """{"id":"00000000-0000-0000-0000-000000000072","name":"Personal Supermemory","description":"Portable memory","kind":"memory_mcp","enabled":false,"connection_state":"connect","auth_state":"ready","error_message":null,"tools":[],"bot_ids":[],"updated_at_unix_ms":1}"""
+        const val REMOTE_PLUGIN_RESPONSE = """{"id":"00000000-0000-0000-0000-000000000074","name":"Research MCP","description":"Remote MCP server","kind":"remote_mcp","enabled":false,"connection_state":"reopen","auth_state":"required","error_message":null,"tools":[],"bot_ids":[],"oauth_authorization_available":true,"updated_at_unix_ms":1}"""
+        const val REMOTE_AUTHORIZATION_RESPONSE = """{"toolkit":"Research MCP","authorization_url":"https://auth.example.test/authorize"}"""
+        const val COMPOSIO_PLUGIN_RESPONSE = """{"id":"$COMPOSIO_PLUGIN_ID","name":"Google Workspace","description":"Managed connector","kind":"connector_mcp","enabled":false,"connection_state":"reopen","auth_state":"required","error_message":null,"tools":[],"bot_ids":[],"managed_services":["googlesuper"],"updated_at_unix_ms":1}"""
+        const val COMPOSIO_AUTHORIZATION_RESPONSE = """{"toolkit":"googlesuper","authorization_url":"https://app.composio.dev/link/lt_fixture"}"""
         const val CURRENT_DEVICE_RESPONSE = """{"id":"$DEVICE_ID","name":"Pixel 9","endpoint_kind":"loopback","created_at_unix_ms":1,"last_seen_at_unix_ms":2,"revoked_at_unix_ms":null}"""
         const val ASSISTANT_PACKS_RESPONSE = """[{"id":"morning-brief","name":"Morning Brief","description":"Start the day","skill_name":"Morning brief","routine_name":"Morning brief","schedule":{"cadence":"daily","weekday":null,"default_hour":8,"default_minute":0}}]"""
         const val ASSISTANT_PACK_INSTALL_RESPONSE = """{"pack_id":"morning-brief","skill":{"id":"00000000-0000-0000-0000-000000000090","name":"Morning brief · Nova","description":"Start the day","active_version_id":"00000000-0000-0000-0000-000000000091","version":1,"definition":{"instructions":"Prepare a brief","context":[],"tools":[]},"bot_ids":["$BOT_ID"],"created_at_unix_ms":1,"updated_at_unix_ms":1},"routine":{"id":"$ROUTINE_ID","bot_id":"$BOT_ID","name":"Review","description":"Repository review","enabled":true,"draft":false,"active_version_id":"$ROUTINE_VERSION_ID","version":1,"definition":{"inputs":[],"steps":[{"kind":"bot_prompt","bot_id":"$BOT_ID","prompt_template":"Check the repository","requires_approval":false}],"expected_outputs":[]},"created_at_unix_ms":1,"updated_at_unix_ms":1},"trigger":{"id":"00000000-0000-0000-0000-000000000092","routine_id":"$ROUTINE_ID","definition":{"source":{"kind":"schedule","schedule":{"kind":"daily_local","timezone":"Europe/London","hour":8,"minute":15}},"missed_run_policy":"run_once","overlap_policy":{"kind":"queue"},"retry_policy":{"maximum_attempts":1,"initial_backoff_seconds":5,"maximum_backoff_seconds":300},"catch_up_limit":1},"enabled":true,"last_evaluated_at_unix_ms":null,"next_fire_at_unix_ms":2,"created_at_unix_ms":1,"updated_at_unix_ms":1}}"""

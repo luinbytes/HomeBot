@@ -232,6 +232,9 @@ pub async fn compose_app_state(
     storage
         .recover_interrupted_chat_turns(Uuid::nil(), crate::unix_time_ms())
         .await?;
+    storage
+        .recover_interrupted_browser_sessions(Uuid::nil(), crate::unix_time_ms())
+        .await?;
     let runtime = build_runtime(&storage, config).await?;
     Ok(AppState::new(storage, owner_token)
         .with_artifact_root(artifact_root)

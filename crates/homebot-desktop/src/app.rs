@@ -12,10 +12,11 @@ use homebot_protocol::{
     RiskLevel, RoutineDefinition, RoutineRecordingSummary, RoutineStep, RoutineSummary,
     ServerEvent, ServerEventBody, VcsStatus,
 };
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::mpsc::{Receiver, channel};
 use std::time::Instant;
 use uuid::Uuid;
+use zeroize::Zeroizing;
 
 use crate::{
     activity_surfaces::{ActivityAction, ActivityCardModel, activity_surface},
@@ -71,6 +72,7 @@ struct PendingPullRequest {
 #[derive(Clone, Debug, Default)]
 struct SearchProjection {
     query: String,
+    unavailable: bool,
     results: Vec<homebot_protocol::SearchResultSummary>,
 }
 
@@ -91,6 +93,28 @@ struct AssistantPackInstallDraft {
     timezone: String,
     hour: u8,
     minute: u8,
+}
+
+struct MemoryProviderDraft {
+    provider_id: String,
+    name: String,
+    endpoint: String,
+    credential: Zeroizing<String>,
+    credential_required: bool,
+    builtin: bool,
+}
+
+struct RemoteMcpDraft {
+    name: String,
+    endpoint: String,
+    bearer_token: Zeroizing<String>,
+}
+
+struct ComposioDraft {
+    google_workspace: bool,
+    name: String,
+    toolkit: String,
+    api_key: Zeroizing<String>,
 }
 
 impl RoutineEditorDraft {
@@ -139,6 +163,9 @@ pub struct HomeBotApp {
     notification_sink: SystemNotificationSink,
     deep_link_receiver: Receiver<DeepLink>,
     settings_open: bool,
+    memory_provider_draft: Option<MemoryProviderDraft>,
+    remote_mcp_draft: Option<RemoteMcpDraft>,
+    composio_draft: Option<ComposioDraft>,
     assistant_packs_open: bool,
     assistant_pack_install: Option<AssistantPackInstallDraft>,
     assistant_pack_notice: Option<String>,
@@ -162,6 +189,7 @@ pub struct HomeBotApp {
     performance: LocalPerformanceTelemetry,
     focus_composer: bool,
     expanded_activities: HashSet<Uuid>,
+    interaction_secret_drafts: HashMap<Uuid, String>,
     delete_confirmation: Option<(Uuid, String, String)>,
 }
 
@@ -198,6 +226,9 @@ impl Default for HomeBotApp {
             notification_sink: SystemNotificationSink::new(deep_link_sender),
             deep_link_receiver,
             settings_open: false,
+            memory_provider_draft: None,
+            remote_mcp_draft: None,
+            composio_draft: None,
             assistant_packs_open: false,
             assistant_pack_install: None,
             assistant_pack_notice: None,
@@ -221,6 +252,7 @@ impl Default for HomeBotApp {
             performance: LocalPerformanceTelemetry::default(),
             focus_composer: false,
             expanded_activities: HashSet::new(),
+            interaction_secret_drafts: HashMap::new(),
             delete_confirmation: None,
         }
     }
@@ -311,6 +343,12 @@ impl HomeBotApp {
             self.routine_editor_dialog(context);
         } else if self.details_open {
             self.details_dialog(context);
+        } else if self.memory_provider_draft.is_some() {
+            self.memory_provider_dialog(context);
+        } else if self.remote_mcp_draft.is_some() {
+            self.remote_mcp_dialog(context);
+        } else if self.composio_draft.is_some() {
+            self.composio_dialog(context);
         } else if self.settings_open {
             self.settings_dialog(context);
         }
@@ -366,6 +404,226 @@ impl HomeBotApp {
         }
         if let Some(action) = response.inner {
             self.handle_settings_action(action);
+        }
+    }
+
+    fn memory_provider_dialog(&mut self, context: &egui::Context) {
+        let Some(draft) = self.memory_provider_draft.as_mut() else {
+            return;
+        };
+        let theme = self.theme;
+        let mut submit = false;
+        let response = egui::Modal::new(egui::Id::new("memory_provider_modal"))
+            .backdrop_color(theme.palette.overlay)
+            .frame(modal_frame(theme))
+            .show(context, |ui| {
+                ui.set_width(480.0);
+                ui.heading(format!(
+                    "{} {}",
+                    if draft.builtin { "Activate" } else { "Connect" },
+                    draft.name
+                ));
+                ui.label(
+                    RichText::new(
+                        "The HomeBot server owns this connection and isolates memory per Bot.",
+                    )
+                    .color(theme.palette.text_secondary),
+                );
+                ui.add_space(theme.spacing.lg);
+                ui.label("Connection name");
+                ui.text_edit_singleline(&mut draft.name);
+                if draft.builtin {
+                    ui.label(
+                        RichText::new("Runs locally inside HomeBot. No endpoint or credential is required.")
+                            .color(theme.palette.text_secondary),
+                    );
+                } else {
+                    ui.label("Provider endpoint");
+                    ui.text_edit_singleline(&mut draft.endpoint);
+                    ui.label(if draft.credential_required {
+                        "API key or bearer token"
+                    } else {
+                        "API key or bearer token (optional)"
+                    });
+                    ui.add(egui::TextEdit::singleline(&mut *draft.credential).password(true));
+                    ui.label(
+                        RichText::new(
+                            "The credential is written to the Mac keychain and is never shown again.",
+                        )
+                        .color(theme.palette.text_secondary),
+                    );
+                }
+                ui.add_space(theme.spacing.lg);
+                ui.horizontal(|ui| {
+                    if ui.button("Cancel").clicked() {
+                        ui.close();
+                    }
+                    if ui
+                        .add_enabled(
+                            !draft.name.trim().is_empty()
+                                && (draft.builtin
+                                    || (!draft.endpoint.trim().is_empty()
+                                        && (!draft.credential_required
+                                            || !draft.credential.trim().is_empty()))),
+                            egui::Button::new(if draft.builtin { "Activate" } else { "Connect" }),
+                        )
+                        .clicked()
+                    {
+                        submit = true;
+                        ui.close();
+                    }
+                });
+            });
+        if submit {
+            if let Some(draft) = self.memory_provider_draft.take() {
+                self.send_transport(DesktopCommand::CreateMemoryProvider {
+                    provider_id: draft.provider_id,
+                    name: draft.name,
+                    endpoint: draft.endpoint,
+                    credential: draft.credential,
+                });
+            }
+        } else if response.should_close() {
+            self.memory_provider_draft = None;
+        }
+    }
+
+    fn composio_dialog(&mut self, context: &egui::Context) {
+        let Some(draft) = self.composio_draft.as_mut() else {
+            return;
+        };
+        let theme = self.theme;
+        let mut submit = false;
+        let response = egui::Modal::new(egui::Id::new("composio_modal"))
+            .backdrop_color(theme.palette.overlay)
+            .frame(modal_frame(theme))
+            .show(context, |ui| {
+                ui.set_width(480.0);
+                ui.heading(if draft.google_workspace {
+                    "Connect Google Workspace"
+                } else {
+                    "Connect a Composio toolkit"
+                });
+                ui.label(
+                    RichText::new(
+                        "The Mac server creates the session, stores the key, and opens the provider's OAuth flow.",
+                    )
+                    .color(theme.palette.text_secondary),
+                );
+                ui.add_space(theme.spacing.lg);
+                ui.label("Connection name");
+                ui.text_edit_singleline(&mut draft.name);
+                ui.label("Toolkit slug");
+                ui.add_enabled(
+                    !draft.google_workspace,
+                    egui::TextEdit::singleline(&mut draft.toolkit),
+                );
+                ui.label(
+                    RichText::new(if draft.google_workspace {
+                        "Google Super uses one OAuth connection for the supported Workspace services."
+                    } else {
+                        "For example: github, notion, or slack."
+                    })
+                    .color(theme.palette.text_secondary),
+                );
+                ui.label("Composio project API key");
+                ui.add(egui::TextEdit::singleline(&mut *draft.api_key).password(true));
+                ui.label(
+                    RichText::new(
+                        "The key is written to the Mac keychain. Composio's hosted workbench is disabled.",
+                    )
+                    .color(theme.palette.text_secondary),
+                );
+                ui.add_space(theme.spacing.lg);
+                ui.horizontal(|ui| {
+                    if ui.button("Cancel").clicked() {
+                        ui.close();
+                    }
+                    if ui
+                        .add_enabled(
+                            !draft.name.trim().is_empty()
+                                && !draft.toolkit.trim().is_empty()
+                                && !draft.api_key.trim().is_empty(),
+                            egui::Button::new("Create connection"),
+                        )
+                        .clicked()
+                    {
+                        submit = true;
+                        ui.close();
+                    }
+                });
+            });
+        if submit {
+            if let Some(draft) = self.composio_draft.take() {
+                self.send_transport(DesktopCommand::CreateComposioConnector {
+                    name: draft.name,
+                    toolkit: draft.toolkit.trim().to_owned(),
+                    api_key: draft.api_key,
+                });
+            }
+        } else if response.should_close() {
+            self.composio_draft = None;
+        }
+    }
+
+    fn remote_mcp_dialog(&mut self, context: &egui::Context) {
+        let Some(draft) = self.remote_mcp_draft.as_mut() else {
+            return;
+        };
+        let theme = self.theme;
+        let mut submit = false;
+        let response = egui::Modal::new(egui::Id::new("remote_mcp_modal"))
+            .backdrop_color(theme.palette.overlay)
+            .frame(modal_frame(theme))
+            .show(context, |ui| {
+                ui.set_width(480.0);
+                ui.heading("Connect a remote MCP server");
+                ui.label(
+                    RichText::new(
+                        "The Mac server owns the connection. Leave the token empty for a public or OAuth endpoint.",
+                    )
+                    .color(theme.palette.text_secondary),
+                );
+                ui.add_space(theme.spacing.lg);
+                ui.label("Connection name");
+                ui.text_edit_singleline(&mut draft.name);
+                ui.label("MCP endpoint");
+                ui.text_edit_singleline(&mut draft.endpoint);
+                ui.label("Bearer token (optional)");
+                ui.add(egui::TextEdit::singleline(&mut *draft.bearer_token).password(true));
+                ui.label(
+                    RichText::new(
+                        "Tokens are written to the Mac keychain. OAuth sign-in appears after HomeBot verifies the endpoint requires it.",
+                    )
+                    .color(theme.palette.text_secondary),
+                );
+                ui.add_space(theme.spacing.lg);
+                ui.horizontal(|ui| {
+                    if ui.button("Cancel").clicked() {
+                        ui.close();
+                    }
+                    if ui
+                        .add_enabled(
+                            !draft.name.trim().is_empty() && !draft.endpoint.trim().is_empty(),
+                            egui::Button::new("Connect"),
+                        )
+                        .clicked()
+                    {
+                        submit = true;
+                        ui.close();
+                    }
+                });
+            });
+        if submit {
+            if let Some(draft) = self.remote_mcp_draft.take() {
+                self.send_transport(DesktopCommand::CreateRemoteMcp {
+                    name: draft.name,
+                    endpoint: draft.endpoint,
+                    bearer_token: draft.bearer_token,
+                });
+            }
+        } else if response.should_close() {
+            self.remote_mcp_draft = None;
         }
     }
 
@@ -502,24 +760,91 @@ impl HomeBotApp {
             SettingsAction::RefreshPlugins => {
                 self.send_transport(DesktopCommand::LoadPlugins);
             }
+            SettingsAction::ConfigureMemoryProvider(provider_id) => {
+                if let Some(provider) = self
+                    .settings
+                    .memory_providers
+                    .iter()
+                    .find(|provider| provider.id == provider_id)
+                {
+                    self.memory_provider_draft = Some(MemoryProviderDraft {
+                        provider_id,
+                        name: provider.name.clone(),
+                        endpoint: provider.hosted_endpoint.clone().unwrap_or_default(),
+                        credential: Zeroizing::new(String::new()),
+                        credential_required: provider.credential_kind == "bearer",
+                        builtin: provider.connection_kind == "builtin_memory",
+                    });
+                }
+            }
+            SettingsAction::ConfigureRemoteMcp => {
+                self.remote_mcp_draft = Some(RemoteMcpDraft {
+                    name: String::new(),
+                    endpoint: String::new(),
+                    bearer_token: Zeroizing::new(String::new()),
+                });
+            }
+            SettingsAction::ConfigureComposio { google_workspace } => {
+                self.composio_draft = Some(ComposioDraft {
+                    google_workspace,
+                    name: if google_workspace {
+                        "Google Workspace".to_owned()
+                    } else {
+                        "Composio".to_owned()
+                    },
+                    toolkit: if google_workspace {
+                        "googlesuper".to_owned()
+                    } else {
+                        String::new()
+                    },
+                    api_key: Zeroizing::new(String::new()),
+                });
+            }
+            SettingsAction::ComposioAccount {
+                id,
+                toolkit,
+                reauthorize,
+            } => {
+                self.send_transport(DesktopCommand::RevokeComposioAccount {
+                    plugin_id: id,
+                    toolkit,
+                    reauthorize,
+                });
+            }
+            SettingsAction::ConfigureComposioEvents { id } => {
+                self.configure_composio_events(id);
+            }
             SettingsAction::SetLaunchAtLogin(enabled) => {
                 if let Err(error) = set_launch_at_login(enabled) {
                     self.settings.launch_at_login = !enabled;
                     self.transport_error = Some(format!("Could not update login item: {error}"));
                 }
             }
-            SettingsAction::Plugin { id, action } => {
-                let action = match action {
-                    PluginAction::Connect => "connect",
-                    PluginAction::Enable => "enable",
-                    PluginAction::Disable => "disable",
-                };
-                self.send_transport(DesktopCommand::MutatePlugin {
-                    plugin_id: id,
-                    action,
-                });
-            }
+            SettingsAction::Plugin { id, action } => self.handle_plugin_action(id, action),
         }
+    }
+
+    fn configure_composio_events(&mut self, plugin_id: Uuid) {
+        self.send_transport(DesktopCommand::ConfigureComposioEvents {
+            plugin_id,
+            public_base_url: self.settings.server_endpoint.clone(),
+        });
+    }
+
+    fn handle_plugin_action(&mut self, plugin_id: Uuid, action: PluginAction) {
+        if action == PluginAction::Authorize {
+            self.send_transport(DesktopCommand::AuthorizeRemoteMcp { plugin_id });
+            return;
+        }
+        self.send_transport(DesktopCommand::MutatePlugin {
+            plugin_id,
+            action: match action {
+                PluginAction::Connect => "connect",
+                PluginAction::Enable => "enable",
+                PluginAction::Disable => "disable",
+                PluginAction::Authorize => return,
+            },
+        });
     }
 
     fn pump_updater(&mut self) {
@@ -687,7 +1012,13 @@ impl HomeBotApp {
                 }
                 DesktopEvent::Devices(devices) => self.apply_devices(devices),
                 DesktopEvent::Plugins(plugins) => self.apply_plugins(plugins),
+                DesktopEvent::MemoryProviders(providers) => {
+                    self.settings.memory_providers = providers;
+                }
                 DesktopEvent::PluginMutation(plugin) => self.apply_plugin(plugin),
+                DesktopEvent::ExternalAuthorization(authorization) => {
+                    context.open_url(egui::OpenUrl::new_tab(authorization.authorization_url));
+                }
                 DesktopEvent::PairingOffer(offer) => self.pairing_offer = Some(offer),
                 DesktopEvent::DeviceRevoked(device) => self.apply_device_revoked(device),
                 DesktopEvent::CheckpointDiff(diff) => self.checkpoint_diff = Some(diff),
@@ -732,6 +1063,7 @@ impl HomeBotApp {
     fn apply_search(&mut self, response: homebot_protocol::GlobalSearchResponse) {
         self.search = Some(SearchProjection {
             query: response.query,
+            unavailable: response.status == homebot_protocol::SearchStatus::Unavailable,
             results: response.results,
         });
     }
@@ -746,6 +1078,7 @@ impl HomeBotApp {
         self.transport_error = None;
         self.send_transport(DesktopCommand::LoadDevices);
         self.send_transport(DesktopCommand::LoadPlugins);
+        self.send_transport(DesktopCommand::LoadMemoryProviders);
         self.send_transport(DesktopCommand::LoadAssistantPacks);
     }
 
@@ -1112,7 +1445,8 @@ impl HomeBotApp {
                     crate::notifications::NotificationKind::Finished => {
                         egui::UserAttentionType::Informational
                     }
-                    crate::notifications::NotificationKind::NeedsApproval
+                    crate::notifications::NotificationKind::NeedsInput
+                    | crate::notifications::NotificationKind::NeedsApproval
                     | crate::notifications::NotificationKind::Error => {
                         egui::UserAttentionType::Critical
                     }
@@ -1665,12 +1999,18 @@ impl HomeBotApp {
         });
         let submitted_query = submit.then(|| search.query.trim().to_owned());
         let query_is_empty = search.query.is_empty();
+        let unavailable = search.unavailable;
         let results = search.results.clone();
         if let Some(query) = submitted_query.filter(|query| !query.is_empty()) {
             self.send_transport(DesktopCommand::Search(query));
         }
         ui.add_space(self.theme.spacing.lg);
-        if !query_is_empty && results.is_empty() {
+        if unavailable {
+            ui.colored_label(
+                self.theme.palette.danger,
+                "Search is temporarily unavailable on the HomeBot server.",
+            );
+        } else if !query_is_empty && results.is_empty() {
             ui.label("No matching results.");
         }
         egui::ScrollArea::vertical().show(ui, |ui| {
@@ -2302,29 +2642,70 @@ impl HomeBotApp {
                                 ui.add_space(self.theme.spacing.md);
                             }
                             TimelineEntry::Activity(item) => {
-                                let mut model = ActivityCardModel::new(item);
-                                model.expanded = self.expanded_activities.contains(&model.activity.id);
-                                for action in activity_surface(ui, self.theme, &mut model) {
-                                    match action {
-                                        ActivityAction::Copy(text) => ui.ctx().copy_text(text),
-                                        ActivityAction::OpenArtifact(_) => {
-                                            self.transport_error = Some(
-                                                "Artifact preview is not available in this desktop build."
-                                                    .to_owned(),
-                                            );
-                                        }
-                                        ActivityAction::ReviewApproval => {
-                                            self.transport_error = Some(
-                                                "Review the approval request in this conversation."
-                                                    .to_owned(),
-                                            );
+                                if item.status == ActivityStatus::Pending
+                                    && let ActivityDetail::Interaction {
+                                        request_kind,
+                                        prompt,
+                                        choices,
+                                    } = &item.presentation.detail
+                                {
+                                    Frame::NONE
+                                        .fill(self.theme.palette.accent_soft)
+                                        .stroke(Stroke::new(
+                                            self.theme.layout.hairline,
+                                            self.theme.palette.accent,
+                                        ))
+                                        .corner_radius(CornerRadius::same(self.theme.radii.md))
+                                        .inner_margin(egui::Margin::same(self.theme.insets.md))
+                                        .show(ui, |ui| {
+                                            ui.strong(&item.title);
+                                            ui.label(prompt);
+                                            match request_kind {
+                                                homebot_protocol::InteractionRequestKind::Confirm => {
+                                                    ui.horizontal(|ui| {
+                                                        if ui.button("Confirm").clicked() {
+                                                            self.timeline.respond_interaction(item.id, Some(true), None, None);
+                                                        }
+                                                        if ui.button("Cancel").clicked() {
+                                                            self.timeline.respond_interaction(item.id, Some(false), None, None);
+                                                        }
+                                                    });
+                                                }
+                                                homebot_protocol::InteractionRequestKind::PickOne => {
+                                                    ui.horizontal_wrapped(|ui| {
+                                                        for choice in choices {
+                                                            if ui.button(choice).clicked() {
+                                                                self.timeline.respond_interaction(item.id, None, Some(choice.clone()), None);
+                                                            }
+                                                        }
+                                                    });
+                                                }
+                                                homebot_protocol::InteractionRequestKind::Secret => {
+                                                    let draft = self.interaction_secret_drafts.entry(item.id).or_default();
+                                                    let label = ui.label("Secret value");
+                                                    ui.add(egui::TextEdit::singleline(draft).password(true).hint_text("Enter securely"))
+                                                        .labelled_by(label.id);
+                                                    let ready = !draft.is_empty();
+                                                    if ui.add_enabled(ready, egui::Button::new("Store securely")).clicked() {
+                                                        let secret = self.interaction_secret_drafts.remove(&item.id).unwrap_or_default();
+                                                        self.timeline.respond_interaction(item.id, None, None, Some(secret));
+                                                    }
+                                                    ui.small("The value goes to the HomeBot server vault and is never added to chat.");
+                                                }
+                                            }
+                                        });
+                                } else {
+                                    let mut model = ActivityCardModel::new(item);
+                                    model.expanded = self.expanded_activities.contains(&model.activity.id);
+                                    for action in activity_surface(ui, self.theme, &mut model) {
+                                        match action {
+                                            ActivityAction::Copy(text) => ui.ctx().copy_text(text),
+                                            ActivityAction::OpenArtifact(_) => self.transport_error = Some("Artifact preview is not available in this desktop build.".to_owned()),
+                                            ActivityAction::ReviewApproval => self.transport_error = Some("Review the approval request in this conversation.".to_owned()),
                                         }
                                     }
-                                }
-                                if model.expanded {
-                                    self.expanded_activities.insert(model.activity.id);
-                                } else {
-                                    self.expanded_activities.remove(&model.activity.id);
+                                    if model.expanded { self.expanded_activities.insert(model.activity.id); }
+                                    else { self.expanded_activities.remove(&model.activity.id); }
                                 }
                                 ui.add_space(self.theme.spacing.sm);
                             }
@@ -3370,6 +3751,9 @@ fn plugin_settings_item(plugin: homebot_protocol::PluginSummary) -> PluginSettin
             homebot_protocol::PluginConnectionState::Error => PluginViewState::Error,
         },
         enabled: plugin.enabled,
+        managed_services: plugin.managed_services,
+        oauth_authorization_available: plugin.oauth_authorization_available,
+        event_ingress_state: plugin.event_ingress_state,
     }
 }
 
@@ -3469,10 +3853,13 @@ const fn editor_message(error: EditorError) -> &'static str {
 pub enum ProductionFixtureState {
     PopulatedChat,
     Approval,
+    Interaction,
     GroupChat,
     Disconnected,
     ProviderUnavailable,
     Settings,
+    SettingsPlugins,
+    MemoryProviderActivate,
     SettingsDevices,
     AssistantPacks,
     AssistantPackConfigure,
@@ -3577,26 +3964,76 @@ fn production_fixture(theme: HomeBotTheme, state: ProductionFixtureState) -> Hom
     app.timeline.hydrate(ChatTimelineResponse {
         chat,
         messages: fixture_messages(state),
-        activities: vec![ActivitySummary {
-            id: Uuid::from_u128(30),
-            chat_id: Uuid::from_u128(10),
-            message_id: Some(Uuid::from_u128(22)),
-            title: "Updated launch checklist".to_owned(),
-            detail: "3 files reviewed · tests passed".to_owned(),
-            kind: ActivityKind::Filesystem,
-            presentation: ActivityPresentation {
-                risk: RiskLevel::Low,
-                detail: ActivityDetail::Generic {
-                    summary: "Prepared the release checklist".to_owned(),
+        activities: if state == ProductionFixtureState::Interaction {
+            vec![
+                ActivitySummary {
+                    id: Uuid::from_u128(30),
+                    chat_id: Uuid::from_u128(10),
+                    message_id: Some(Uuid::from_u128(22)),
+                    title: "Choose the launch route".to_owned(),
+                    detail: "Which release path should Patch use?".to_owned(),
+                    kind: ActivityKind::Interaction,
+                    presentation: ActivityPresentation {
+                        risk: RiskLevel::Low,
+                        detail: ActivityDetail::Interaction {
+                            request_kind: homebot_protocol::InteractionRequestKind::PickOne,
+                            prompt: "Which release path should Patch use?".to_owned(),
+                            choices: vec!["Review first".to_owned(), "Publish now".to_owned()],
+                        },
+                        copy_text: None,
+                        open_artifact_id: None,
+                    },
+                    status: ActivityStatus::Pending,
+                    requires_attention: true,
+                    started_at_ms: 3,
+                    finished_at_ms: None,
                 },
-                copy_text: None,
-                open_artifact_id: None,
-            },
-            status: ActivityStatus::Succeeded,
-            requires_attention: false,
-            started_at_ms: 3,
-            finished_at_ms: Some(4),
-        }],
+                ActivitySummary {
+                    id: Uuid::from_u128(32),
+                    chat_id: Uuid::from_u128(10),
+                    message_id: Some(Uuid::from_u128(22)),
+                    title: "Deployment token".to_owned(),
+                    detail: "Enter the token needed for the selected deployment.".to_owned(),
+                    kind: ActivityKind::Interaction,
+                    presentation: ActivityPresentation {
+                        risk: RiskLevel::Elevated,
+                        detail: ActivityDetail::Interaction {
+                            request_kind: homebot_protocol::InteractionRequestKind::Secret,
+                            prompt: "Enter the token needed for the selected deployment."
+                                .to_owned(),
+                            choices: Vec::new(),
+                        },
+                        copy_text: None,
+                        open_artifact_id: None,
+                    },
+                    status: ActivityStatus::Pending,
+                    requires_attention: true,
+                    started_at_ms: 4,
+                    finished_at_ms: None,
+                },
+            ]
+        } else {
+            vec![ActivitySummary {
+                id: Uuid::from_u128(30),
+                chat_id: Uuid::from_u128(10),
+                message_id: Some(Uuid::from_u128(22)),
+                title: "Updated launch checklist".to_owned(),
+                detail: "3 files reviewed · tests passed".to_owned(),
+                kind: ActivityKind::Filesystem,
+                presentation: ActivityPresentation {
+                    risk: RiskLevel::Low,
+                    detail: ActivityDetail::Generic {
+                        summary: "Prepared the release checklist".to_owned(),
+                    },
+                    copy_text: None,
+                    open_artifact_id: None,
+                },
+                status: ActivityStatus::Succeeded,
+                requires_attention: false,
+                started_at_ms: 3,
+                finished_at_ms: Some(4),
+            }]
+        },
         approvals: if state == ProductionFixtureState::Approval {
             vec![ApprovalSummary {
                 id: Uuid::from_u128(31),
@@ -3662,7 +4099,10 @@ fn production_fixture(theme: HomeBotTheme, state: ProductionFixtureState) -> Hom
     }
     app.settings_open = matches!(
         state,
-        ProductionFixtureState::Settings | ProductionFixtureState::SettingsDevices
+        ProductionFixtureState::Settings
+            | ProductionFixtureState::SettingsPlugins
+            | ProductionFixtureState::MemoryProviderActivate
+            | ProductionFixtureState::SettingsDevices
     );
     app.assistant_packs_open = matches!(
         state,
@@ -3709,6 +4149,86 @@ fn production_fixture(theme: HomeBotTheme, state: ProductionFixtureState) -> Hom
         app.settings.section = SettingsSection::Devices;
         app.settings.paired_devices = 1;
         "https://homebot.example.test".clone_into(&mut app.pairing_endpoint);
+    }
+    if matches!(
+        state,
+        ProductionFixtureState::SettingsPlugins | ProductionFixtureState::MemoryProviderActivate
+    ) {
+        app.settings.section = SettingsSection::Plugins;
+        app.settings.memory_providers = vec![
+            homebot_protocol::MemoryProviderPresetSummary {
+                id: "supermemory".to_owned(),
+                name: "Supermemory".to_owned(),
+                description: "Portable semantic memory.".to_owned(),
+                hosted: true,
+                self_hosted: false,
+                connection_kind: "streamable_http".to_owned(),
+                hosted_endpoint: Some("https://mcp.supermemory.ai/mcp".to_owned()),
+                credential_kind: "bearer or oauth".to_owned(),
+                documentation_url: "https://supermemory.ai/docs/supermemory-mcp/mcp".to_owned(),
+                automatic_recall: true,
+            },
+            homebot_protocol::MemoryProviderPresetSummary {
+                id: "hindsight".to_owned(),
+                name: "Hindsight".to_owned(),
+                description: "Scoped retain, recall, and reflect banks.".to_owned(),
+                hosted: true,
+                self_hosted: true,
+                connection_kind: "streamable_http".to_owned(),
+                hosted_endpoint: None,
+                credential_kind: "optional bearer".to_owned(),
+                documentation_url: "https://docs.hindsight.vectorize.io/mcp/".to_owned(),
+                automatic_recall: true,
+            },
+            homebot_protocol::MemoryProviderPresetSummary {
+                id: "letta".to_owned(),
+                name: "Letta".to_owned(),
+                description: "Structured archive adapter without a second Bot runtime.".to_owned(),
+                hosted: true,
+                self_hosted: true,
+                connection_kind: "memory_api".to_owned(),
+                hosted_endpoint: None,
+                credential_kind: "bearer".to_owned(),
+                documentation_url: "https://docs.letta.com/".to_owned(),
+                automatic_recall: false,
+            },
+        ];
+        app.settings.plugins = vec![PluginSettingsItem {
+            id: Some(Uuid::from_u128(70)),
+            name: "Google Workspace".to_owned(),
+            detail: "Gmail, Drive, Calendar, Docs, Sheets, Slides, Meet, and Tasks".to_owned(),
+            state: PluginViewState::Connected,
+            enabled: true,
+            managed_services: vec!["googlesuper".to_owned()],
+            oauth_authorization_available: false,
+            event_ingress_state: homebot_protocol::PluginEventIngressState::NotConfigured,
+        }];
+        if state == ProductionFixtureState::MemoryProviderActivate {
+            app.settings.memory_providers.insert(
+                0,
+                homebot_protocol::MemoryProviderPresetSummary {
+                    id: "holographic".to_owned(),
+                    name: "Holographic".to_owned(),
+                    description: "Local fact memory with scoped recall and trust feedback."
+                        .to_owned(),
+                    hosted: false,
+                    self_hosted: true,
+                    connection_kind: "builtin_memory".to_owned(),
+                    hosted_endpoint: None,
+                    credential_kind: "none".to_owned(),
+                    documentation_url: "https://github.com/NousResearch/hermes-agent/tree/main/plugins/memory/holographic".to_owned(),
+                    automatic_recall: true,
+                },
+            );
+            app.memory_provider_draft = Some(MemoryProviderDraft {
+                provider_id: "holographic".to_owned(),
+                name: "Holographic".to_owned(),
+                endpoint: String::new(),
+                credential: Zeroizing::new(String::new()),
+                credential_required: false,
+                builtin: true,
+            });
+        }
     }
     app.routines_open = matches!(
         state,

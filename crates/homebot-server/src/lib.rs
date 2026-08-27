@@ -8,7 +8,10 @@ mod browser_sessions;
 mod capability_rules;
 mod chats;
 mod checkpoints;
+mod computer_tools;
 mod groups;
+mod interactions;
+mod mcp_oauth;
 mod pairing;
 mod plugins;
 pub mod provider_bootstrap;
@@ -25,7 +28,7 @@ mod workspaces;
 use axum::{
     Json, Router,
     extract::{
-        Extension, Request, State, WebSocketUpgrade,
+        DefaultBodyLimit, Extension, Request, State, WebSocketUpgrade,
         ws::{CloseFrame, Message, WebSocket},
     },
     http::{HeaderMap, StatusCode},
@@ -41,7 +44,9 @@ use homebot_protocol::{
 use homebot_providers::{ProviderAdapterId, ProviderRuntime};
 use homebot_secrets::{OsSecretVault, SecretVault};
 use homebot_storage::{IdempotencyClaim, ReplayWindow, Storage};
-use homebot_tools::{ActivitySink, BrowserService, NoopActivitySink, PolicyEngine};
+use homebot_tools::{
+    ActivitySink, BrowserService, NoopActivitySink, PolicyEngine, TerminalService,
+};
 use homebot_vcs::GitRuntime;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -92,6 +97,13 @@ struct ChatOperation {
     bot: Uuid,
     message: Uuid,
     group: bool,
+}
+
+#[derive(Debug)]
+struct PendingCapabilityApproval {
+    operation_id: Uuid,
+    cancelled: AtomicBool,
+    ready: Arc<Notify>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -148,6 +160,9 @@ pub struct AppState {
     provider_runtime: Arc<ProviderRuntime>,
     secret_vault: Arc<dyn SecretVault>,
     chat_operations: Arc<Mutex<HashMap<Uuid, ChatOperation>>>,
+    capability_approvals: Arc<Mutex<HashMap<Uuid, Arc<PendingCapabilityApproval>>>>,
+    pending_interactions: Arc<Mutex<HashMap<Uuid, Arc<interactions::PendingInteraction>>>>,
+    computer_terminals: Arc<Mutex<HashMap<Uuid, Arc<TerminalService>>>>,
     live_events: broadcast::Sender<ServerEvent>,
     server_shutdown: watch::Sender<bool>,
     scheduler_started: Arc<AtomicBool>,
@@ -158,6 +173,8 @@ pub struct AppState {
     policy_loaded: Arc<AtomicBool>,
     policy_hydration: Arc<Mutex<()>>,
     browser_runtime: Option<Arc<dyn browser_sessions::BrowserRuntime>>,
+    browser_runtime_timeout: std::time::Duration,
+    mcp_oauth_flows: Arc<Mutex<HashMap<String, mcp_oauth::PendingFlow>>>,
     worktree_root: PathBuf,
 }
 
@@ -169,7 +186,7 @@ impl AppState {
         let (trigger_events, _) = broadcast::channel(1_024);
         let activities: Arc<dyn ActivitySink> = Arc::new(NoopActivitySink);
         let policy_engine = Arc::new(PolicyEngine::new(
-            std::time::Duration::from_secs(300),
+            std::time::Duration::from_secs(600),
             Arc::clone(&activities),
         ));
         let browser_runtime = configured_browser_runtime(Arc::clone(&policy_engine), activities);
@@ -187,6 +204,9 @@ impl AppState {
             provider_runtime: Arc::new(ProviderRuntime::new()),
             secret_vault: Arc::new(OsSecretVault::new()),
             chat_operations: Arc::new(Mutex::new(HashMap::new())),
+            capability_approvals: Arc::new(Mutex::new(HashMap::new())),
+            pending_interactions: Arc::new(Mutex::new(HashMap::new())),
+            computer_terminals: Arc::new(Mutex::new(HashMap::new())),
             live_events,
             server_shutdown,
             scheduler_started: Arc::new(AtomicBool::new(false)),
@@ -197,6 +217,8 @@ impl AppState {
             policy_loaded: Arc::new(AtomicBool::new(false)),
             policy_hydration: Arc::new(Mutex::new(())),
             browser_runtime,
+            browser_runtime_timeout: std::time::Duration::from_secs(30),
+            mcp_oauth_flows: Arc::new(Mutex::new(HashMap::new())),
             worktree_root: std::env::temp_dir().join("homebot-worktrees"),
         }
     }
@@ -273,6 +295,12 @@ impl AppState {
         browser_runtime: Arc<dyn browser_sessions::BrowserRuntime>,
     ) -> Self {
         self.browser_runtime = Some(browser_runtime);
+        self
+    }
+
+    #[must_use]
+    pub fn with_browser_runtime_timeout(mut self, timeout: std::time::Duration) -> Self {
+        self.browser_runtime_timeout = timeout.max(std::time::Duration::from_millis(1));
         self
     }
 
@@ -383,6 +411,10 @@ pub fn router(state: AppState) -> Router {
             "/api/v1/approvals/{approval_id}/decision",
             post(chats::decide_approval),
         )
+        .route(
+            "/api/v1/interactions/{interaction_id}/response",
+            post(interactions::respond),
+        )
         .route("/api/v1/groups", post(groups::create))
         .route("/api/v1/groups/{chat_id}", put(groups::rename))
         .route("/api/v1/groups/{chat_id}/timeline", get(groups::timeline))
@@ -428,6 +460,35 @@ pub fn router(state: AppState) -> Router {
             put(secrets::update).delete(secrets::delete),
         )
         .route("/api/v1/plugins", get(plugins::list).post(plugins::create))
+        .route("/api/v1/plugins/remote", post(plugins::create_remote))
+        .route(
+            "/api/v1/plugins/{plugin_id}/authorize",
+            post(plugins::authorize_remote),
+        )
+        .route(
+            "/api/v1/connectors/composio",
+            post(plugins::create_composio),
+        )
+        .route(
+            "/api/v1/connectors/composio/{plugin_id}/authorize",
+            post(plugins::authorize_composio),
+        )
+        .route(
+            "/api/v1/connectors/composio/{plugin_id}/revoke",
+            post(plugins::revoke_composio),
+        )
+        .route(
+            "/api/v1/connectors/composio/{plugin_id}/events",
+            post(plugins::configure_composio_events),
+        )
+        .route(
+            "/api/v1/memory-providers",
+            get(plugins::list_memory_providers),
+        )
+        .route(
+            "/api/v1/memory-providers/{provider_id}",
+            post(plugins::create_memory_provider),
+        )
         .route(
             "/api/v1/plugins/{plugin_id}",
             axum::routing::delete(plugins::delete),
@@ -591,6 +652,11 @@ pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/health", get(health))
         .route("/api/v1/pairing/exchange", post(pairing::exchange))
+        .route("/api/v1/oauth/mcp/callback", get(plugins::oauth_callback))
+        .route(
+            "/api/v1/webhooks/composio/{plugin_id}",
+            post(plugins::composio_webhook).layer(DefaultBodyLimit::max(1_048_576)),
+        )
         .merge(authenticated)
         .with_state(state)
 }
@@ -1166,6 +1232,35 @@ async fn persist_event(
         let _ = state.trigger_events.send((kind.to_owned(), event.event_id));
     }
     Ok(event)
+}
+
+async fn persist_event_once(
+    state: &AppState,
+    event_id: Uuid,
+    kind: &str,
+    body: ServerEventBody,
+) -> Result<bool, ()> {
+    let event = ServerEvent {
+        protocol_version: homebot_protocol::PROTOCOL_VERSION,
+        sequence: 0,
+        event_id,
+        body,
+    };
+    let payload = serde_json::to_value(&event).map_err(|_| ())?;
+    let Some(stored) = state
+        .storage
+        .append_event_with_id(event_id, state.owner_id, kind, &payload, unix_time_ms())
+        .await
+        .map_err(|_| ())?
+    else {
+        return Ok(false);
+    };
+    let event: ServerEvent = serde_json::from_value(stored.payload).map_err(|_| ())?;
+    let _ = state.live_events.send(event);
+    if !kind.starts_with("routine_") {
+        let _ = state.trigger_events.send((kind.to_owned(), event_id));
+    }
+    Ok(true)
 }
 
 fn unix_time_ms() -> i64 {

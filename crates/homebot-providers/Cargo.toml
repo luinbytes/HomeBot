@@ -8,7 +8,9 @@ rust-version.workspace = true
 
 [dependencies]
 async-trait.workspace = true
+axum.workspace = true
 futures-util.workspace = true
+getrandom.workspace = true
 reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -18,7 +20,6 @@ uuid.workspace = true
 zeroize.workspace = true
 
 [dev-dependencies]
-axum.workspace = true
 tempfile = "3.20"
 
 [lints]

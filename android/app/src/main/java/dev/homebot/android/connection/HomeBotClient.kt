@@ -20,6 +20,15 @@ import dev.homebot.protocol.CreateDirectChatResponse
 import dev.homebot.protocol.DeleteBotRequest
 import dev.homebot.protocol.CreateGroupChatRequest
 import dev.homebot.protocol.CreateGroupChatResponse
+import dev.homebot.protocol.CreateMemoryProviderRequest
+import dev.homebot.protocol.CreateRemoteMcpPluginRequest
+import dev.homebot.protocol.McpSecretHeaderReference
+import dev.homebot.protocol.CreateComposioConnectorRequest
+import dev.homebot.protocol.ConfigureComposioEventIngressRequest
+import dev.homebot.protocol.AuthorizeComposioToolkitRequest
+import dev.homebot.protocol.AuthorizeRemoteMcpRequest
+import dev.homebot.protocol.ExternalAuthorizationSummary
+import dev.homebot.protocol.CreateSecretRequest
 import dev.homebot.protocol.AddGroupParticipantRequest
 import dev.homebot.protocol.ErrorEnvelope
 import dev.homebot.protocol.ExchangePairingRequest
@@ -28,9 +37,11 @@ import dev.homebot.protocol.GroupTimelineResponse
 import dev.homebot.protocol.GlobalSearchResponse
 import dev.homebot.protocol.HandoffGroupRequest
 import dev.homebot.protocol.InstallAssistantPackRequest
+import dev.homebot.protocol.InteractionResponseRequest
 import dev.homebot.protocol.MessageMutationRequest
 import dev.homebot.protocol.MessageSummary
 import dev.homebot.protocol.MessageReferenceInput
+import dev.homebot.protocol.MemoryProviderPresetSummary
 import dev.homebot.protocol.PROTOCOL_VERSION
 import dev.homebot.protocol.PairingExchangeResponse
 import dev.homebot.protocol.ProtocolRange
@@ -385,6 +396,20 @@ class HomeBotClient(
         )
     }
 
+    suspend fun respondInteraction(
+        interactionId: String,
+        confirmed: Boolean? = null,
+        choice: String? = null,
+        secret: String? = null,
+    ): Result<Unit> = authenticated {
+        val request = InteractionResponseRequest(ids(), ids(), confirmed, choice, secret)
+        postDiscarding(
+            "api/v1/interactions/$interactionId/response",
+            request,
+            InteractionResponseRequest.serializer(),
+        )
+    }
+
     suspend fun handoff(chatId: String, fromBotId: String, toBotId: String): Result<Unit> = authenticated {
         val request = HandoffGroupRequest(ids(), ids(), fromBotId, toBotId, null, "Android ownership handoff")
         postDiscarding("api/v1/groups/$chatId/handoff", request, HandoffGroupRequest.serializer())
@@ -578,6 +603,118 @@ class HomeBotClient(
         get("api/v1/plugins", ListSerializer(PluginSummary.serializer()))
     }
 
+    suspend fun memoryProviders(): Result<List<MemoryProviderPresetSummary>> = authenticated {
+        get("api/v1/memory-providers", ListSerializer(MemoryProviderPresetSummary.serializer()))
+    }
+
+    suspend fun createMemoryProvider(
+        providerId: String,
+        name: String,
+        endpoint: String?,
+        secretId: String?,
+    ): Result<PluginSummary> = authenticated {
+        require(providerId.matches(Regex("[a-z0-9_]+"))) { "Unsupported memory provider" }
+        val request = CreateMemoryProviderRequest(ids(), ids(), name, endpoint, secretId)
+        post(
+            "api/v1/memory-providers/$providerId",
+            request,
+            CreateMemoryProviderRequest.serializer(),
+            PluginSummary.serializer(),
+        )
+    }
+
+    suspend fun createRemoteMcp(
+        name: String,
+        endpoint: String,
+        secretId: String?,
+    ): Result<PluginSummary> = authenticated {
+        val headers = secretId?.let {
+            listOf(McpSecretHeaderReference("authorization", it, "Bearer "))
+        }.orEmpty()
+        val request = CreateRemoteMcpPluginRequest(
+            ids(),
+            ids(),
+            name,
+            "Remote MCP server",
+            endpoint,
+            headers,
+        )
+        post(
+            "api/v1/plugins/remote",
+            request,
+            CreateRemoteMcpPluginRequest.serializer(),
+            PluginSummary.serializer(),
+        )
+    }
+
+    suspend fun createComposioConnector(
+        name: String,
+        secretId: String,
+        toolkits: List<String>,
+    ): Result<PluginSummary> = authenticated {
+        val request = CreateComposioConnectorRequest(ids(), ids(), name, secretId, toolkits)
+        post(
+            "api/v1/connectors/composio",
+            request,
+            CreateComposioConnectorRequest.serializer(),
+            PluginSummary.serializer(),
+        )
+    }
+
+    suspend fun authorizeComposioToolkit(
+        pluginId: String,
+        toolkit: String,
+    ): Result<ExternalAuthorizationSummary> = authenticated {
+        val request = AuthorizeComposioToolkitRequest(ids(), ids(), toolkit)
+        post(
+            "api/v1/connectors/composio/$pluginId/authorize",
+            request,
+            AuthorizeComposioToolkitRequest.serializer(),
+            ExternalAuthorizationSummary.serializer(),
+        )
+    }
+
+    suspend fun configureComposioEvents(pluginId: String): Result<PluginSummary> = authenticated {
+        val request = ConfigureComposioEventIngressRequest(
+            ids(),
+            ids(),
+            endpoint.toString().trimEnd('/'),
+        )
+        post(
+            "api/v1/connectors/composio/$pluginId/events",
+            request,
+            ConfigureComposioEventIngressRequest.serializer(),
+            PluginSummary.serializer(),
+        )
+    }
+
+    suspend fun authorizeRemoteMcp(pluginId: String): Result<ExternalAuthorizationSummary> = authenticated {
+        val request = AuthorizeRemoteMcpRequest(
+            ids(),
+            ids(),
+            endpoint.api("api/v1/oauth/mcp/callback").toString(),
+        )
+        post(
+            "api/v1/plugins/$pluginId/authorize",
+            request,
+            AuthorizeRemoteMcpRequest.serializer(),
+            ExternalAuthorizationSummary.serializer(),
+        )
+    }
+
+    suspend fun revokeComposioToolkit(
+        pluginId: String,
+        toolkit: String,
+    ): Result<PluginSummary> = authenticated {
+        val request = AuthorizeComposioToolkitRequest(ids(), ids(), toolkit)
+        post(
+            "api/v1/connectors/composio/$pluginId/revoke",
+            request,
+            AuthorizeComposioToolkitRequest.serializer(),
+            PluginSummary.serializer(),
+        )
+    }
+
     suspend fun mutatePlugin(pluginId: String, action: String): Result<PluginSummary> = authenticated {
         require(action in setOf("connect", "enable", "disable", "health")) { "Unsupported plugin action" }
         val request = PluginMutationRequest(ids(), ids())
@@ -755,6 +892,15 @@ class HomeBotClient(
 
     suspend fun secrets(): Result<List<SecretSummary>> = authenticated {
         get("api/v1/secrets", ListSerializer(SecretSummary.serializer()))
+    }
+
+    suspend fun createSecret(label: String, value: String): Result<SecretSummary> = authenticated {
+        val request = CreateSecretRequest(ids(), ids(), label, value)
+        post("api/v1/secrets", request, CreateSecretRequest.serializer(), SecretSummary.serializer())
+    }
+
+    suspend fun deleteSecret(secretId: String): Result<Unit> = authenticated {
+        deleteDiscarding("api/v1/secrets/$secretId")
     }
 
     suspend fun browserSessions(chatId: String? = null): Result<List<BrowserSessionSummary>> = authenticated {
@@ -1125,7 +1271,7 @@ class HomeBotClient(
     }
 
     private inner class AuthenticatedApi(
-        private val endpoint: HttpUrl,
+        val endpoint: HttpUrl,
         private val session: SessionCredentials,
     ) {
         suspend fun search(query: String): GlobalSearchResponse {

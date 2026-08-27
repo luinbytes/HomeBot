@@ -107,6 +107,17 @@ impl ProviderRuntime {
         health
     }
 
+    /// Checks one registered adapter without probing unrelated providers.
+    ///
+    /// # Errors
+    /// Fails when the adapter is unknown.
+    pub async fn health_for(
+        &self,
+        adapter_id: &ProviderAdapterId,
+    ) -> Result<ProviderHealth, ProviderRuntimeError> {
+        Ok(self.adapter(adapter_id).await?.health().await)
+    }
+
     /// Lists normalized models for an adapter.
     ///
     /// # Errors

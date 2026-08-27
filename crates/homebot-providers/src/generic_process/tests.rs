@@ -58,6 +58,73 @@ printf '%s\n' '{"kind":"completed"}'
 
 #[cfg(unix)]
 #[tokio::test]
+async fn generic_process_tool_calls_continue_over_the_existing_jsonl_channel()
+-> Result<(), Box<dyn std::error::Error>> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let directory = tempfile::tempdir()?;
+    let binary = directory.path().join("community-tools");
+    std::fs::write(
+        &binary,
+        r#"#!/bin/sh
+IFS= read -r request
+case "$request" in *'"tools":[{"name":"lookup"'*) ;; *) exit 2 ;; esac
+printf '%s\n' '{"kind":"tool_call","call":{"call_id":"generic_call","name":"lookup","arguments":{"query":"status"}}}'
+IFS= read -r result
+case "$result" in *'"kind":"tool_result"'*'"call_id":"generic_call"'*'"content":"ready"'*) ;; *) exit 3 ;; esac
+printf '%s\n' '{"kind":"content_delta","text":"Continued"}'
+printf '%s\n' '{"kind":"completed"}'
+"#,
+    )?;
+    let mut permissions = std::fs::metadata(&binary)?.permissions();
+    permissions.set_mode(0o700);
+    std::fs::set_permissions(&binary, permissions)?;
+    let adapter = GenericProcessAdapter::new(GenericProcessProfile::new(
+        ProviderAdapterId::new("community-tools")?,
+        "Community Tools",
+        &binary,
+    ));
+    let mut run = adapter
+        .start(StartRequest {
+            operation_id: Uuid::now_v7(),
+            bot_id: Uuid::now_v7(),
+            chat_id: Uuid::now_v7(),
+            prompt: "Use a tool".to_owned(),
+            model: None,
+            working_directory: None,
+            mode: crate::ExecutionMode::Normal,
+            attachments: Vec::new(),
+            tools: vec![crate::ProviderTool {
+                name: "lookup".to_owned(),
+                description: "Look up status".to_owned(),
+                input_schema: serde_json::json!({"type":"object"}),
+            }],
+        })
+        .await?;
+    let Some(ProviderEvent::ToolCall { call }) = run.events.recv().await else {
+        return Err("generic provider did not request its tool".into());
+    };
+    adapter
+        .resolve_tool_call(
+            call.call_id,
+            crate::ProviderToolResult {
+                success: true,
+                content: "ready".to_owned(),
+            },
+        )
+        .await?;
+    assert_eq!(
+        run.events.recv().await,
+        Some(ProviderEvent::ContentDelta {
+            text: "Continued".to_owned()
+        })
+    );
+    assert_eq!(run.events.recv().await, Some(ProviderEvent::Completed));
+    Ok(())
+}
+
+#[cfg(unix)]
+#[tokio::test]
 async fn cancellation_closes_input_and_stops_the_process() -> Result<(), Box<dyn std::error::Error>>
 {
     use std::os::unix::fs::PermissionsExt;

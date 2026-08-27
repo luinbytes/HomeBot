@@ -5,7 +5,7 @@ use axum::{
     Json,
     extract::{Query, State},
 };
-use homebot_protocol::{GlobalSearchResponse, SearchResultKind, SearchResultSummary};
+use homebot_protocol::{GlobalSearchResponse, SearchResultKind, SearchResultSummary, SearchStatus};
 use homebot_storage::{SearchRecord, SearchRecordKind};
 use serde::Deserialize;
 use std::fmt::Write;
@@ -30,15 +30,37 @@ pub(super) async fn global(
     if normalized.chars().count() > 200 {
         return Err(ApiError::validation("Search query is too long"));
     }
-    let results = state
+    if query.limit == 0 || query.limit > 100 {
+        return Err(ApiError::validation(
+            "Search result limit must be from 1 to 100",
+        ));
+    }
+    if !normalized.is_empty() {
+        let terms = normalized
+            .split(|character: char| !character.is_alphanumeric())
+            .filter(|term| !term.is_empty())
+            .collect::<Vec<_>>();
+        if terms.is_empty() || terms.len() > 8 || terms.iter().any(|term| term.chars().count() < 2)
+        {
+            return Err(ApiError::validation(
+                "Search needs one to eight terms of at least two characters",
+            ));
+        }
+    }
+    let (status, results) = match state
         .storage
         .search(state.owner_id, normalized, query.limit)
-        .await?
-        .into_iter()
-        .map(summary)
-        .collect();
+        .await
+    {
+        Ok(records) => (
+            SearchStatus::Ready,
+            records.into_iter().map(summary).collect(),
+        ),
+        Err(_) => (SearchStatus::Unavailable, Vec::new()),
+    };
     Ok(Json(GlobalSearchResponse {
         query: normalized.to_owned(),
+        status,
         results,
     }))
 }

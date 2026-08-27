@@ -1,4 +1,5 @@
 use super::*;
+use crate::{ProviderTool, ProviderToolResult};
 use axum::{
     Json, Router,
     body::{Body, Bytes},
@@ -212,4 +213,227 @@ fn remote_cleartext_and_resolved_secret_debug_are_denied_or_redacted()
         "ResolvedSecret([REDACTED])"
     );
     Ok(())
+}
+
+#[tokio::test]
+async fn responses_tools_continue_only_after_homebot_returns_the_result()
+-> Result<(), Box<dyn std::error::Error>> {
+    let requests = Arc::new(AtomicUsize::new(0));
+    let app = Router::new().route(
+        "/v1/responses",
+        post({
+            let requests = Arc::clone(&requests);
+            move |Json(body): Json<Value>| {
+                let requests = Arc::clone(&requests);
+                async move {
+                    let request = requests.fetch_add(1, Ordering::Relaxed);
+                    tool_fixture_response(request, &body)
+                }
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let address = listener.local_addr()?;
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+    let adapter = OpenAiCompatibleAdapter::new(
+        OpenAiCompatibleProfile::new(
+            ProviderAdapterId::new("openai-tools")?,
+            "Fixture API",
+            Url::parse(&format!("http://{address}/v1/"))?,
+            OpenAiApiStyle::Responses,
+            SecretReference::new(Uuid::now_v7()),
+            "model-fixture",
+        )?,
+        Arc::new(TestSecrets {
+            value: "fixture-secret".to_owned(),
+            resolutions: AtomicUsize::new(0),
+        }),
+    )?;
+    let mut run = adapter
+        .start(StartRequest {
+            operation_id: Uuid::now_v7(),
+            bot_id: Uuid::now_v7(),
+            chat_id: Uuid::now_v7(),
+            prompt: "Coordinate".to_owned(),
+            model: None,
+            working_directory: None,
+            mode: ExecutionMode::Normal,
+            attachments: Vec::new(),
+            tools: vec![ProviderTool {
+                name: "send_bot_message".to_owned(),
+                description: "Send a direct Bot message".to_owned(),
+                input_schema: json!({"type":"object"}),
+            }],
+        })
+        .await?;
+    assert!(matches!(
+        run.events.recv().await,
+        Some(ProviderEvent::ConversationStarted { .. })
+    ));
+    let call = loop {
+        match run.events.recv().await {
+            Some(ProviderEvent::ToolCall { call }) => break call,
+            Some(ProviderEvent::Usage { .. } | ProviderEvent::Activity { .. }) => {}
+            other => panic!("expected tool call, got {other:?}"),
+        }
+    };
+    assert_eq!(call.call_id, "call_1");
+    assert_eq!(call.arguments["bot_id"], "bot-2");
+    adapter
+        .resolve_tool_call(
+            call.call_id,
+            ProviderToolResult {
+                success: true,
+                content: "Delivered".to_owned(),
+            },
+        )
+        .await?;
+    let mut text = String::new();
+    loop {
+        match run.events.recv().await {
+            Some(ProviderEvent::ContentDelta { text: delta }) => text.push_str(&delta),
+            Some(ProviderEvent::Usage { .. }) => {}
+            Some(ProviderEvent::Completed) => break,
+            other => panic!("unexpected provider event: {other:?}"),
+        }
+    }
+    assert_eq!(text, "Verified");
+    assert_eq!(requests.load(Ordering::Relaxed), 2);
+    Ok(())
+}
+
+fn tool_fixture_response(request: usize, body: &Value) -> Response<Body> {
+    let stream = if request == 0 {
+        assert_eq!(body["tools"][0]["name"], "send_bot_message");
+        assert_eq!(body["tools"][0]["parameters"]["type"], "object");
+        concat!(
+            "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_tools\"}}\n\n",
+            "data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"function_call\",\"call_id\":\"call_1\",\"name\":\"send_bot_message\",\"arguments\":\"{\\\"bot_id\\\":\\\"bot-2\\\",\\\"message\\\":\\\"Please verify\\\"}\"}}\n\n",
+            "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_tools\",\"usage\":{\"input_tokens\":3,\"output_tokens\":2}}}\n\n"
+        )
+    } else {
+        assert_eq!(body["previous_response_id"], "resp_tools");
+        assert_eq!(body["input"][0]["type"], "function_call_output");
+        assert_eq!(body["input"][0]["call_id"], "call_1");
+        let output: Value =
+            serde_json::from_str(body["input"][0]["output"].as_str().unwrap_or_default())
+                .unwrap_or(Value::Null);
+        assert_eq!(output["success"], true);
+        assert_eq!(output["content"], "Delivered");
+        concat!(
+            "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_done\"}}\n\n",
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"Verified\"}\n\n",
+            "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_done\",\"usage\":{\"input_tokens\":2,\"output_tokens\":1}}}\n\n"
+        )
+    };
+    Response::builder()
+        .header("content-type", "text/event-stream")
+        .body(Body::from(stream))
+        .unwrap_or_else(|_| Response::new(Body::empty()))
+}
+
+#[tokio::test]
+async fn chat_completions_reassembles_tool_arguments_and_continues()
+-> Result<(), Box<dyn std::error::Error>> {
+    let requests = Arc::new(AtomicUsize::new(0));
+    let app = Router::new().route(
+        "/v1/chat/completions",
+        post({
+            let requests = Arc::clone(&requests);
+            move |Json(body): Json<Value>| {
+                let request = requests.fetch_add(1, Ordering::Relaxed);
+                async move { chat_tool_fixture_response(request, &body) }
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let address = listener.local_addr()?;
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+    let adapter = OpenAiCompatibleAdapter::new(
+        OpenAiCompatibleProfile::new(
+            ProviderAdapterId::new("chat-tools")?,
+            "Fixture Chat API",
+            Url::parse(&format!("http://{address}/v1/"))?,
+            OpenAiApiStyle::ChatCompletions,
+            SecretReference::new(Uuid::now_v7()),
+            "model-fixture",
+        )?,
+        Arc::new(TestSecrets {
+            value: "fixture-secret".to_owned(),
+            resolutions: AtomicUsize::new(0),
+        }),
+    )?;
+    let mut run = adapter
+        .start(StartRequest {
+            operation_id: Uuid::now_v7(),
+            bot_id: Uuid::now_v7(),
+            chat_id: Uuid::now_v7(),
+            prompt: "Coordinate".to_owned(),
+            model: None,
+            working_directory: None,
+            mode: ExecutionMode::Normal,
+            attachments: Vec::new(),
+            tools: vec![ProviderTool {
+                name: "send_bot_message".to_owned(),
+                description: "Send a direct Bot message".to_owned(),
+                input_schema: json!({"type":"object"}),
+            }],
+        })
+        .await?;
+    assert!(matches!(
+        run.events.recv().await,
+        Some(ProviderEvent::ConversationStarted { .. })
+    ));
+    let call = loop {
+        match run.events.recv().await {
+            Some(ProviderEvent::ToolCall { call }) => break call,
+            Some(ProviderEvent::Activity { .. } | ProviderEvent::Usage { .. }) => {}
+            other => panic!("expected chat tool call, got {other:?}"),
+        }
+    };
+    assert_eq!(call.arguments["bot_id"], "bot-2");
+    adapter
+        .resolve_tool_call(
+            call.call_id,
+            ProviderToolResult {
+                success: true,
+                content: "Delivered".to_owned(),
+            },
+        )
+        .await?;
+    assert_eq!(
+        run.events.recv().await,
+        Some(ProviderEvent::ContentDelta {
+            text: "Verified".to_owned()
+        })
+    );
+    assert_eq!(run.events.recv().await, Some(ProviderEvent::Completed));
+    assert_eq!(requests.load(Ordering::Relaxed), 2);
+    Ok(())
+}
+
+fn chat_tool_fixture_response(request: usize, body: &Value) -> Response<Body> {
+    let stream = if request == 0 {
+        assert_eq!(body["tools"][0]["function"]["name"], "send_bot_message");
+        concat!(
+            "data: {\"id\":\"chat_tools\",\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_chat\",\"type\":\"function\",\"function\":{\"name\":\"send_bot_message\",\"arguments\":\"{\\\"bot_id\\\":\"}}]},\"finish_reason\":null}]}\n\n",
+            "data: {\"id\":\"chat_tools\",\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"\\\"bot-2\\\"}\"}}]},\"finish_reason\":null}]}\n\n",
+            "data: {\"id\":\"chat_tools\",\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n"
+        )
+    } else {
+        assert_eq!(body["messages"][1]["tool_calls"][0]["id"], "call_chat");
+        assert_eq!(body["messages"][2]["role"], "tool");
+        concat!(
+            "data: {\"id\":\"chat_done\",\"choices\":[{\"delta\":{\"content\":\"Verified\"},\"finish_reason\":null}]}\n\n",
+            "data: {\"id\":\"chat_done\",\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n"
+        )
+    };
+    Response::builder()
+        .header("content-type", "text/event-stream")
+        .body(Body::from(stream))
+        .unwrap_or_else(|_| Response::new(Body::empty()))
 }

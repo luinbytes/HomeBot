@@ -35,18 +35,34 @@ pub(super) async fn provider_tools(
     chat_id: Uuid,
     from_bot_id: Uuid,
 ) -> Result<Vec<ProviderTool>, ApiError> {
+    let group = state
+        .storage
+        .get_group_chat(state.owner_id, chat_id)
+        .await?;
     let participants = state
         .storage
         .group_participants(state.owner_id, chat_id)
         .await?;
+    let running = participants
+        .iter()
+        .filter(|participant| participant.status == DomainBotStatus::Running)
+        .count();
+    if group.stop_requested
+        || group.coordination_turns_used >= group.coordination_max_turns
+        || running >= usize::try_from(group.max_parallel_bots).unwrap_or(usize::MAX)
+    {
+        return Ok(Vec::new());
+    }
     let mut recipients = Vec::new();
     for participant in participants {
-        if participant.bot_id != from_bot_id {
+        if participant.bot_id != from_bot_id && participant.status != DomainBotStatus::Running {
             let bot = state
                 .storage
                 .get_bot(state.owner_id, participant.bot_id)
                 .await?;
-            recipients.push(bot.name);
+            if bot.provider_profile_id.is_some() {
+                recipients.push(bot.name);
+            }
         }
     }
     if recipients.is_empty() {

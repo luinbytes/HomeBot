@@ -3,7 +3,7 @@ package dev.homebot.android.connection
 import dev.homebot.protocol.ErrorEnvelope
 import dev.homebot.protocol.Snapshot
 
-enum class ClientAlertKind { BOT_FINISHED, APPROVAL_REQUIRED, ROUTINE_RESULT, ERROR }
+enum class ClientAlertKind { BOT_FINISHED, NEEDS_INPUT, APPROVAL_REQUIRED, ROUTINE_RESULT, ERROR }
 
 data class ClientAlert(
     val eventId: String,

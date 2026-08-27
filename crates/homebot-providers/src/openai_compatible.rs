@@ -7,7 +7,8 @@ use crate::{
     ApprovalDecision, CompactRequest, ExecutionMode, ProviderAdapter, ProviderAdapterId,
     ProviderAvailability, ProviderCapabilities, ProviderCapability, ProviderDescriptor,
     ProviderError, ProviderErrorCode, ProviderEvent, ProviderHealth, ProviderModel, ProviderRun,
-    ProviderSecretResolver, ResumeRequest, SecretReference, StartRequest,
+    ProviderSecretResolver, ProviderTool, ProviderToolResult, ResumeRequest, SecretReference,
+    StartRequest,
 };
 use futures_util::StreamExt;
 use reqwest::{Client, StatusCode, Url};
@@ -17,13 +18,19 @@ use std::{
     sync::Arc,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
-use tokio::sync::{Mutex, mpsc, watch};
+use tokio::sync::{Mutex, mpsc, oneshot, watch};
 use uuid::Uuid;
 
 use protocol::normalize_event;
 
 const EVENT_BUFFER: usize = 128;
 const MAX_SSE_BUFFER: usize = 4 * 1024 * 1024;
+const MAX_TOOL_CALLS_PER_RESPONSE: usize = 32;
+
+struct PendingToolCall {
+    operation_id: Uuid,
+    result: oneshot::Sender<ProviderToolResult>,
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum OpenAiApiStyle {
@@ -92,6 +99,7 @@ pub struct OpenAiCompatibleAdapter {
     secrets: Arc<dyn ProviderSecretResolver>,
     client: Client,
     operations: Arc<Mutex<HashMap<Uuid, watch::Sender<bool>>>>,
+    tool_calls: Arc<Mutex<HashMap<String, PendingToolCall>>>,
 }
 
 impl std::fmt::Debug for OpenAiCompatibleAdapter {
@@ -128,6 +136,7 @@ impl OpenAiCompatibleAdapter {
             secrets,
             client,
             operations: Arc::new(Mutex::new(HashMap::new())),
+            tool_calls: Arc::new(Mutex::new(HashMap::new())),
         })
     }
 
@@ -157,6 +166,7 @@ impl OpenAiCompatibleAdapter {
         prompt: String,
         model: Option<String>,
         mode: ExecutionMode,
+        tools: Vec<ProviderTool>,
     ) -> Result<ProviderRun, ProviderError> {
         if mode == ExecutionMode::Plan {
             return Err(invalid_request(
@@ -174,21 +184,7 @@ impl OpenAiCompatibleAdapter {
             });
         }
         let model = model.unwrap_or_else(|| self.profile.default_model.clone());
-        let (path, mut body) = match self.profile.api_style {
-            OpenAiApiStyle::Responses => (
-                "responses",
-                json!({"model": model, "input": prompt, "stream": true}),
-            ),
-            OpenAiApiStyle::ChatCompletions => (
-                "chat/completions",
-                json!({
-                    "model": model,
-                    "messages": [{"role": "user", "content": prompt}],
-                    "stream": true,
-                    "stream_options": {"include_usage": true}
-                }),
-            ),
-        };
+        let (path, mut body) = initial_request(self.profile.api_style, &model, &prompt, &tools);
         if let Some(previous) = previous_response_id {
             body["previous_response_id"] = Value::String(previous);
         }
@@ -199,8 +195,8 @@ impl OpenAiCompatibleAdapter {
             return Err(invalid_request("Provider operation is already active"));
         }
         drop(operations);
+        let secret = self.secrets.resolve(self.profile.secret_reference).await?;
         let response = async {
-            let secret = self.secrets.resolve(self.profile.secret_reference).await?;
             let response = self
                 .client
                 .post(self.endpoint(path)?)
@@ -220,9 +216,36 @@ impl OpenAiCompatibleAdapter {
             }
         };
         let active = Arc::clone(&self.operations);
+        let pending_tools = Arc::clone(&self.tool_calls);
         let style = self.profile.api_style;
+        let client = self.client.clone();
+        let endpoint = self.endpoint(path)?;
         tokio::spawn(async move {
-            consume_sse(response, style, cancel_rx, events_tx).await;
+            run_stream(
+                response,
+                StreamRun {
+                    style,
+                    operation_id,
+                    model,
+                    tools,
+                    client,
+                    endpoint,
+                    secret,
+                    cancel: cancel_rx,
+                    events: events_tx,
+                    pending_tools: Arc::clone(&pending_tools),
+                    chat_messages: if style == OpenAiApiStyle::ChatCompletions {
+                        vec![json!({"role":"user","content":prompt})]
+                    } else {
+                        Vec::new()
+                    },
+                },
+            )
+            .await;
+            pending_tools
+                .lock()
+                .await
+                .retain(|_, pending| pending.operation_id != operation_id);
             active.lock().await.remove(&operation_id);
         });
         Ok(ProviderRun {
@@ -246,6 +269,7 @@ impl ProviderAdapter for OpenAiCompatibleAdapter {
         ]
         .into_iter()
         .collect::<std::collections::BTreeSet<_>>();
+        supported.insert(ProviderCapability::DynamicTools);
         if self.profile.api_style == OpenAiApiStyle::Responses {
             supported.insert(ProviderCapability::ConversationResume);
             supported.insert(ProviderCapability::Activities);
@@ -312,6 +336,7 @@ impl ProviderAdapter for OpenAiCompatibleAdapter {
             request.prompt,
             request.model,
             request.mode,
+            request.tools,
         )
         .await
     }
@@ -328,6 +353,7 @@ impl ProviderAdapter for OpenAiCompatibleAdapter {
             request.prompt,
             request.model,
             request.mode,
+            request.tools,
         )
         .await
     }
@@ -352,6 +378,21 @@ impl ProviderAdapter for OpenAiCompatibleAdapter {
         ))
     }
 
+    async fn resolve_tool_call(
+        &self,
+        call_id: String,
+        result: ProviderToolResult,
+    ) -> Result<(), ProviderError> {
+        self.tool_calls
+            .lock()
+            .await
+            .remove(&call_id)
+            .ok_or_else(|| invalid_request("Provider tool call is no longer pending"))?
+            .result
+            .send(result)
+            .map_err(|_| invalid_request("Provider tool call is no longer pending"))
+    }
+
     async fn compact(&self, _request: CompactRequest) -> Result<(), ProviderError> {
         Err(invalid_request(
             "OpenAI-compatible API profile does not expose manual compaction",
@@ -363,22 +404,104 @@ impl ProviderAdapter for OpenAiCompatibleAdapter {
     }
 }
 
-async fn consume_sse(
-    response: reqwest::Response,
+struct StreamRun {
     style: OpenAiApiStyle,
-    mut cancel: watch::Receiver<bool>,
+    operation_id: Uuid,
+    model: String,
+    tools: Vec<ProviderTool>,
+    client: Client,
+    endpoint: Url,
+    secret: crate::ResolvedSecret,
+    cancel: watch::Receiver<bool>,
     events: mpsc::Sender<ProviderEvent>,
-) {
-    let mut stream = response.bytes_stream();
-    let mut buffer = Vec::new();
-    let mut terminal = false;
+    pending_tools: Arc<Mutex<HashMap<String, PendingToolCall>>>,
+    chat_messages: Vec<Value>,
+}
+
+enum Continuation {
+    Responses(String),
+    Chat(Vec<Value>),
+}
+
+enum StreamOutcome {
+    Continue {
+        continuation: Continuation,
+        calls: Vec<(String, oneshot::Receiver<ProviderToolResult>)>,
+    },
+    Finished,
+}
+
+async fn run_stream(mut response: reqwest::Response, mut run: StreamRun) {
     let mut conversation_started = false;
     loop {
-        tokio::select! {
-            changed = cancel.changed() => {
-                if changed.is_err() || *cancel.borrow() {
-                    let _ = events.send(ProviderEvent::Cancelled).await;
+        let StreamOutcome::Continue {
+            continuation,
+            calls,
+        } = consume_sse(response, &mut run, &mut conversation_started).await
+        else {
+            return;
+        };
+        let mut results = Vec::with_capacity(calls.len());
+        for (call_id, receiver) in calls {
+            let result = tokio::select! {
+                changed = run.cancel.changed() => {
+                    let _ = changed;
+                    let _ = run.events.send(ProviderEvent::Cancelled).await;
                     return;
+                }
+                result = receiver => result,
+            };
+            let Ok(result) = result else {
+                let _ = run
+                    .events
+                    .send(ProviderEvent::Failed {
+                        error: protocol_error("HomeBot tool result channel closed"),
+                    })
+                    .await;
+                return;
+            };
+            results.push((call_id, result));
+        }
+        let body = continuation_request(&mut run, continuation, results);
+        let request = run
+            .client
+            .post(run.endpoint.clone())
+            .bearer_auth(run.secret.expose())
+            .json(&body)
+            .send();
+        response = tokio::select! {
+            changed = run.cancel.changed() => {
+                let _ = changed;
+                let _ = run.events.send(ProviderEvent::Cancelled).await;
+                return;
+            }
+            response = request => match response.map_err(http_transport_error).and_then(classify_status) {
+                Ok(response) => response,
+                Err(error) => {
+                    let _ = run.events.send(ProviderEvent::Failed { error }).await;
+                    return;
+                }
+            },
+        };
+    }
+}
+
+async fn consume_sse(
+    response: reqwest::Response,
+    run: &mut StreamRun,
+    conversation_started: &mut bool,
+) -> StreamOutcome {
+    let mut stream = response.bytes_stream();
+    let mut buffer = Vec::new();
+    let mut response_id = None;
+    let mut calls = Vec::new();
+    let mut chat_calls = Vec::new();
+    loop {
+        tokio::select! {
+            changed = run.cancel.changed() => {
+                if changed.is_err() || *run.cancel.borrow() {
+                    let _ = run.events.send(ProviderEvent::Cancelled).await;
+                    return StreamOutcome::Finished;
                 }
             }
             chunk = stream.next() => {
@@ -386,8 +509,8 @@ async fn consume_sse(
                     Some(Ok(bytes)) => {
                         buffer.extend_from_slice(&bytes);
                         if buffer.len() > MAX_SSE_BUFFER {
-                            let _ = events.send(ProviderEvent::Failed { error: protocol_error("Provider SSE event exceeded the limit") }).await;
-                            return;
+                            fail(&run.events, "Provider SSE event exceeded the limit").await;
+                            return StreamOutcome::Finished;
                         }
                         while let Some(end) = find_event_end(&buffer) {
                             let event = buffer.drain(..end).collect::<Vec<_>>();
@@ -395,51 +518,355 @@ async fn consume_sse(
                             buffer.drain(..separator);
                             if let Some(data) = sse_data(&event) {
                                 if data == b"[DONE]" {
-                                    if !terminal {
-                                        let _ = events.send(ProviderEvent::Completed).await;
+                                    if let Some(response_id) = response_id.filter(|_| !calls.is_empty()) {
+                                        return StreamOutcome::Continue {
+                                            continuation: Continuation::Responses(response_id),
+                                            calls,
+                                        };
                                     }
-                                    return;
+                                    let _ = run.events.send(ProviderEvent::Completed).await;
+                                    return StreamOutcome::Finished;
                                 }
                                 let Ok(value) = serde_json::from_slice::<Value>(&data) else {
-                                    let _ = events.send(ProviderEvent::Failed { error: protocol_error("Provider SSE data was invalid JSON") }).await;
-                                    return;
+                                    fail(&run.events, "Provider SSE data was invalid JSON").await;
+                                    return StreamOutcome::Finished;
                                 };
-                                let mut normalized = normalize_event(style, &value);
-                                normalized.retain(|event| {
-                                    if matches!(event, ProviderEvent::ConversationStarted { .. }) {
-                                        if conversation_started {
-                                            return false;
+                                if run.style == OpenAiApiStyle::ChatCompletions {
+                                    match chat_tool_outcome(&value, run, &mut chat_calls, &mut calls).await {
+                                        Ok(Some(outcome)) => return outcome,
+                                        Ok(None) => {}
+                                        Err(error) => {
+                                            let _ = run.events.send(ProviderEvent::Failed { error }).await;
+                                            return StreamOutcome::Finished;
                                         }
-                                        conversation_started = true;
-                                    }
-                                    true
-                                });
-                                terminal |= normalized.iter().any(is_terminal);
-                                for event in normalized {
-                                    if events.send(event).await.is_err() {
-                                        return;
                                     }
                                 }
-                                if terminal {
-                                    return;
+                                for event in normalize_event(run.style, &value) {
+                                    if let Some(outcome) = handle_normalized_event(
+                                        run,
+                                        event,
+                                        &mut response_id,
+                                        &mut calls,
+                                        conversation_started,
+                                    )
+                                    .await
+                                    {
+                                        return outcome;
+                                    }
                                 }
                             }
                         }
                     }
                     Some(Err(_)) => {
-                        let _ = events.send(ProviderEvent::Failed { error: unavailable("Provider stream disconnected") }).await;
-                        return;
+                        let _ = run.events.send(ProviderEvent::Failed { error: unavailable("Provider stream disconnected") }).await;
+                        return StreamOutcome::Finished;
                     }
                     None => {
-                        if !terminal {
-                            let _ = events.send(ProviderEvent::Failed { error: protocol_error("Provider stream ended without a terminal event") }).await;
-                        }
-                        return;
+                        fail(&run.events, "Provider stream ended without a terminal event").await;
+                        return StreamOutcome::Finished;
                     }
                 }
             }
         }
     }
+}
+
+async fn handle_normalized_event(
+    run: &StreamRun,
+    event: ProviderEvent,
+    response_id: &mut Option<String>,
+    calls: &mut Vec<(String, oneshot::Receiver<ProviderToolResult>)>,
+    conversation_started: &mut bool,
+) -> Option<StreamOutcome> {
+    match event {
+        ProviderEvent::ConversationStarted { conversation_id } => {
+            *response_id = Some(conversation_id.clone());
+            if !*conversation_started {
+                *conversation_started = true;
+                if run
+                    .events
+                    .send(ProviderEvent::ConversationStarted { conversation_id })
+                    .await
+                    .is_err()
+                {
+                    return Some(StreamOutcome::Finished);
+                }
+            }
+        }
+        ProviderEvent::ToolCall { call } => {
+            if let Err(error) = register_tool_call(run, call, calls).await {
+                let _ = run.events.send(ProviderEvent::Failed { error }).await;
+                return Some(StreamOutcome::Finished);
+            }
+        }
+        ProviderEvent::Completed if calls.is_empty() => {
+            let _ = run.events.send(ProviderEvent::Completed).await;
+            return Some(StreamOutcome::Finished);
+        }
+        ProviderEvent::Completed => {
+            let Some(response_id) = response_id.take() else {
+                fail(
+                    &run.events,
+                    "Provider tool response omitted its response identifier",
+                )
+                .await;
+                return Some(StreamOutcome::Finished);
+            };
+            return Some(StreamOutcome::Continue {
+                continuation: Continuation::Responses(response_id),
+                calls: std::mem::take(calls),
+            });
+        }
+        ProviderEvent::Cancelled | ProviderEvent::Failed { .. } => {
+            let _ = run.events.send(event).await;
+            return Some(StreamOutcome::Finished);
+        }
+        event => {
+            if run.events.send(event).await.is_err() {
+                return Some(StreamOutcome::Finished);
+            }
+        }
+    }
+    None
+}
+
+async fn chat_tool_outcome(
+    value: &Value,
+    run: &StreamRun,
+    chat_calls: &mut Vec<ChatCall>,
+    calls: &mut Vec<(String, oneshot::Receiver<ProviderToolResult>)>,
+) -> Result<Option<StreamOutcome>, ProviderError> {
+    accumulate_chat_calls(value, chat_calls)?;
+    if chat_finish_reason(value) != Some("tool_calls") {
+        return Ok(None);
+    }
+    let tool_calls = finish_chat_calls(chat_calls)?;
+    let assistant_calls = chat_tool_values(chat_calls);
+    for call in tool_calls {
+        register_tool_call(run, call, calls).await?;
+    }
+    Ok(Some(StreamOutcome::Continue {
+        continuation: Continuation::Chat(assistant_calls),
+        calls: std::mem::take(calls),
+    }))
+}
+
+#[derive(Default)]
+struct ChatCall {
+    id: String,
+    name: String,
+    arguments: String,
+}
+
+fn accumulate_chat_calls(value: &Value, calls: &mut Vec<ChatCall>) -> Result<(), ProviderError> {
+    let Some(deltas) = value
+        .pointer("/choices/0/delta/tool_calls")
+        .and_then(Value::as_array)
+    else {
+        return Ok(());
+    };
+    for delta in deltas {
+        let index = delta
+            .get("index")
+            .and_then(Value::as_u64)
+            .and_then(|index| usize::try_from(index).ok())
+            .ok_or_else(|| protocol_error("Provider chat tool index was invalid"))?;
+        if index >= MAX_TOOL_CALLS_PER_RESPONSE {
+            return Err(protocol_error("Provider exceeded the tool-call limit"));
+        }
+        calls.resize_with(index + 1, ChatCall::default);
+        let call = &mut calls[index];
+        if let Some(id) = delta.get("id").and_then(Value::as_str) {
+            id.clone_into(&mut call.id);
+        }
+        if let Some(name) = delta.pointer("/function/name").and_then(Value::as_str) {
+            name.clone_into(&mut call.name);
+        }
+        if let Some(arguments) = delta.pointer("/function/arguments").and_then(Value::as_str) {
+            if call.arguments.len().saturating_add(arguments.len()) > MAX_SSE_BUFFER {
+                return Err(protocol_error(
+                    "Provider chat tool arguments exceeded the limit",
+                ));
+            }
+            call.arguments.push_str(arguments);
+        }
+    }
+    Ok(())
+}
+
+fn chat_finish_reason(value: &Value) -> Option<&str> {
+    value
+        .pointer("/choices/0/finish_reason")
+        .and_then(Value::as_str)
+}
+
+fn finish_chat_calls(calls: &[ChatCall]) -> Result<Vec<crate::ProviderToolCall>, ProviderError> {
+    if calls.is_empty() {
+        return Err(protocol_error("Provider chat tool call was empty"));
+    }
+    calls
+        .iter()
+        .map(|call| {
+            if call.id.is_empty() || call.name.is_empty() {
+                return Err(protocol_error("Provider chat tool call was malformed"));
+            }
+            Ok(crate::ProviderToolCall {
+                call_id: call.id.clone(),
+                name: call.name.clone(),
+                arguments: serde_json::from_str(&call.arguments).map_err(|_| {
+                    protocol_error("Provider chat tool arguments were invalid JSON")
+                })?,
+            })
+        })
+        .collect()
+}
+
+fn chat_tool_values(calls: &[ChatCall]) -> Vec<Value> {
+    calls
+        .iter()
+        .map(|call| {
+            json!({
+                "id": call.id,
+                "type": "function",
+                "function": {"name":call.name,"arguments":call.arguments},
+            })
+        })
+        .collect()
+}
+
+fn continuation_request(
+    run: &mut StreamRun,
+    continuation: Continuation,
+    results: Vec<(String, ProviderToolResult)>,
+) -> Value {
+    match continuation {
+        Continuation::Responses(response_id) => json!({
+            "model": run.model,
+            "input": results.into_iter().map(|(call_id, result)| json!({
+                "type":"function_call_output",
+                "call_id":call_id,
+                "output":json!({"success":result.success,"content":result.content}).to_string(),
+            })).collect::<Vec<_>>(),
+            "previous_response_id": response_id,
+            "stream": true,
+            "tools": responses_tools(&run.tools),
+        }),
+        Continuation::Chat(tool_calls) => {
+            run.chat_messages.push(json!({
+                "role":"assistant",
+                "content":null,
+                "tool_calls":tool_calls,
+            }));
+            run.chat_messages.extend(results.into_iter().map(|(call_id, result)| {
+                json!({
+                    "role":"tool",
+                    "tool_call_id":call_id,
+                    "content":json!({"success":result.success,"content":result.content}).to_string(),
+                })
+            }));
+            json!({
+                "model":run.model,
+                "messages":run.chat_messages,
+                "stream":true,
+                "stream_options":{"include_usage":true},
+                "tools":chat_tools(&run.tools),
+            })
+        }
+    }
+}
+
+async fn register_tool_call(
+    run: &StreamRun,
+    call: crate::ProviderToolCall,
+    calls: &mut Vec<(String, oneshot::Receiver<ProviderToolResult>)>,
+) -> Result<(), ProviderError> {
+    if calls.len() >= MAX_TOOL_CALLS_PER_RESPONSE {
+        return Err(protocol_error("Provider exceeded the tool-call limit"));
+    }
+    let (result, receiver) = oneshot::channel();
+    let mut pending = run.pending_tools.lock().await;
+    if pending.contains_key(&call.call_id) {
+        return Err(protocol_error("Provider repeated a tool-call identifier"));
+    }
+    pending.insert(
+        call.call_id.clone(),
+        PendingToolCall {
+            operation_id: run.operation_id,
+            result,
+        },
+    );
+    drop(pending);
+    calls.push((call.call_id.clone(), receiver));
+    run.events
+        .send(ProviderEvent::ToolCall { call })
+        .await
+        .map_err(|_| unavailable("Provider event receiver closed"))
+}
+
+async fn fail(events: &mpsc::Sender<ProviderEvent>, message: &str) {
+    let _ = events
+        .send(ProviderEvent::Failed {
+            error: protocol_error(message),
+        })
+        .await;
+}
+
+fn initial_request(
+    style: OpenAiApiStyle,
+    model: &str,
+    prompt: &str,
+    tools: &[ProviderTool],
+) -> (&'static str, Value) {
+    match style {
+        OpenAiApiStyle::Responses => (
+            "responses",
+            json!({"model":model,"input":prompt,"stream":true,"tools":responses_tools(tools)}),
+        ),
+        OpenAiApiStyle::ChatCompletions => (
+            "chat/completions",
+            json!({
+                "model": model,
+                "messages": [{"role": "user", "content": prompt}],
+                "stream": true,
+                "stream_options": {"include_usage": true},
+                "tools": chat_tools(tools),
+            }),
+        ),
+    }
+}
+
+fn chat_tools(tools: &[ProviderTool]) -> Value {
+    Value::Array(
+        tools
+            .iter()
+            .map(|tool| {
+                json!({
+                    "type":"function",
+                    "function":{
+                        "name":tool.name,
+                        "description":tool.description,
+                        "parameters":tool.input_schema,
+                    },
+                })
+            })
+            .collect(),
+    )
+}
+
+fn responses_tools(tools: &[ProviderTool]) -> Value {
+    Value::Array(
+        tools
+            .iter()
+            .map(|tool| {
+                json!({
+                    "type": "function",
+                    "name": tool.name,
+                    "description": tool.description,
+                    "parameters": tool.input_schema,
+                })
+            })
+            .collect(),
+    )
 }
 
 fn find_event_end(buffer: &[u8]) -> Option<usize> {
@@ -480,13 +907,6 @@ fn classify_status(response: reqwest::Response) -> Result<reqwest::Response, Pro
         retryable: status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error(),
         diagnostic_id: Some(Uuid::now_v7()),
     })
-}
-
-fn is_terminal(event: &ProviderEvent) -> bool {
-    matches!(
-        event,
-        ProviderEvent::Completed | ProviderEvent::Cancelled | ProviderEvent::Failed { .. }
-    )
 }
 
 fn unix_ms() -> u64 {

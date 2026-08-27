@@ -28,7 +28,7 @@ use std::{
 };
 use uuid::Uuid;
 
-pub const SCHEMA_VERSION: u32 = 24;
+pub const SCHEMA_VERSION: u32 = 26;
 static MIGRATOR: std::sync::LazyLock<sqlx::migrate::Migrator> = std::sync::LazyLock::new(|| {
     use sqlx::migrate::{Migration, MigrationType, Migrator};
     use std::borrow::Cow;
@@ -142,6 +142,16 @@ static MIGRATOR: std::sync::LazyLock<sqlx::migrate::Migrator> = std::sync::LazyL
             "pairing provenance",
             include_str!("../migrations/0024_pairing_provenance.sql"),
         ),
+        (
+            25,
+            "search fts",
+            include_str!("../migrations/0025_search_fts.sql"),
+        ),
+        (
+            26,
+            "holographic memory",
+            include_str!("../migrations/0026_holographic_memory.sql"),
+        ),
     ]
     .into_iter()
     .map(|(version, description, sql)| {
@@ -204,6 +214,8 @@ pub enum StorageError {
     PluginNotFound,
     #[error("A plugin with that name already exists")]
     DuplicatePluginName,
+    #[error("Holographic fact was not found")]
+    HolographicFactNotFound,
     #[error("Routine was not found")]
     RoutineNotFound,
     #[error("A routine with that name already exists")]
@@ -405,6 +417,31 @@ pub struct PluginToolRecord {
     pub title: Option<String>,
     pub description: Option<String>,
     pub input_schema: Value,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct HolographicFactRecord {
+    pub fact_id: u64,
+    pub owner_id: Uuid,
+    pub bot_id: Uuid,
+    pub content: String,
+    pub category: String,
+    pub tags: String,
+    pub trust_score: f64,
+    pub retrieval_count: u64,
+    pub helpful_count: u64,
+    pub source_chat_id: Option<Uuid>,
+    pub entities: Vec<String>,
+    pub created_at_ms: i64,
+    pub updated_at_ms: i64,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct HolographicFeedbackRecord {
+    pub fact_id: u64,
+    pub old_trust: f64,
+    pub new_trust: f64,
+    pub helpful_count: u64,
 }
 
 pub struct PluginConnectionUpdate<'a> {
@@ -776,145 +813,87 @@ impl Storage {
     ///
     /// # Errors
     /// Returns database, UUID, or JSON integrity errors.
-    #[allow(clippy::too_many_lines)]
     pub async fn search(
         &self,
         owner_id: Uuid,
         query: &str,
         limit: u32,
     ) -> Result<Vec<SearchRecord>, StorageError> {
-        let query = query.trim();
-        if query.is_empty() {
-            return Ok(Vec::new());
-        }
-        let pattern = format!("%{}%", query.to_lowercase());
         let candidate_limit = i64::from(limit.clamp(1, 100)).saturating_mul(4);
-        let rows = sqlx::query(
-            "SELECT m.id AS message_id, m.chat_id, m.created_at_ms,
-                    json_extract(p.content_json, '$.text') AS body
-             FROM message_parts p
-             JOIN messages m ON m.id = p.message_id
-             JOIN chats c ON c.id = m.chat_id
-             WHERE c.owner_id = ? AND p.kind IN ('text', 'notice')
-               AND lower(CAST(json_extract(p.content_json, '$.text') AS TEXT)) LIKE ?
-             ORDER BY m.created_at_ms DESC, m.id, p.ordinal LIMIT ?",
-        )
-        .bind(owner_id.to_string())
-        .bind(&pattern)
-        .bind(candidate_limit)
-        .fetch_all(&self.pool)
-        .await?;
+        let expression = fts_expression(query);
+        let rows = if let Some(expression) = expression {
+            sqlx::query(
+                "SELECT kind, title, body, chat_id, message_id, artifact_id, routine_id,
+                        CAST(created_at_ms AS INTEGER) AS created_at_ms
+                 FROM search_documents
+                 WHERE search_documents MATCH ? AND owner_id = ?
+                 ORDER BY bm25(search_documents), CAST(created_at_ms AS INTEGER) DESC
+                 LIMIT ?",
+            )
+            .bind(expression)
+            .bind(owner_id.to_string())
+            .bind(candidate_limit)
+            .fetch_all(&self.pool)
+            .await?
+        } else {
+            sqlx::query(
+                "SELECT kind, title, body, chat_id, message_id, artifact_id, routine_id,
+                        CAST(created_at_ms AS INTEGER) AS created_at_ms
+                 FROM search_documents
+                 WHERE owner_id = ? AND kind = 'file'
+                 ORDER BY CAST(created_at_ms AS INTEGER) DESC LIMIT ?",
+            )
+            .bind(owner_id.to_string())
+            .bind(candidate_limit)
+            .fetch_all(&self.pool)
+            .await?
+        };
         let mut results = Vec::new();
         for row in rows {
-            let message_id = parse_uuid(&row.try_get::<String, _>("message_id")?)?;
-            let chat_id = parse_uuid(&row.try_get::<String, _>("chat_id")?)?;
-            let created_at_ms = row.try_get("created_at_ms")?;
+            let kind: String = row.try_get("kind")?;
+            let title: String = row.try_get("title")?;
             let body: String = row.try_get("body")?;
+            let chat_id = parse_search_uuid(&row.try_get::<String, _>("chat_id")?)?;
+            let message_id = parse_search_uuid(&row.try_get::<String, _>("message_id")?)?;
+            let artifact_id = parse_search_uuid(&row.try_get::<String, _>("artifact_id")?)?;
+            let routine_id = parse_search_uuid(&row.try_get::<String, _>("routine_id")?)?;
+            let created_at_ms = row.try_get("created_at_ms")?;
+            let record_kind = match kind.as_str() {
+                "message" => SearchRecordKind::Message,
+                "file" => SearchRecordKind::File,
+                "routine" => SearchRecordKind::Routine,
+                _ => continue,
+            };
             results.push(SearchRecord {
-                kind: SearchRecordKind::Message,
-                title: "Message".to_owned(),
-                snippet: search_snippet(&body, query),
-                chat_id: Some(chat_id),
-                message_id: Some(message_id),
-                artifact_id: None,
-                routine_id: None,
+                kind: record_kind,
+                title,
+                snippet: if query.trim().is_empty() {
+                    body.clone()
+                } else {
+                    search_snippet(&body, query)
+                },
+                chat_id,
+                message_id,
+                artifact_id,
+                routine_id,
                 created_at_ms,
             });
-            for link in
-                links_in(&body).filter(|link| link.to_lowercase().contains(&query.to_lowercase()))
-            {
-                results.push(SearchRecord {
-                    kind: SearchRecordKind::Link,
-                    title: link.clone(),
-                    snippet: search_snippet(&body, &link),
-                    chat_id: Some(chat_id),
-                    message_id: Some(message_id),
-                    artifact_id: None,
-                    routine_id: None,
-                    created_at_ms,
-                });
+            if kind == "message" {
+                for link in links_in(&body)
+                    .filter(|link| link.to_lowercase().contains(&query.to_lowercase()))
+                {
+                    results.push(SearchRecord {
+                        kind: SearchRecordKind::Link,
+                        title: link.clone(),
+                        snippet: search_snippet(&body, &link),
+                        chat_id,
+                        message_id,
+                        artifact_id: None,
+                        routine_id: None,
+                        created_at_ms,
+                    });
+                }
             }
-        }
-        let rows = sqlx::query(
-            "SELECT id, chat_id, message_id, name, kind, created_at_ms FROM artifacts
-             WHERE owner_id = ? AND (lower(name) LIKE ? OR lower(kind) LIKE ?)
-             ORDER BY created_at_ms DESC, id LIMIT ?",
-        )
-        .bind(owner_id.to_string())
-        .bind(&pattern)
-        .bind(&pattern)
-        .bind(candidate_limit)
-        .fetch_all(&self.pool)
-        .await?;
-        for row in rows {
-            results.push(SearchRecord {
-                kind: SearchRecordKind::File,
-                title: row.try_get("name")?,
-                snippet: row.try_get("kind")?,
-                chat_id: Some(parse_uuid(&row.try_get::<String, _>("chat_id")?)?),
-                message_id: row
-                    .try_get::<Option<String>, _>("message_id")?
-                    .map(|value| parse_uuid(&value))
-                    .transpose()?,
-                artifact_id: Some(parse_uuid(&row.try_get::<String, _>("id")?)?),
-                routine_id: None,
-                created_at_ms: row.try_get("created_at_ms")?,
-            });
-        }
-        let rows = sqlx::query(
-            "SELECT a.id, a.filename, a.media_type, m.id AS message_id, m.chat_id,
-                    m.created_at_ms
-             FROM message_parts p
-             JOIN messages m ON m.id = p.message_id
-             JOIN chats c ON c.id = m.chat_id
-             JOIN attachments a ON a.id = json_extract(p.content_json, '$.attachment_id')
-             WHERE c.owner_id = ? AND a.owner_id = ? AND p.kind = 'attachment'
-               AND a.status = 'ready'
-               AND (lower(a.filename) LIKE ? OR lower(a.media_type) LIKE ?)
-             ORDER BY m.created_at_ms DESC, a.id LIMIT ?",
-        )
-        .bind(owner_id.to_string())
-        .bind(owner_id.to_string())
-        .bind(&pattern)
-        .bind(&pattern)
-        .bind(candidate_limit)
-        .fetch_all(&self.pool)
-        .await?;
-        for row in rows {
-            results.push(SearchRecord {
-                kind: SearchRecordKind::File,
-                title: row.try_get("filename")?,
-                snippet: row.try_get("media_type")?,
-                chat_id: Some(parse_uuid(&row.try_get::<String, _>("chat_id")?)?),
-                message_id: Some(parse_uuid(&row.try_get::<String, _>("message_id")?)?),
-                artifact_id: None,
-                routine_id: None,
-                created_at_ms: row.try_get("created_at_ms")?,
-            });
-        }
-        let rows = sqlx::query(
-            "SELECT id, name, description, updated_at_ms FROM routines
-             WHERE owner_id = ? AND bot_id IS NOT NULL
-               AND (lower(name) LIKE ? OR lower(description) LIKE ?)
-             ORDER BY updated_at_ms DESC, id LIMIT ?",
-        )
-        .bind(owner_id.to_string())
-        .bind(&pattern)
-        .bind(&pattern)
-        .bind(candidate_limit)
-        .fetch_all(&self.pool)
-        .await?;
-        for row in rows {
-            results.push(SearchRecord {
-                kind: SearchRecordKind::Routine,
-                title: row.try_get("name")?,
-                snippet: row.try_get("description")?,
-                chat_id: None,
-                message_id: None,
-                artifact_id: None,
-                routine_id: Some(parse_uuid(&row.try_get::<String, _>("id")?)?),
-                created_at_ms: row.try_get("updated_at_ms")?,
-            });
         }
         results.sort_by(|left, right| {
             right
@@ -2220,6 +2199,36 @@ impl Storage {
         self.plugin(owner_id, plugin_id).await
     }
 
+    /// Replaces one owner-scoped plugin's non-secret configuration.
+    ///
+    /// Secret values remain in the operating-system vault; callers persist only
+    /// opaque references in this JSON document.
+    ///
+    /// # Errors
+    /// Returns not-found or database errors.
+    pub async fn update_plugin_configuration(
+        &self,
+        owner_id: Uuid,
+        plugin_id: Uuid,
+        configuration: &Value,
+        now_ms: i64,
+    ) -> Result<PluginRecord, StorageError> {
+        let result = sqlx::query(
+            "UPDATE plugins SET configuration_json = ?, updated_at_ms = ?
+             WHERE owner_id = ? AND id = ?",
+        )
+        .bind(configuration.to_string())
+        .bind(now_ms)
+        .bind(owner_id.to_string())
+        .bind(plugin_id.to_string())
+        .execute(&self.pool)
+        .await?;
+        if result.rows_affected() == 0 {
+            return Err(StorageError::PluginNotFound);
+        }
+        self.plugin(owner_id, plugin_id).await
+    }
+
     /// Lists safe discovery metadata for one owner-scoped plugin.
     ///
     /// # Errors
@@ -2288,6 +2297,401 @@ impl Storage {
             return Err(StorageError::PluginNotFound);
         }
         Ok(())
+    }
+
+    /// Stores one owner/Bot-scoped Holographic fact and resolves its entities.
+    /// Duplicate content returns the existing fact without changing its trust.
+    ///
+    /// # Errors
+    /// Returns ownership, database, or integrity errors.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn add_holographic_fact(
+        &self,
+        owner_id: Uuid,
+        bot_id: Uuid,
+        content: &str,
+        category: &str,
+        tags: &str,
+        source_chat_id: Option<Uuid>,
+        now_ms: i64,
+    ) -> Result<HolographicFactRecord, StorageError> {
+        let _ = self.get_bot(owner_id, bot_id).await?;
+        if let Some(chat_id) = source_chat_id {
+            let exists: i64 =
+                sqlx::query_scalar("SELECT count(*) FROM chats WHERE owner_id = ? AND id = ?")
+                    .bind(owner_id.to_string())
+                    .bind(chat_id.to_string())
+                    .fetch_one(&self.pool)
+                    .await?;
+            if exists == 0 {
+                return Err(StorageError::ChatNotFound);
+            }
+        }
+        let mut transaction = self.pool.begin().await?;
+        let inserted = sqlx::query(
+            "INSERT OR IGNORE INTO holographic_facts
+             (owner_id, bot_id, content, category, tags, source_chat_id,
+              created_at_ms, updated_at_ms)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(owner_id.to_string())
+        .bind(bot_id.to_string())
+        .bind(content)
+        .bind(category)
+        .bind(tags)
+        .bind(source_chat_id.map(|id| id.to_string()))
+        .bind(now_ms)
+        .bind(now_ms)
+        .execute(&mut *transaction)
+        .await?;
+        let fact_id: i64 = sqlx::query_scalar(
+            "SELECT fact_id FROM holographic_facts
+             WHERE owner_id = ? AND bot_id = ? AND content = ?",
+        )
+        .bind(owner_id.to_string())
+        .bind(bot_id.to_string())
+        .bind(content)
+        .fetch_one(&mut *transaction)
+        .await?;
+        let fact_id = u64::try_from(fact_id)
+            .map_err(|_| StorageError::Integrity("invalid holographic fact id".to_owned()))?;
+        if inserted.rows_affected() == 1 {
+            link_holographic_entities(&mut transaction, owner_id, bot_id, fact_id, content, now_ms)
+                .await?;
+        }
+        transaction.commit().await?;
+        self.holographic_fact(owner_id, bot_id, fact_id).await
+    }
+
+    /// Searches Holographic facts with FTS5 and increments their retrieval counts.
+    ///
+    /// # Errors
+    /// Returns database or integrity errors.
+    pub async fn search_holographic_facts(
+        &self,
+        owner_id: Uuid,
+        bot_id: Uuid,
+        query: &str,
+        category: Option<&str>,
+        min_trust: f64,
+        limit: u32,
+    ) -> Result<Vec<HolographicFactRecord>, StorageError> {
+        let Some(expression) = fts_any_expression(query) else {
+            return Ok(Vec::new());
+        };
+        let limit = i64::from(limit.clamp(1, 50));
+        let rows = sqlx::query(
+            "SELECT f.fact_id FROM holographic_facts f
+             JOIN holographic_facts_fts fts ON fts.fact_id = f.fact_id
+             WHERE holographic_facts_fts MATCH ?
+               AND f.owner_id = ? AND f.bot_id = ? AND f.trust_score >= ?
+               AND (? IS NULL OR f.category = ?)
+             ORDER BY bm25(holographic_facts_fts), f.trust_score DESC, f.updated_at_ms DESC
+             LIMIT ?",
+        )
+        .bind(expression)
+        .bind(owner_id.to_string())
+        .bind(bot_id.to_string())
+        .bind(min_trust.clamp(0.0, 1.0))
+        .bind(category)
+        .bind(category)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+        let ids = rows
+            .iter()
+            .map(|row| {
+                u64::try_from(row.try_get::<i64, _>("fact_id")?)
+                    .map_err(|_| StorageError::Integrity("invalid holographic fact id".to_owned()))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        if !ids.is_empty() {
+            let mut transaction = self.pool.begin().await?;
+            for id in &ids {
+                sqlx::query(
+                    "UPDATE holographic_facts SET retrieval_count = retrieval_count + 1
+                     WHERE owner_id = ? AND bot_id = ? AND fact_id = ?",
+                )
+                .bind(owner_id.to_string())
+                .bind(bot_id.to_string())
+                .bind(i64::try_from(*id).unwrap_or(i64::MAX))
+                .execute(&mut *transaction)
+                .await?;
+            }
+            transaction.commit().await?;
+        }
+        self.holographic_facts_by_ids(owner_id, bot_id, &ids).await
+    }
+
+    /// Lists Holographic facts by trust and recency.
+    ///
+    /// # Errors
+    /// Returns database or integrity errors.
+    pub async fn list_holographic_facts(
+        &self,
+        owner_id: Uuid,
+        bot_id: Uuid,
+        category: Option<&str>,
+        min_trust: f64,
+        limit: u32,
+    ) -> Result<Vec<HolographicFactRecord>, StorageError> {
+        let ids: Vec<i64> = sqlx::query_scalar(
+            "SELECT fact_id FROM holographic_facts
+             WHERE owner_id = ? AND bot_id = ? AND trust_score >= ?
+               AND (? IS NULL OR category = ?)
+             ORDER BY trust_score DESC, updated_at_ms DESC, fact_id LIMIT ?",
+        )
+        .bind(owner_id.to_string())
+        .bind(bot_id.to_string())
+        .bind(min_trust.clamp(0.0, 1.0))
+        .bind(category)
+        .bind(category)
+        .bind(i64::from(limit.clamp(1, 500)))
+        .fetch_all(&self.pool)
+        .await?;
+        let ids = ids
+            .iter()
+            .map(|id| {
+                u64::try_from(*id)
+                    .map_err(|_| StorageError::Integrity("invalid holographic fact id".to_owned()))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        self.holographic_facts_by_ids(owner_id, bot_id, &ids).await
+    }
+
+    /// Finds facts linked to one exact normalized entity.
+    ///
+    /// # Errors
+    /// Returns database or integrity errors.
+    pub async fn probe_holographic_entity(
+        &self,
+        owner_id: Uuid,
+        bot_id: Uuid,
+        entity: &str,
+        category: Option<&str>,
+        limit: u32,
+    ) -> Result<Vec<HolographicFactRecord>, StorageError> {
+        let ids: Vec<i64> = sqlx::query_scalar(
+            "SELECT f.fact_id FROM holographic_facts f
+             JOIN holographic_fact_entities fe ON fe.fact_id = f.fact_id
+             JOIN holographic_entities e ON e.id = fe.entity_id
+             WHERE f.owner_id = ? AND f.bot_id = ? AND e.normalized_name = ?
+               AND (? IS NULL OR f.category = ?)
+             ORDER BY f.trust_score DESC, f.updated_at_ms DESC LIMIT ?",
+        )
+        .bind(owner_id.to_string())
+        .bind(bot_id.to_string())
+        .bind(normalize_holographic_entity(entity))
+        .bind(category)
+        .bind(category)
+        .bind(i64::from(limit.clamp(1, 50)))
+        .fetch_all(&self.pool)
+        .await?;
+        let ids = ids
+            .iter()
+            .map(|id| {
+                u64::try_from(*id)
+                    .map_err(|_| StorageError::Integrity("invalid holographic fact id".to_owned()))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        self.holographic_facts_by_ids(owner_id, bot_id, &ids).await
+    }
+
+    /// Finds facts connected through another entity that co-occurs with the requested entity.
+    ///
+    /// # Errors
+    /// Returns database or integrity errors.
+    pub async fn related_holographic_facts(
+        &self,
+        owner_id: Uuid,
+        bot_id: Uuid,
+        entity: &str,
+        category: Option<&str>,
+        limit: u32,
+    ) -> Result<Vec<HolographicFactRecord>, StorageError> {
+        let ids: Vec<i64> = sqlx::query_scalar(
+            "SELECT DISTINCT related.fact_id FROM holographic_entities target
+             JOIN holographic_fact_entities target_link ON target_link.entity_id = target.id
+             JOIN holographic_fact_entities sibling_link ON sibling_link.fact_id = target_link.fact_id
+             JOIN holographic_fact_entities related_link ON related_link.entity_id = sibling_link.entity_id
+             JOIN holographic_facts related ON related.fact_id = related_link.fact_id
+             WHERE target.owner_id = ? AND target.bot_id = ? AND target.normalized_name = ?
+               AND related.owner_id = ? AND related.bot_id = ?
+               AND (? IS NULL OR related.category = ?)
+             ORDER BY related.trust_score DESC, related.updated_at_ms DESC LIMIT ?",
+        )
+        .bind(owner_id.to_string())
+        .bind(bot_id.to_string())
+        .bind(normalize_holographic_entity(entity))
+        .bind(owner_id.to_string())
+        .bind(bot_id.to_string())
+        .bind(category)
+        .bind(category)
+        .bind(i64::from(limit.clamp(1, 50)))
+        .fetch_all(&self.pool)
+        .await?;
+        let ids = ids
+            .iter()
+            .map(|id| {
+                u64::try_from(*id)
+                    .map_err(|_| StorageError::Integrity("invalid holographic fact id".to_owned()))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        self.holographic_facts_by_ids(owner_id, bot_id, &ids).await
+    }
+
+    /// Updates one scoped fact and rebuilds its entity links when content changes.
+    ///
+    /// # Errors
+    /// Returns not-found, database, or integrity errors.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn update_holographic_fact(
+        &self,
+        owner_id: Uuid,
+        bot_id: Uuid,
+        fact_id: u64,
+        content: Option<&str>,
+        category: Option<&str>,
+        tags: Option<&str>,
+        trust_delta: Option<f64>,
+        now_ms: i64,
+    ) -> Result<HolographicFactRecord, StorageError> {
+        let current = self.holographic_fact(owner_id, bot_id, fact_id).await?;
+        let trust = (current.trust_score + trust_delta.unwrap_or_default()).clamp(0.0, 1.0);
+        let mut transaction = self.pool.begin().await?;
+        let result = sqlx::query(
+            "UPDATE holographic_facts SET content = coalesce(?, content),
+                 category = coalesce(?, category), tags = coalesce(?, tags),
+                 trust_score = ?, updated_at_ms = ?
+             WHERE owner_id = ? AND bot_id = ? AND fact_id = ?",
+        )
+        .bind(content)
+        .bind(category)
+        .bind(tags)
+        .bind(trust)
+        .bind(now_ms)
+        .bind(owner_id.to_string())
+        .bind(bot_id.to_string())
+        .bind(i64::try_from(fact_id).unwrap_or(i64::MAX))
+        .execute(&mut *transaction)
+        .await?;
+        if result.rows_affected() == 0 {
+            return Err(StorageError::HolographicFactNotFound);
+        }
+        if let Some(content) = content {
+            sqlx::query("DELETE FROM holographic_fact_entities WHERE fact_id = ?")
+                .bind(i64::try_from(fact_id).unwrap_or(i64::MAX))
+                .execute(&mut *transaction)
+                .await?;
+            link_holographic_entities(&mut transaction, owner_id, bot_id, fact_id, content, now_ms)
+                .await?;
+        }
+        transaction.commit().await?;
+        self.holographic_fact(owner_id, bot_id, fact_id).await
+    }
+
+    /// Removes one scoped fact and its entity links.
+    ///
+    /// # Errors
+    /// Returns not-found or database errors.
+    pub async fn remove_holographic_fact(
+        &self,
+        owner_id: Uuid,
+        bot_id: Uuid,
+        fact_id: u64,
+    ) -> Result<(), StorageError> {
+        let result = sqlx::query(
+            "DELETE FROM holographic_facts WHERE owner_id = ? AND bot_id = ? AND fact_id = ?",
+        )
+        .bind(owner_id.to_string())
+        .bind(bot_id.to_string())
+        .bind(i64::try_from(fact_id).unwrap_or(i64::MAX))
+        .execute(&self.pool)
+        .await?;
+        if result.rows_affected() == 0 {
+            return Err(StorageError::HolographicFactNotFound);
+        }
+        Ok(())
+    }
+
+    /// Applies Holographic's asymmetric trust feedback contract.
+    ///
+    /// # Errors
+    /// Returns not-found, database, or integrity errors.
+    pub async fn record_holographic_feedback(
+        &self,
+        owner_id: Uuid,
+        bot_id: Uuid,
+        fact_id: u64,
+        helpful: bool,
+        now_ms: i64,
+    ) -> Result<HolographicFeedbackRecord, StorageError> {
+        let current = self.holographic_fact(owner_id, bot_id, fact_id).await?;
+        let new_trust = (current.trust_score + if helpful { 0.05 } else { -0.10 }).clamp(0.0, 1.0);
+        let helpful_count = current.helpful_count + u64::from(helpful);
+        let result = sqlx::query(
+            "UPDATE holographic_facts SET trust_score = ?, helpful_count = ?, updated_at_ms = ?
+             WHERE owner_id = ? AND bot_id = ? AND fact_id = ?",
+        )
+        .bind(new_trust)
+        .bind(i64::try_from(helpful_count).unwrap_or(i64::MAX))
+        .bind(now_ms)
+        .bind(owner_id.to_string())
+        .bind(bot_id.to_string())
+        .bind(i64::try_from(fact_id).unwrap_or(i64::MAX))
+        .execute(&self.pool)
+        .await?;
+        if result.rows_affected() == 0 {
+            return Err(StorageError::HolographicFactNotFound);
+        }
+        Ok(HolographicFeedbackRecord {
+            fact_id,
+            old_trust: current.trust_score,
+            new_trust,
+            helpful_count,
+        })
+    }
+
+    async fn holographic_fact(
+        &self,
+        owner_id: Uuid,
+        bot_id: Uuid,
+        fact_id: u64,
+    ) -> Result<HolographicFactRecord, StorageError> {
+        let row = sqlx::query(
+            "SELECT fact_id, owner_id, bot_id, content, category, tags, trust_score,
+                    retrieval_count, helpful_count, source_chat_id, created_at_ms, updated_at_ms
+             FROM holographic_facts WHERE owner_id = ? AND bot_id = ? AND fact_id = ?",
+        )
+        .bind(owner_id.to_string())
+        .bind(bot_id.to_string())
+        .bind(i64::try_from(fact_id).unwrap_or(i64::MAX))
+        .fetch_optional(&self.pool)
+        .await?
+        .ok_or(StorageError::HolographicFactNotFound)?;
+        let mut fact = holographic_fact_from_row(&row)?;
+        fact.entities = sqlx::query_scalar(
+            "SELECT e.name FROM holographic_entities e
+             JOIN holographic_fact_entities fe ON fe.entity_id = e.id
+             WHERE fe.fact_id = ? ORDER BY e.normalized_name, e.id",
+        )
+        .bind(i64::try_from(fact_id).unwrap_or(i64::MAX))
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(fact)
+    }
+
+    async fn holographic_facts_by_ids(
+        &self,
+        owner_id: Uuid,
+        bot_id: Uuid,
+        ids: &[u64],
+    ) -> Result<Vec<HolographicFactRecord>, StorageError> {
+        let mut facts = Vec::with_capacity(ids.len());
+        for id in ids {
+            facts.push(self.holographic_fact(owner_id, bot_id, *id).await?);
+        }
+        Ok(facts)
     }
     /// Opens or creates a database, applies migrations, and verifies integrity.
     ///
@@ -4080,6 +4484,95 @@ impl Storage {
         rows.iter().map(browser_session_from_row).collect()
     }
 
+    /// Reports whether a human takeover currently pauses Bot actions in a chat.
+    ///
+    /// # Errors
+    /// Returns database errors.
+    pub async fn browser_takeover_active(
+        &self,
+        owner_id: Uuid,
+        chat_id: Uuid,
+    ) -> Result<bool, StorageError> {
+        let count: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM browser_sessions
+             WHERE owner_id = ? AND chat_id = ? AND controller = 'user' AND status = 'active'",
+        )
+        .bind(owner_id.to_string())
+        .bind(chat_id.to_string())
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(count > 0)
+    }
+
+    /// Marks browser projections whose in-memory runtime was lost on restart as failed.
+    ///
+    /// # Errors
+    /// Returns database errors.
+    pub async fn recover_interrupted_browser_sessions(
+        &self,
+        owner_id: Uuid,
+        now_ms: i64,
+    ) -> Result<u64, StorageError> {
+        let mut transaction = self.pool.begin().await?;
+        let owner = owner_id.to_string();
+        sqlx::query(
+            "UPDATE execution_activities
+             SET status = 'failed', detail = 'Browser runtime ended during server restart',
+                 requires_attention = 0, finished_at_ms = ?
+             WHERE id IN (
+                 SELECT id FROM browser_sessions
+                 WHERE owner_id = ? AND status IN ('active', 'awaiting_approval')
+             ) AND status IN ('pending', 'running')",
+        )
+        .bind(now_ms)
+        .bind(&owner)
+        .execute(&mut *transaction)
+        .await?;
+        let updated = sqlx::query(
+            "UPDATE browser_sessions
+             SET runtime_session_id = NULL, controller = 'bot', status = 'failed',
+                 pending_approval_id = NULL, controlling_device_id = NULL,
+                 takeover_expires_at_ms = NULL, updated_at_ms = ?
+             WHERE owner_id = ? AND status IN ('active', 'awaiting_approval')",
+        )
+        .bind(now_ms)
+        .bind(owner)
+        .execute(&mut *transaction)
+        .await?;
+        transaction.commit().await?;
+        Ok(updated.rows_affected())
+    }
+
+    /// Fails one browser session whose runtime stopped responding.
+    ///
+    /// # Errors
+    /// Returns state, ownership, or database errors.
+    pub async fn fail_stalled_browser_session(
+        &self,
+        owner_id: Uuid,
+        session_id: Uuid,
+        now_ms: i64,
+    ) -> Result<BrowserSessionRecord, StorageError> {
+        let updated = sqlx::query(
+            "UPDATE browser_sessions
+             SET runtime_session_id = NULL, controller = 'bot', status = 'failed',
+                 pending_approval_id = NULL, controlling_device_id = NULL,
+                 takeover_expires_at_ms = NULL, updated_at_ms = ?
+             WHERE owner_id = ? AND id = ? AND status != 'closed'",
+        )
+        .bind(now_ms)
+        .bind(owner_id.to_string())
+        .bind(session_id.to_string())
+        .execute(&self.pool)
+        .await?;
+        if updated.rows_affected() != 1 {
+            return Err(StorageError::Integrity(
+                "browser session was not found".to_owned(),
+            ));
+        }
+        self.browser_session(owner_id, session_id).await
+    }
+
     /// Replaces the mutable safe projection for an owner-scoped browser session.
     ///
     /// # Errors
@@ -4241,17 +4734,25 @@ impl Storage {
         message_id: Uuid,
         now_ms: i64,
     ) -> Result<ChatMessage, StorageError> {
-        let chat: Option<(String, Option<String>)> =
-            sqlx::query_as("SELECT kind, direct_bot_id FROM chats WHERE id = ? AND owner_id = ?")
+        let kind: Option<String> =
+            sqlx::query_scalar("SELECT kind FROM chats WHERE id = ? AND owner_id = ?")
                 .bind(chat_id.to_string())
                 .bind(owner_id.to_string())
                 .fetch_optional(&self.pool)
                 .await?;
-        let Some((kind, direct_bot_id)) = chat else {
+        let Some(kind) = kind else {
             return Err(StorageError::ChatNotFound);
         };
         let allowed = if kind == "direct" {
-            direct_bot_id.as_deref() == Some(&bot_id.to_string())
+            sqlx::query_scalar::<_, i64>(
+                "SELECT count(*) FROM bots
+                 WHERE id = ? AND owner_id = ? AND archived_at_ms IS NULL",
+            )
+            .bind(bot_id.to_string())
+            .bind(owner_id.to_string())
+            .fetch_one(&self.pool)
+            .await?
+                == 1
         } else if kind == "group" {
             sqlx::query_scalar::<_, i64>(
                 "SELECT count(*) FROM chat_participants WHERE chat_id = ? AND bot_id = ?",
@@ -5697,11 +6198,31 @@ impl Storage {
         payload: &Value,
         created_at_ms: i64,
     ) -> Result<OutboxEvent, StorageError> {
-        let event_id = Uuid::now_v7();
+        self.append_event_with_id(Uuid::now_v7(), owner_id, event_kind, payload, created_at_ms)
+            .await?
+            .ok_or_else(|| StorageError::Integrity("fresh outbox event ID collided".to_owned()))
+    }
+
+    /// Appends a durable event once for a caller-supplied stable delivery ID.
+    ///
+    /// # Errors
+    /// Returns a storage error if the event cannot be committed.
+    pub async fn append_event_with_id(
+        &self,
+        event_id: Uuid,
+        owner_id: Uuid,
+        event_kind: &str,
+        payload: &Value,
+        created_at_ms: i64,
+    ) -> Result<Option<OutboxEvent>, StorageError> {
         let mut transaction = self.pool.begin().await?;
-        let result = sqlx::query("INSERT INTO event_outbox (event_id, owner_id, event_kind, payload_json, created_at_ms) VALUES (?, ?, ?, ?, ?)")
+        let result = sqlx::query("INSERT OR IGNORE INTO event_outbox (event_id, owner_id, event_kind, payload_json, created_at_ms) VALUES (?, ?, ?, ?, ?)")
             .bind(event_id.to_string()).bind(owner_id.to_string()).bind(event_kind).bind(payload).bind(created_at_ms)
             .execute(&mut *transaction).await?;
+        if result.rows_affected() == 0 {
+            transaction.rollback().await?;
+            return Ok(None);
+        }
         let sequence = u64::try_from(result.last_insert_rowid())
             .map_err(|_| StorageError::Integrity("negative outbox sequence".to_owned()))?;
         let mut stored_payload = payload.clone();
@@ -5718,14 +6239,14 @@ impl Storage {
                 .await?;
         }
         transaction.commit().await?;
-        Ok(OutboxEvent {
+        Ok(Some(OutboxEvent {
             sequence,
             event_id,
             owner_id,
             event_kind: event_kind.to_owned(),
             payload: stored_payload,
             created_at_ms,
-        })
+        }))
     }
 
     /// Claims an idempotency key or returns the durable prior operation.
@@ -7105,6 +7626,36 @@ fn plugin_tool_from_row(row: &sqlx::sqlite::SqliteRow) -> Result<PluginToolRecor
     })
 }
 
+fn holographic_fact_from_row(
+    row: &sqlx::sqlite::SqliteRow,
+) -> Result<HolographicFactRecord, StorageError> {
+    let retrieval_count: i64 = row.try_get("retrieval_count")?;
+    let helpful_count: i64 = row.try_get("helpful_count")?;
+    let fact_id: i64 = row.try_get("fact_id")?;
+    Ok(HolographicFactRecord {
+        fact_id: u64::try_from(fact_id)
+            .map_err(|_| StorageError::Integrity("invalid holographic fact id".to_owned()))?,
+        owner_id: parse_uuid(row.try_get("owner_id")?)?,
+        bot_id: parse_uuid(row.try_get("bot_id")?)?,
+        content: row.try_get("content")?,
+        category: row.try_get("category")?,
+        tags: row.try_get("tags")?,
+        trust_score: row.try_get("trust_score")?,
+        retrieval_count: u64::try_from(retrieval_count).map_err(|_| {
+            StorageError::Integrity("invalid holographic retrieval count".to_owned())
+        })?,
+        helpful_count: u64::try_from(helpful_count)
+            .map_err(|_| StorageError::Integrity("invalid holographic helpful count".to_owned()))?,
+        source_chat_id: row
+            .try_get::<Option<String>, _>("source_chat_id")?
+            .map(|id| parse_uuid(&id))
+            .transpose()?,
+        entities: Vec::new(),
+        created_at_ms: row.try_get("created_at_ms")?,
+        updated_at_ms: row.try_get("updated_at_ms")?,
+    })
+}
+
 fn normalize_skill_name(name: &str) -> String {
     name.trim().to_ascii_lowercase()
 }
@@ -7426,6 +7977,146 @@ fn links_in(text: &str) -> impl Iterator<Item = String> + '_ {
         (candidate.starts_with("https://") || candidate.starts_with("http://"))
             .then(|| candidate.trim_end_matches(['.', ':']).to_owned())
     })
+}
+
+fn fts_expression(query: &str) -> Option<String> {
+    let terms = query
+        .split(|character: char| !character.is_alphanumeric())
+        .filter(|term| !term.is_empty())
+        .take(8)
+        .map(|term| format!("\"{}\"*", term.to_lowercase()))
+        .collect::<Vec<_>>();
+    (!terms.is_empty()).then(|| terms.join(" AND "))
+}
+
+fn fts_any_expression(query: &str) -> Option<String> {
+    let terms = query
+        .split(|character: char| !character.is_alphanumeric())
+        .filter(|term| !term.is_empty())
+        .filter(|term| {
+            !matches!(
+                term.to_ascii_lowercase().as_str(),
+                "a" | "an" | "and" | "are" | "for" | "is" | "of" | "the" | "to" | "what"
+            )
+        })
+        .take(12)
+        .map(|term| format!("\"{}\"*", term.to_lowercase()))
+        .collect::<Vec<_>>();
+    (!terms.is_empty()).then(|| terms.join(" OR "))
+}
+
+async fn link_holographic_entities(
+    transaction: &mut Transaction<'_, Sqlite>,
+    owner_id: Uuid,
+    bot_id: Uuid,
+    fact_id: u64,
+    content: &str,
+    now_ms: i64,
+) -> Result<(), StorageError> {
+    for name in extract_holographic_entities(content) {
+        let normalized = normalize_holographic_entity(&name);
+        let candidate_id = Uuid::now_v7();
+        sqlx::query(
+            "INSERT OR IGNORE INTO holographic_entities
+             (id, owner_id, bot_id, name, normalized_name, created_at_ms)
+             VALUES (?, ?, ?, ?, ?, ?)",
+        )
+        .bind(candidate_id.to_string())
+        .bind(owner_id.to_string())
+        .bind(bot_id.to_string())
+        .bind(&name)
+        .bind(&normalized)
+        .bind(now_ms)
+        .execute(&mut **transaction)
+        .await?;
+        let entity_id: String = sqlx::query_scalar(
+            "SELECT id FROM holographic_entities
+             WHERE owner_id = ? AND bot_id = ? AND normalized_name = ?",
+        )
+        .bind(owner_id.to_string())
+        .bind(bot_id.to_string())
+        .bind(normalized)
+        .fetch_one(&mut **transaction)
+        .await?;
+        sqlx::query(
+            "INSERT OR IGNORE INTO holographic_fact_entities (fact_id, entity_id) VALUES (?, ?)",
+        )
+        .bind(i64::try_from(fact_id).unwrap_or(i64::MAX))
+        .bind(entity_id)
+        .execute(&mut **transaction)
+        .await?;
+    }
+    Ok(())
+}
+
+fn normalize_holographic_entity(value: &str) -> String {
+    value
+        .trim_matches(|character: char| !character.is_alphanumeric())
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
+}
+
+fn extract_holographic_entities(content: &str) -> Vec<String> {
+    let mut candidates = Vec::new();
+    for delimiter in ['"', '\''] {
+        let mut inside = false;
+        let mut current = String::new();
+        for character in content.chars() {
+            if character == delimiter {
+                if inside {
+                    push_unique_entity(&mut candidates, &current);
+                    current.clear();
+                }
+                inside = !inside;
+            } else if inside {
+                current.push(character);
+            }
+        }
+    }
+    let words = content
+        .split_whitespace()
+        .map(|word| word.trim_matches(|character: char| !character.is_alphanumeric()))
+        .collect::<Vec<_>>();
+    let mut phrase = Vec::new();
+    for word in words {
+        let capitalized = word.chars().next().is_some_and(char::is_uppercase)
+            && word.chars().skip(1).any(char::is_lowercase);
+        if capitalized {
+            phrase.push(word);
+        } else {
+            if phrase.len() >= 2 {
+                push_unique_entity(&mut candidates, &phrase.join(" "));
+            }
+            phrase.clear();
+        }
+    }
+    if phrase.len() >= 2 {
+        push_unique_entity(&mut candidates, &phrase.join(" "));
+    }
+    candidates
+}
+
+fn push_unique_entity(values: &mut Vec<String>, candidate: &str) {
+    let candidate = candidate.trim();
+    let normalized = normalize_holographic_entity(candidate);
+    if !normalized.is_empty()
+        && normalized.len() <= 200
+        && !values
+            .iter()
+            .any(|value| normalize_holographic_entity(value) == normalized)
+    {
+        values.push(candidate.to_owned());
+    }
+}
+
+fn parse_search_uuid(value: &str) -> Result<Option<Uuid>, StorageError> {
+    if value.is_empty() {
+        Ok(None)
+    } else {
+        parse_uuid(value).map(Some)
+    }
 }
 
 fn search_snippet(text: &str, needle: &str) -> String {
@@ -7783,6 +8474,111 @@ mod tests {
             storage.plugin(owner, plugin_id).await,
             Err(StorageError::PluginNotFound)
         ));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn holographic_facts_are_bot_scoped_searchable_trained_and_restart_durable()
+    -> Result<(), StorageError> {
+        let directory = tempfile::tempdir()?;
+        let database = directory.path().join("homebot.db");
+        let storage = Storage::open(&database).await?;
+        let owner = Uuid::now_v7();
+        let bot = storage
+            .create_bot(owner, Bot::create("Nova", "Memory")?, 1)
+            .await?;
+        let other_bot = storage
+            .create_bot(owner, Bot::create("Patch", "Memory")?, 2)
+            .await?;
+        let chat = storage
+            .create_direct_chat(owner, bot.id.0, Uuid::now_v7(), 3)
+            .await?;
+        let first = storage
+            .add_holographic_fact(
+                owner,
+                bot.id.0,
+                "\"Willow\" sees Doctor Smith and uses Meloxidyl.",
+                "user_pref",
+                "willow,medicine",
+                Some(chat.id),
+                4,
+            )
+            .await?;
+        let duplicate = storage
+            .add_holographic_fact(
+                owner,
+                bot.id.0,
+                "\"Willow\" sees Doctor Smith and uses Meloxidyl.",
+                "project",
+                "ignored",
+                Some(chat.id),
+                5,
+            )
+            .await?;
+        assert_eq!(duplicate.fact_id, first.fact_id);
+        assert_eq!(duplicate.category, "user_pref");
+        assert_eq!(
+            storage
+                .search_holographic_facts(owner, bot.id.0, "Meloxidyl", None, 0.3, 10)
+                .await?[0]
+                .retrieval_count,
+            1
+        );
+        assert!(
+            storage
+                .search_holographic_facts(owner, other_bot.id.0, "Meloxidyl", None, 0.0, 10)
+                .await?
+                .is_empty()
+        );
+        assert_eq!(
+            storage
+                .probe_holographic_entity(owner, bot.id.0, "doctor smith", None, 10)
+                .await?[0]
+                .fact_id,
+            first.fact_id
+        );
+        let helpful = storage
+            .record_holographic_feedback(owner, bot.id.0, first.fact_id, true, 6)
+            .await?;
+        assert_eq!((helpful.old_trust, helpful.new_trust), (0.5, 0.55));
+        let unhelpful = storage
+            .record_holographic_feedback(owner, bot.id.0, first.fact_id, false, 7)
+            .await?;
+        assert!((unhelpful.new_trust - 0.45).abs() < f64::EPSILON);
+        storage
+            .update_holographic_fact(
+                owner,
+                bot.id.0,
+                first.fact_id,
+                Some("\"Willow\" sees Doctor Jones and uses Meloxidyl."),
+                None,
+                None,
+                None,
+                8,
+            )
+            .await?;
+        assert!(
+            storage
+                .probe_holographic_entity(owner, bot.id.0, "doctor smith", None, 10)
+                .await?
+                .is_empty()
+        );
+        drop(storage);
+        let reopened = Storage::open(&database).await?;
+        let facts = reopened
+            .probe_holographic_entity(owner, bot.id.0, "doctor jones", None, 10)
+            .await?;
+        assert_eq!(facts.len(), 1);
+        assert!((facts[0].trust_score - 0.45).abs() < f64::EPSILON);
+        reopened
+            .remove_holographic_fact(owner, bot.id.0, first.fact_id)
+            .await?;
+        assert!(
+            reopened
+                .list_holographic_facts(owner, bot.id.0, None, 0.0, 10)
+                .await?
+                .is_empty()
+        );
         Ok(())
     }
 
@@ -9478,6 +10274,9 @@ mod tests {
             "checkpoint_restores",
             "event_outbox",
             "event_retention_cursors",
+            "holographic_entities",
+            "holographic_fact_entities",
+            "holographic_facts",
             "messages",
             "paired_devices",
             "plugins",

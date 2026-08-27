@@ -47,3 +47,7 @@ curl --fail-with-body \
 Revocation takes effect for subsequent HTTP calls and terminates a live event stream at its next heartbeat. Device sessions cannot create pairing offers, list devices, or revoke peers. Failed provenance attempts are bounded per offer. Unknown-token attempts are throttled by the direct peer address and retained in a bounded digest-only emergency ledger, so random tokens from one client or reverse proxy cannot exhaust a valid offer's exchange capacity.
 
 The desktop Devices settings screen uses these same APIs. It generates/copies the deep link, displays endpoint warnings and authoritative device state, and sends revocation through the server; it never treats its local projection as authority.
+
+## OAuth callback reachability
+
+Remote MCP OAuth returns the provider browser to `/api/v1/oauth/mcp/callback` on the HomeBot endpoint used by the native client. Loopback HTTP is valid when the browser is on the Mac. An Android browser cannot use the Mac's loopback address, and OAuth does not permit an ordinary private-LAN HTTP redirect, so Android-initiated MCP sign-in requires the paired HomeBot endpoint to be reachable over HTTPS. The callback accepts only a short-lived, random, single-use state created by an authenticated native request; it does not accept a HomeBot bearer or device session in the URL.

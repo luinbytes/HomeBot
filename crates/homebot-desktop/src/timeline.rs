@@ -34,6 +34,12 @@ pub enum TimelineCommand {
         approval_id: Uuid,
         allow: bool,
     },
+    RespondInteraction {
+        interaction_id: Uuid,
+        confirmed: Option<bool>,
+        choice: Option<String>,
+        secret: Option<String>,
+    },
     LoadCheckpointDiff {
         from_checkpoint_id: Uuid,
         to_checkpoint_id: Uuid,
@@ -351,6 +357,27 @@ impl TimelineModel {
         }) {
             self.commands
                 .push(TimelineCommand::DecideApproval { approval_id, allow });
+        }
+    }
+
+    pub fn respond_interaction(
+        &mut self,
+        interaction_id: Uuid,
+        confirmed: Option<bool>,
+        choice: Option<String>,
+        secret: Option<String>,
+    ) {
+        if self.activities.iter().any(|activity| {
+            activity.id == interaction_id
+                && activity.kind == homebot_protocol::ActivityKind::Interaction
+                && activity.status == homebot_protocol::ActivityStatus::Pending
+        }) {
+            self.commands.push(TimelineCommand::RespondInteraction {
+                interaction_id,
+                confirmed,
+                choice,
+                secret,
+            });
         }
     }
 

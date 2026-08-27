@@ -13,6 +13,7 @@ use homebot_protocol::{
     BotProviderStatus, BotResponse, BotShape, BotSummary, CreateBotRequest, DeleteBotRequest,
     ErrorCode, ErrorEnvelope, ServerEventBody, UpdateBotRequest,
 };
+use homebot_providers::{ProviderAdapterId, ProviderAvailability};
 use homebot_storage::{IdempotencyClaim, StorageError};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -395,17 +396,26 @@ async fn publish(state: &AppState, bot: BotSummary) -> Result<(), ApiError> {
 
 pub(super) async fn summary(state: &AppState, bot: Bot) -> BotSummary {
     let provider = if let Some(profile_id) = bot.provider_profile_id {
-        let exists =
-            sqlx::query_scalar::<_, i64>("SELECT count(*) FROM provider_profiles WHERE id = ?")
-                .bind(profile_id.to_string())
-                .fetch_one(state.storage.pool())
-                .await
-                .unwrap_or(0)
-                > 0;
-        if exists {
-            BotProviderStatus::Ready
-        } else {
-            BotProviderStatus::Unavailable
+        let adapter_id = sqlx::query_scalar::<_, String>(
+            "SELECT adapter_kind FROM provider_profiles WHERE id = ?",
+        )
+        .bind(profile_id.to_string())
+        .fetch_optional(state.storage.pool())
+        .await
+        .ok()
+        .flatten()
+        .and_then(|value| ProviderAdapterId::new(value).ok());
+        match adapter_id {
+            Some(adapter_id)
+                if state
+                    .provider_runtime
+                    .health_for(&adapter_id)
+                    .await
+                    .is_ok_and(|health| health.availability == ProviderAvailability::Available) =>
+            {
+                BotProviderStatus::Ready
+            }
+            _ => BotProviderStatus::Unavailable,
         }
     } else {
         BotProviderStatus::NotConfigured

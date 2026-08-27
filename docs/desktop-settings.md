@@ -15,8 +15,11 @@ Settings open as a viewport-bounded modal over the current workspace. Each secti
 The notification center consumes sequenced server events and deduplicates reconnect replay. It creates native macOS/Linux notifications for:
 
 - completed Bot work;
+- pending decision or secure input;
 - pending approval;
 - failed activity or message.
+
+Decision and secure-input activities use a high-priority `Input needed` notification with an exact activity link. Ordinary Bot and routine completion uses the low-priority channel; it does not make the same urgent sound as input, approval, or failure.
 
 Notifications are suppressed while HomeBot is focused unless the user opts in. When unfocused, the native window also requests informational or critical attention. Sidebar indicators distinguish working, approval and failure states while preserving unread state.
 

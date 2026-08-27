@@ -4,7 +4,7 @@ use crate::{
     ApprovalDecision, CompactRequest, ProcessSpec, ProviderAdapter, ProviderAdapterId,
     ProviderAvailability, ProviderCapabilities, ProviderCapability, ProviderDescriptor,
     ProviderError, ProviderErrorCode, ProviderEvent, ProviderHealth, ProviderModel, ProviderRun,
-    ResumeRequest, StartRequest, SupervisedProcess,
+    ProviderToolResult, ResumeRequest, StartRequest, SupervisedProcess,
     supervisor::{BoundedLine, read_bounded_line},
 };
 use serde::Serialize;
@@ -83,11 +83,27 @@ impl GenericProcessProfile {
 enum GenericRequest {
     Start(StartRequest),
     Resume(ResumeRequest),
+    ToolResult {
+        call_id: String,
+        result: ProviderToolResult,
+    },
+}
+
+struct PendingToolCall {
+    operation_id: Uuid,
+    input: mpsc::Sender<GenericRequest>,
+}
+
+struct ToolChannel {
+    input: mpsc::Sender<GenericRequest>,
+    results: mpsc::Receiver<GenericRequest>,
+    pending: Arc<Mutex<HashMap<String, PendingToolCall>>>,
 }
 
 pub struct GenericProcessAdapter {
     profile: GenericProcessProfile,
     operations: Arc<Mutex<HashMap<Uuid, watch::Sender<bool>>>>,
+    tool_calls: Arc<Mutex<HashMap<String, PendingToolCall>>>,
 }
 
 impl std::fmt::Debug for GenericProcessAdapter {
@@ -108,6 +124,7 @@ impl GenericProcessAdapter {
         Self {
             profile,
             operations: Arc::new(Mutex::new(HashMap::new())),
+            tool_calls: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -118,6 +135,7 @@ impl GenericProcessAdapter {
     ) -> Result<ProviderRun, ProviderError> {
         let program = resolve_program(&self.profile).ok_or_else(not_installed)?;
         let (events_tx, events_rx) = mpsc::channel(EVENT_BUFFER);
+        let (input_tx, input_rx) = mpsc::channel(32);
         let (cancel_tx, mut cancel_rx) = watch::channel(false);
         let mut operations = self.operations.lock().await;
         if operations.insert(operation_id, cancel_tx).is_some() {
@@ -129,6 +147,7 @@ impl GenericProcessAdapter {
         let working_directory = match &request {
             GenericRequest::Start(request) => request.working_directory.clone(),
             GenericRequest::Resume(request) => request.working_directory.clone(),
+            GenericRequest::ToolResult { .. } => None,
         }
         .or_else(|| self.profile.working_directory.clone());
         let setup = async {
@@ -165,8 +184,26 @@ impl GenericProcessAdapter {
             }
         };
         let active = Arc::clone(&self.operations);
+        let pending_tools = Arc::clone(&self.tool_calls);
         tokio::spawn(async move {
-            consume_generic(process, stdin, stdout, &mut cancel_rx, events_tx).await;
+            consume_generic(
+                operation_id,
+                process,
+                stdin,
+                stdout,
+                &mut cancel_rx,
+                events_tx,
+                ToolChannel {
+                    input: input_tx,
+                    results: input_rx,
+                    pending: Arc::clone(&pending_tools),
+                },
+            )
+            .await;
+            pending_tools
+                .lock()
+                .await
+                .retain(|_, pending| pending.operation_id != operation_id);
             active.lock().await.remove(&operation_id);
         });
         Ok(ProviderRun {
@@ -177,11 +214,13 @@ impl GenericProcessAdapter {
 }
 
 async fn consume_generic(
+    operation_id: Uuid,
     process: SupervisedProcess,
-    stdin: tokio::process::ChildStdin,
+    mut stdin: tokio::process::ChildStdin,
     stdout: tokio::process::ChildStdout,
     cancel: &mut watch::Receiver<bool>,
     events: mpsc::Sender<ProviderEvent>,
+    mut tools: ToolChannel,
 ) {
     let mut reader = BufReader::new(stdout);
     let mut terminal = false;
@@ -191,6 +230,19 @@ async fn consume_generic(
             changed = cancel.changed() => {
                 if changed.is_err() || *cancel.borrow() {
                     cancelled = true;
+                    break;
+                }
+            }
+            Some(result) = tools.results.recv() => {
+                let Ok(mut encoded) = serde_json::to_vec(&result) else {
+                    let _ = events.send(ProviderEvent::Failed { error: protocol_error("Could not encode generic provider tool result") }).await;
+                    terminal = true;
+                    break;
+                };
+                encoded.push(b'\n');
+                if stdin.write_all(&encoded).await.is_err() || stdin.flush().await.is_err() {
+                    let _ = events.send(ProviderEvent::Failed { error: io_error(std::io::Error::other("generic provider input closed")) }).await;
+                    terminal = true;
                     break;
                 }
             }
@@ -208,6 +260,16 @@ async fn consume_generic(
                             terminal = true;
                             break;
                         };
+                        if let ProviderEvent::ToolCall { call } = &event {
+                            let mut pending = tools.pending.lock().await;
+                            if pending.contains_key(&call.call_id) {
+                                drop(pending);
+                                let _ = events.send(ProviderEvent::Failed { error: protocol_error("Generic provider repeated a tool-call identifier") }).await;
+                                terminal = true;
+                                break;
+                            }
+                            pending.insert(call.call_id.clone(), PendingToolCall { operation_id, input: tools.input.clone() });
+                        }
                         terminal = is_terminal(&event);
                         if events.send(event).await.is_err() || terminal {
                             break;
@@ -253,6 +315,7 @@ impl ProviderAdapter for GenericProcessAdapter {
                     ProviderCapability::Activities,
                     ProviderCapability::Cancellation,
                     ProviderCapability::Usage,
+                    ProviderCapability::DynamicTools,
                 ]
                 .into_iter()
                 .collect(),
@@ -309,6 +372,22 @@ impl ProviderAdapter for GenericProcessAdapter {
         Err(invalid_request(
             "Generic provider does not advertise interactive approvals",
         ))
+    }
+
+    async fn resolve_tool_call(
+        &self,
+        call_id: String,
+        result: ProviderToolResult,
+    ) -> Result<(), ProviderError> {
+        self.tool_calls
+            .lock()
+            .await
+            .remove(&call_id)
+            .ok_or_else(|| invalid_request("Generic provider tool call is no longer pending"))?
+            .input
+            .send(GenericRequest::ToolResult { call_id, result })
+            .await
+            .map_err(|_| invalid_request("Generic provider tool call is no longer pending"))
     }
 
     async fn compact(&self, _request: CompactRequest) -> Result<(), ProviderError> {

@@ -8,7 +8,9 @@ The server sends the Bot's name, role and responsibility to the configured provi
 
 A group message starts every explicitly mentioned Bot, bounded by the group's persisted turn and parallel-operation limits. With no mentions, it starts the current owner. Each provider operation has its own persisted Bot-authored message and visible participant status; stopping the group cancels every active group operation.
 
-An ownership handoff can reference a persisted group message. HomeBot sends that message, the sender's name and the handoff reason to the receiving Bot, then starts an independent provider turn. In Codex-backed group turns, HomeBot also supplies a scoped `homebot_handoff` tool whose recipient choices are the other persisted participants. A running Bot can call it after writing its findings; HomeBot validates the recipient and group limits, persists the visible handoff, starts the recipient independently, and returns the outcome to the original turn. Other providers do not yet expose this dynamic-tool bridge.
+An ownership handoff can reference a persisted group message. HomeBot sends that message, the sender's name and the handoff reason to the receiving Bot, then starts an independent provider turn. Every provider adapter receives the same scoped `homebot_handoff` tool through its HomeBot continuation bridge; recipient choices are configured, idle members of the persisted group only. A running Bot can call it after writing its findings; HomeBot revalidates membership and group limits, persists the visible handoff, starts the recipient independently, and returns the outcome to the original turn.
+
+Direct-chat collaboration is bounded to eight Bot turns per user request and a Bot can contribute only once to that request. Already-used recipients disappear from the next Bot's tool schema and are rejected again at execution time. Groups deliberately permit review hand-backs, but the persisted coordination-turn and parallel-operation budgets bound every chain; stopped, busy, unconfigured, and non-member recipients are never offered. Group membership and a configured provider are the collaboration permission boundary.
 
 ## Lifecycle and validation
 
@@ -31,7 +33,7 @@ Authenticated operations are:
 
 Every mutation carries a request ID and idempotency key. Duplicate names return conflict; invalid fields return validation-failed; owner-scoped misses return not-found. Changes enter the durable event stream as bot-changed, and reconnect snapshots include the complete active and archived roster.
 
-Provider health is normalized as not-configured, ready, or unavailable. Clients never need provider-specific status payloads.
+Provider health is normalized as not-configured, ready, or unavailable. Ready requires the assigned server adapter's live health probe to report available; a persisted profile without a registered, authenticated, healthy adapter is unavailable. Clients never need provider-specific status payloads.
 
 ## Desktop model
 

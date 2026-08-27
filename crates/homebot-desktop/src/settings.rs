@@ -1,6 +1,7 @@
 //! Desktop settings projection and navigation.
 
 use egui::{Align, Frame, Layout, RichText, Sense, Ui};
+use homebot_protocol::{MemoryProviderPresetSummary, PluginEventIngressState};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use uuid::Uuid;
@@ -46,7 +47,7 @@ impl SettingsSection {
     pub const fn description(self) -> &'static str {
         match self {
             Self::General => "Startup and notification preferences.",
-            Self::Plugins => "Connect local tools and control their availability.",
+            Self::Plugins => "Connect memory and MCP tools, then control their availability.",
             Self::Appearance => "Choose how HomeBot looks and moves on this computer.",
             Self::Updates => "Check, verify, and stage desktop updates.",
             Self::Connection => "Manage the HomeBot server and provider status.",
@@ -72,19 +73,36 @@ pub enum UpdateState {
     Failed,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum SettingsAction {
     CheckForUpdate,
     StageUpdate,
     Reconnect,
     RefreshPlugins,
     SetLaunchAtLogin(bool),
-    Plugin { id: Uuid, action: PluginAction },
+    ConfigureMemoryProvider(String),
+    ConfigureRemoteMcp,
+    ConfigureComposio {
+        google_workspace: bool,
+    },
+    ComposioAccount {
+        id: Uuid,
+        toolkit: String,
+        reauthorize: bool,
+    },
+    ConfigureComposioEvents {
+        id: Uuid,
+    },
+    Plugin {
+        id: Uuid,
+        action: PluginAction,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PluginAction {
     Connect,
+    Authorize,
     Enable,
     Disable,
 }
@@ -106,6 +124,12 @@ pub struct PluginSettingsItem {
     pub detail: String,
     pub state: PluginViewState,
     pub enabled: bool,
+    #[serde(default)]
+    pub managed_services: Vec<String>,
+    #[serde(default)]
+    pub oauth_authorization_available: bool,
+    #[serde(default)]
+    pub event_ingress_state: PluginEventIngressState,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
@@ -151,7 +175,7 @@ impl NotificationPreferences {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(default)]
 pub struct DesktopSettings {
     pub section: SettingsSection,
@@ -168,6 +192,8 @@ pub struct DesktopSettings {
     pub update_message: Option<String>,
     #[serde(skip)]
     pub plugins: Vec<PluginSettingsItem>,
+    #[serde(skip)]
+    pub memory_providers: Vec<MemoryProviderPresetSummary>,
 }
 
 impl Default for DesktopSettings {
@@ -186,6 +212,7 @@ impl Default for DesktopSettings {
             update_version: None,
             update_message: None,
             plugins: Vec::new(),
+            memory_providers: Vec::new(),
         }
     }
 }
@@ -250,7 +277,7 @@ pub(crate) fn settings_view_with(
             match settings.section {
                 SettingsSection::General => action = general(ui, theme, settings),
                 SettingsSection::Plugins => {
-                    action = plugins(ui, theme, &settings.plugins);
+                    action = plugins(ui, theme, &settings.memory_providers, &settings.plugins);
                 }
                 SettingsSection::Appearance => appearance(ui, theme, settings),
                 SettingsSection::Updates => action = updates(ui, theme, settings),
@@ -329,10 +356,60 @@ fn notification_checkbox(
 fn plugins(
     ui: &mut Ui,
     theme: HomeBotTheme,
+    memory_providers: &[MemoryProviderPresetSummary],
     plugins: &[PluginSettingsItem],
 ) -> Option<SettingsAction> {
-    ui.label("Connect local MCP tools and choose which Bots can use them.");
+    if let Some(action) = integrations(ui, theme) {
+        return Some(action);
+    }
+    ui.add_space(theme.spacing.lg);
+    ui.strong("Memory providers");
+    ui.label("Memory stays on the HomeBot server and is isolated per Bot.");
     ui.add_space(theme.spacing.md);
+    for provider in memory_providers {
+        let available = matches!(
+            provider.connection_kind.as_str(),
+            "streamable_http"
+                | "streamable_http_bridge"
+                | "custom_mcp"
+                | "memory_rest"
+                | "oauth_mcp"
+                | "builtin_memory"
+        );
+        let detail = format!(
+            "{} · {}",
+            if !available {
+                "Adapter planned"
+            } else if provider.automatic_recall {
+                "Automatic scoped recall"
+            } else {
+                "Manual lifecycle"
+            },
+            provider.credential_kind.replace('_', " ")
+        );
+        if settings_row(
+            ui,
+            theme,
+            &provider.name,
+            &detail,
+            available.then_some("Configure"),
+        ) && available
+        {
+            return Some(SettingsAction::ConfigureMemoryProvider(provider.id.clone()));
+        }
+    }
+    ui.add_space(theme.spacing.lg);
+    ui.strong("Plugins & MCP");
+    ui.label("Connect tools and control their availability.");
+    ui.add_space(theme.spacing.md);
+    plugin_rows(ui, theme, plugins)
+}
+
+fn plugin_rows(
+    ui: &mut Ui,
+    theme: HomeBotTheme,
+    plugins: &[PluginSettingsItem],
+) -> Option<SettingsAction> {
     if plugins.is_empty() {
         return settings_row(
             ui,
@@ -350,7 +427,16 @@ fn plugins(
                 Some("Connect"),
                 Some(PluginAction::Connect),
             ),
-            PluginViewState::Waiting => ("Waiting for connection…", None, None),
+            PluginViewState::Waiting => (
+                "Waiting for connection…",
+                Some("Check"),
+                Some(PluginAction::Connect),
+            ),
+            PluginViewState::Reopen if plugin.oauth_authorization_available => (
+                "Authorization required",
+                Some("Sign in"),
+                Some(PluginAction::Authorize),
+            ),
             PluginViewState::Reopen => (
                 "Connection closed",
                 Some("Reopen"),
@@ -382,6 +468,81 @@ fn plugins(
         {
             return Some(SettingsAction::Plugin { id, action });
         }
+        if let Some(id) = plugin.id {
+            for toolkit in &plugin.managed_services {
+                let mut action = None;
+                ui.horizontal(|ui| {
+                    ui.label(format!("{toolkit} account"));
+                    if ui.button("Switch").clicked() {
+                        action = Some(true);
+                    }
+                    if ui.button("Revoke").clicked() {
+                        action = Some(false);
+                    }
+                });
+                if let Some(reauthorize) = action {
+                    return Some(SettingsAction::ComposioAccount {
+                        id,
+                        toolkit: toolkit.clone(),
+                        reauthorize,
+                    });
+                }
+            }
+            if !plugin.managed_services.is_empty() {
+                let (label, action) = match plugin.event_ingress_state {
+                    PluginEventIngressState::Ready => ("Account events ready", None),
+                    PluginEventIngressState::NotConfigured => {
+                        ("Account events need public HTTPS", Some("Configure"))
+                    }
+                    PluginEventIngressState::Error => {
+                        ("Account event secret unavailable", Some("Repair"))
+                    }
+                };
+                if settings_row(ui, theme, "Scheduled account events", label, action)
+                    && action.is_some()
+                {
+                    return Some(SettingsAction::ConfigureComposioEvents { id });
+                }
+            }
+        }
+    }
+    None
+}
+
+fn integrations(ui: &mut Ui, theme: HomeBotTheme) -> Option<SettingsAction> {
+    ui.strong("Integrations");
+    ui.label("Create owner-scoped OAuth connections without storing credentials in a Bot.");
+    ui.add_space(theme.spacing.md);
+    if settings_row(
+        ui,
+        theme,
+        "Google Workspace",
+        "Gmail, Drive, Calendar, Docs, Sheets, Slides, Meet, and Tasks through one Composio connection",
+        Some("Connect Google"),
+    ) {
+        return Some(SettingsAction::ConfigureComposio {
+            google_workspace: true,
+        });
+    }
+    if settings_row(
+        ui,
+        theme,
+        "Composio toolkit",
+        "Connect one allowlisted service from the Composio catalog",
+        Some("Configure"),
+    ) {
+        return Some(SettingsAction::ConfigureComposio {
+            google_workspace: false,
+        });
+    }
+    if settings_row(
+        ui,
+        theme,
+        "Remote MCP server",
+        "Connect a public, bearer-authenticated, or OAuth MCP endpoint",
+        Some("Configure"),
+    ) {
+        return Some(SettingsAction::ConfigureRemoteMcp);
     }
     None
 }

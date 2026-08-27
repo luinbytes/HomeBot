@@ -45,7 +45,12 @@ internal object NotificationEventMapper {
             "activity_changed" -> {
                 val activity = json.decodeFromJsonElement<ActivitySummary>(event["activity"] ?: return null)
                 if (!activity.requires_attention && activity.status != "failed") return null
-                ClientAlert(eventId, ClientAlertKind.ERROR, activity.title, activity.detail, chatId = activity.chat_id, activityId = activity.id)
+                val kind = when {
+                    activity.status == "failed" -> ClientAlertKind.ERROR
+                    activity.kind == "interaction" && activity.status == "pending" -> ClientAlertKind.NEEDS_INPUT
+                    else -> return null
+                }
+                ClientAlert(eventId, kind, if (kind == ClientAlertKind.NEEDS_INPUT) "Input needed" else activity.title, activity.detail, chatId = activity.chat_id, activityId = activity.id)
             }
             else -> null
         }

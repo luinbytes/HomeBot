@@ -10,6 +10,18 @@ official launch video's populated desktop frame establish the 280px sidebar,
 composer, circular send control, and 200ms sidebar motion. See
 [grok-bot-ui-reference.md](grok-bot-ui-reference.md) for provenance and hashes.
 
+Comparison update, 27 August 2026: a read-only capture of the owner's installed
+Grok Bot app confirmed the current populated shell structure without sending a
+message or changing a setting. It showed the compact search/roster rail, large
+selected-Bot identity, avatar/title/preview/time rows, one chronological chat
+containing visible Bot-to-Bot collaboration separators, inline connector cards,
+and the anchored pill composer. Private names, messages, and pixels were not
+retained. [Bloub](https://github.com/jeremy-prt/bloub) was also reviewed as a
+public frame-measured study of the xAI Bot avatar motion. HomeBot does not ship
+that Vue component or copy its artwork; the native egui and Compose clients use
+HomeBot's existing procedural shapes with bounded gaze, blink, and working-state
+morphs, and respect each platform's reduced-motion setting.
+
 ## Reference set
 
 - **Launch**: [Introducing Grok Bot](https://x.ai/news/introducing-grok-bot), including the official launch video and product examples.

@@ -28,6 +28,8 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.filterIsInstance
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.withContext
 import java.util.UUID
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
@@ -116,6 +118,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         mutableProduct.value = mutableProduct.value.copy(
             destination = ProductDestination.Search,
             searchQuery = response.query,
+            searchUnavailable = response.status.name == "UNAVAILABLE",
             searchResults = response.results,
         )
     }
@@ -137,6 +140,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val assistantPacks = homeBot.client.assistantPacks().getOrThrow()
         val skills = homeBot.client.skills().getOrThrow()
         val plugins = homeBot.client.plugins().getOrThrow()
+        val memoryProviders = homeBot.client.memoryProviders().getOrThrow()
         val routines = homeBot.client.routines().getOrThrow()
         val secrets = homeBot.client.secrets().getOrThrow()
         val device = homeBot.client.currentDevice().getOrThrow()
@@ -144,6 +148,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             assistantPacks = assistantPacks,
             skills = skills,
             plugins = plugins,
+            memoryProviders = memoryProviders,
             routines = routines,
             secrets = secrets,
             currentDevice = device,
@@ -279,6 +284,99 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun mutatePlugin(pluginId: String, action: String) = perform {
         homeBot.client.mutatePlugin(pluginId, action).getOrThrow()
+        loadServicesNow()
+    }
+
+    fun authorizeRemoteMcp(pluginId: String) = perform {
+        val authorization = homeBot.client.authorizeRemoteMcp(pluginId).getOrThrow()
+        mutableProduct.value = mutableProduct.value.copy(externalAuthorization = authorization)
+        loadServicesNow()
+    }
+
+    fun togglePlugin(pluginId: String, botId: String, enabled: Boolean) = perform {
+        homeBot.client.setPluginAssigned(pluginId, botId, enabled).getOrThrow()
+        loadServicesNow()
+    }
+
+    fun createMemoryProvider(
+        providerId: String,
+        name: String,
+        endpoint: String?,
+        credential: String?,
+    ) = perform {
+        val secretId = credential?.takeIf(String::isNotBlank)?.let {
+            homeBot.client.createSecret("$name credential", it).getOrThrow().id
+        }
+        val plugin = try {
+            homeBot.client.createMemoryProvider(
+                providerId,
+                name,
+                endpoint?.takeIf(String::isNotBlank),
+                secretId,
+            ).getOrThrow()
+        } catch (failure: Throwable) {
+            secretId?.let { withContext(NonCancellable) { homeBot.client.deleteSecret(it) } }
+            throw failure
+        }
+        if (plugin.kind != "builtin_memory") {
+            homeBot.client.mutatePlugin(plugin.id, "connect").getOrThrow()
+        }
+        loadServicesNow()
+    }
+
+    fun createRemoteMcp(name: String, endpoint: String, bearerToken: String) = perform {
+        val secretId = bearerToken.takeIf(String::isNotBlank)?.let {
+            homeBot.client.createSecret("$name bearer token", it).getOrThrow().id
+        }
+        val plugin = try {
+            homeBot.client.createRemoteMcp(name, endpoint, secretId).getOrThrow()
+        } catch (failure: Throwable) {
+            secretId?.let { withContext(NonCancellable) { homeBot.client.deleteSecret(it) } }
+            throw failure
+        }
+        homeBot.client.mutatePlugin(plugin.id, "connect").getOrThrow()
+        loadServicesNow()
+    }
+
+    fun createComposioConnector(
+        name: String,
+        toolkit: String,
+        apiKey: String,
+    ) = perform {
+        val secretId = homeBot.client.createSecret("$name Composio API key", apiKey).getOrThrow().id
+        val plugin = try {
+            homeBot.client.createComposioConnector(name, secretId, listOf(toolkit)).getOrThrow()
+        } catch (failure: Throwable) {
+            withContext(NonCancellable) { homeBot.client.deleteSecret(secretId) }
+            throw failure
+        }
+        homeBot.client.mutatePlugin(plugin.id, "connect").getOrThrow()
+        val authorization = homeBot.client.authorizeComposioToolkit(plugin.id, toolkit).getOrThrow()
+        mutableProduct.value = mutableProduct.value.copy(externalAuthorization = authorization)
+        loadServicesNow()
+    }
+
+    fun clearExternalAuthorization() {
+        mutableProduct.value = mutableProduct.value.copy(externalAuthorization = null)
+    }
+
+    fun revokeComposioAccount(
+        pluginId: String,
+        toolkit: String,
+        reauthorize: Boolean,
+    ) = perform {
+        homeBot.client.revokeComposioToolkit(pluginId, toolkit).getOrThrow()
+        val authorization = if (reauthorize) {
+            homeBot.client.authorizeComposioToolkit(pluginId, toolkit).getOrThrow()
+        } else {
+            null
+        }
+        mutableProduct.value = mutableProduct.value.copy(externalAuthorization = authorization)
+        loadServicesNow()
+    }
+
+    fun configureComposioEvents(pluginId: String) = perform {
+        homeBot.client.configureComposioEvents(pluginId).getOrThrow()
         loadServicesNow()
     }
 
@@ -457,6 +555,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun decide(approval: ApprovalSummary, allow: Boolean) = perform {
         homeBot.client.decideApproval(approval.id, allow).getOrThrow()
+        refreshSelection(showLoading = false)
+    }
+
+    fun respondInteraction(
+        interactionId: String,
+        confirmed: Boolean? = null,
+        choice: String? = null,
+        secret: String? = null,
+    ) = perform {
+        homeBot.client.respondInteraction(interactionId, confirmed, choice, secret).getOrThrow()
         refreshSelection(showLoading = false)
     }
 

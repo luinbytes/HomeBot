@@ -9,6 +9,8 @@ import dev.homebot.protocol.VcsStatus
 import dev.homebot.protocol.WorkingTreeDiffResponse
 import dev.homebot.protocol.DeviceSessionSummary
 import dev.homebot.protocol.PluginSummary
+import dev.homebot.protocol.MemoryProviderPresetSummary
+import dev.homebot.protocol.ExternalAuthorizationSummary
 import dev.homebot.protocol.RoutineRunSummary
 import dev.homebot.protocol.RoutineRecordingSummary
 import dev.homebot.protocol.RoutineSummary
@@ -67,6 +69,7 @@ data class AndroidProductState(
     val assistantPacks: List<AssistantPackSummary> = emptyList(),
     val skills: List<SkillSummary> = emptyList(),
     val plugins: List<PluginSummary> = emptyList(),
+    val memoryProviders: List<MemoryProviderPresetSummary> = emptyList(),
     val routines: List<RoutineSummary> = emptyList(),
     val routineRuns: List<RoutineRunSummary> = emptyList(),
     val routineTriggers: List<RoutineTriggerSummary> = emptyList(),
@@ -77,9 +80,11 @@ data class AndroidProductState(
     val highlightedActivityId: String? = null,
     val highlightedMessageId: String? = null,
     val searchQuery: String = "",
+    val searchUnavailable: Boolean = false,
     val searchResults: List<SearchResultSummary> = emptyList(),
     val skillTestPreview: String? = null,
     val assistantPackNotice: String? = null,
+    val externalAuthorization: ExternalAuthorizationSummary? = null,
     val loading: Boolean = false,
     val error: String? = null,
 )
